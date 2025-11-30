@@ -17,7 +17,7 @@ app.get("/", (req, res) =>{
 
 
 // DB CONNECTION
-const PORT = process.env.PORT || 5500
+const PORT = process.env.PORT || 9300
 
 db.sync({ force: false, alter: false })
   .then(async () => {
