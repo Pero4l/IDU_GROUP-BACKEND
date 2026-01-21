@@ -7,7 +7,7 @@ module.exports = {
         allowNull: false,
         autoIncrement: true,
         primaryKey: true,
-        type: Sequelize.INTEGER
+        type: Sequelize.UUID
       },
       firstName: {
         type: Sequelize.STRING
@@ -20,6 +20,12 @@ module.exports = {
       },
       location: {
         type: Sequelize.STRING
+      },
+       password: {
+        type: Sequelize.STRING
+      },
+       otp: {
+        type: Sequelize.NUMBER
       },
       createdAt: {
         allowNull: false,
