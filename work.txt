@@ -1,0 +1,1 @@
+npx sequelize-cli model:generate --name likes --attributes user_id:integer,post_id:integer,is_like:boolean
