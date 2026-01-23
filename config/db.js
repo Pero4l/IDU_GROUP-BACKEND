@@ -1,15 +1,16 @@
-require("dotenv").config();
-const { Sequelize } = require("sequelize");
+require('dotenv').config();
 
-const connection = new Sequelize(process.env.DB_URL, {
-  dialect: "postgres",
+const { Sequelize } = require('sequelize');
+
+
+const connection = new Sequelize(process.env.DATABASE_URL, {
+  dialect: 'postgres',
   dialectOptions: {
     ssl: {
-      require: true,
-      rejectUnauthorized: false
-    }
+      require: true, 
+      rejectUnauthorized: false,
+    },
   },
-  logging: console.log,
 });
 
 module.exports = connection;
