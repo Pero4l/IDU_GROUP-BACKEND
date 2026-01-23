@@ -15,6 +15,10 @@ module.exports = {
       lastName: {
         type: Sequelize.STRING
       },
+      gender: {
+        type: Sequelize.ENUM,
+        defaultValue: "Unknown"
+      },
       email: {
         type: Sequelize.STRING
       },
