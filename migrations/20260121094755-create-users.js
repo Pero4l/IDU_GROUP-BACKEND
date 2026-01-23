@@ -17,11 +17,19 @@ module.exports = {
       },
       gender: {
         type: Sequelize.ENUM,
-        defaultValue: "Unknown"
+        defaultValue: "Unknown",
+        allowNull: false
       },
       email: {
         type: Sequelize.STRING
       },
+      phone_no: {
+        type: Sequelize.STRING
+      },
+      address: {
+        type: Sequelize.STRING
+      },
+      
       location: {
         type: Sequelize.STRING
       },
