@@ -13,10 +13,12 @@ module.exports = {
         defaultValue: Sequelize.UUIDV4
       },
       first_name: {
-        type: Sequelize.STRING
+        type: Sequelize.STRING,
+       allowNull: false
       },
       last_name: {
-        type: Sequelize.STRING
+        type: Sequelize.STRING,
+       allowNull: false
       },
       gender: {
         type: Sequelize.STRING,
@@ -24,22 +26,28 @@ module.exports = {
         allowNull: false
       },
       email: {
-        type: Sequelize.STRING
+        type: Sequelize.STRING,
+       allowNull: false
       },
       phone_no: {
-        type: Sequelize.STRING
+        type: Sequelize.STRING,
+       allowNull: false
       },
       address: {
-        type: Sequelize.STRING
+        type: Sequelize.STRING,
+       allowNull: false
       },
       state: {
-        type: Sequelize.STRING
+        type: Sequelize.STRING,
+       allowNull: false
       },
       country: {
-       type: DataTypes.STRING
+       type: DataTypes.STRING,
+       allowNull: false
       },
        password: {
-        type: Sequelize.STRING
+        type: Sequelize.STRING,
+        allowNull: false
       },
        otpCode: {
         type: Sequelize.INTEGER,
