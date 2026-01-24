@@ -41,11 +41,13 @@ module.exports = {
        password: {
         type: Sequelize.STRING
       },
-       otp: {
-        type: Sequelize.INTEGER
+       otpCode: {
+        type: Sequelize.INTEGER,
+        allowNull: true
       },
       otpExpiresAt: {
-        type: DataTypes.DATE
+        type: DataTypes.DATE,
+        allowNull: true
       },
       createdAt: {
         allowNull: false,
