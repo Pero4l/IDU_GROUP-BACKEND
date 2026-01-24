@@ -12,14 +12,14 @@ module.exports = {
         type: Sequelize.UUID,
         defaultValue: Sequelize.UUIDV4
       },
-      firstName: {
+      first_name: {
         type: Sequelize.STRING
       },
-      lastName: {
+      last_name: {
         type: Sequelize.STRING
       },
       gender: {
-        type: Sequelize.ENUM,
+        type: Sequelize.STRING,
         defaultValue: "Unknown",
         allowNull: false
       },
