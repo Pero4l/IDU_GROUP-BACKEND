@@ -3,8 +3,13 @@ const express = require('express');
 require('dotenv').config();
 
 const app = express();
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
 
 const db = require("./config/db");
+
+const userAuth = require('./routes/user.routes');
 
 app.get("/", (req, res) =>{
     res.status(200).json({
@@ -13,7 +18,7 @@ app.get("/", (req, res) =>{
     })
 });
 
-
+app.use("/auth", userAuth);
 
 
 // DB CONNECTION
