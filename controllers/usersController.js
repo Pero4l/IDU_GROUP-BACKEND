@@ -153,7 +153,6 @@ async function login(req, res) {
       message: "Login Successfully",
       token: token,
       user: user,
-      profile: personalProfile,
     });
   }
 

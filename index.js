@@ -20,6 +20,7 @@ app.get("/", (req, res) =>{
 
 app.use("/auth", userAuth);
 
+
 // DB CONNECTION
 const PORT = process.env.PORT;
 
