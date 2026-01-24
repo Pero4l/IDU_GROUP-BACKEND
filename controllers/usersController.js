@@ -112,6 +112,53 @@ async function register(req, res) {
   }
 }
 
+async function login(req, res) {
+  
+  const token = jwt.sign(
+    {
+      userId: req.data.id,
+      currentUser: `${req.data.first_name} ${req.data.last_name}`,
+      location: `${req.data.state}, ${req.data.country}`,
+      email: `${req.data.email}`
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: "24h" }
+  );
+
+  // const userId = req.data.id;
+  // const currentUser = `${req.data.first_name} ${req.data.last_name}`;
+  // const location = `${req.data.state}, ${req.data.country}`;
+  // const verified = req.data.verified
+
+  const user = { 
+   userId: req.data.id,
+   currentUser: `${req.data.first_name} ${req.data.last_name}`,
+   location: `${req.data.state}, ${req.data.country}`,
+   email: `${req.data.email}`
+  }
+
+
+
+// Notification count
+// const notificationCount = await Notifications.count({
+//   where: { user_id: user.userId, is_read: false }
+// });
+
+
+
+
+  if (req.user) {
+    return res.status(200).json({
+      success: true,
+      message: "Login Successfully",
+      token: token,
+      user: user,
+      profile: personalProfile,
+    });
+  }
+
+
+}
 
 
 module.exports = {register}
