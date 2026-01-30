@@ -12,6 +12,7 @@ async function register(req, res) {
       first_name,
       last_name,
       gender,
+      role,
       phone_no,
       email,
       address,
