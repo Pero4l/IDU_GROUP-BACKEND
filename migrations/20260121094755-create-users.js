@@ -30,6 +30,10 @@ module.exports = {
         type: Sequelize.STRING,
        allowNull: false
       },
+      role: {
+        type: Sequelize.STRING,
+       allowNull: false
+      },
       phone_no: {
         type: Sequelize.STRING,
        allowNull: false
