@@ -12,6 +12,7 @@ async function register(req, res) {
       first_name,
       last_name,
       gender,
+      role,
       phone_no,
       email,
       address,
@@ -24,6 +25,7 @@ async function register(req, res) {
       !first_name ||
       !last_name ||
       !gender ||
+      !role ||
       !phone_no ||
       !address ||
       !state ||
@@ -58,6 +60,7 @@ async function register(req, res) {
       first_name,
       last_name,
       gender,
+      role,
       email,
       phone_no,
       address,
@@ -130,12 +133,12 @@ async function login(req, res) {
   // const location = `${req.data.state}, ${req.data.country}`;
   // const verified = req.data.verified
 
-  const user = { 
-   userId: req.data.id,
-   currentUser: `${req.data.first_name} ${req.data.last_name}`,
-   location: `${req.data.state}, ${req.data.country}`,
-   email: `${req.data.email}`
-  }
+  // const user = { 
+  //  userId: req.data.id,
+  //  currentUser: `${req.data.first_name} ${req.data.last_name}`,
+  //  location: `${req.data.state}, ${req.data.country}`,
+  //  email: `${req.data.email}`
+  // }
 
 
 
@@ -152,7 +155,7 @@ async function login(req, res) {
       success: true,
       message: "Login Successfully",
       token: token,
-      user: user,
+      // user: user,
     });
   }
 
