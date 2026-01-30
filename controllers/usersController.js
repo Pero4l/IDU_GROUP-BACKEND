@@ -60,6 +60,7 @@ async function register(req, res) {
       first_name,
       last_name,
       gender,
+      role,
       email,
       phone_no,
       address,
