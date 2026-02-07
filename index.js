@@ -11,6 +11,12 @@ const db = require("./config/db");
 const userAuth = require('./routes/user.routes');
 const rentalsRoute = require('./routes/rental.routes');
 
+app.get("/", (req, res) => {
+  res.status(200).json({
+    message: "Welcome to RentULO",
+  }); 
+});
+
 app.use("/auth", userAuth);
 app.use("/auth", rentalsRoute);
 
