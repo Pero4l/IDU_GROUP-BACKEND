@@ -1,29 +1,35 @@
-const jwt = require('jsonwebtoken')
+const jwt = require("jsonwebtoken");
 
-async function authMiddleware(req, res, next) {
-    const authHeader = req.headers['authorization']
+function authMiddleware(req, res, next) {
+    const authHeader = req.headers["authorization"];
 
-    if(!authHeader){
-        return res.status(403).json({
-            "sucess": false,
-            "message": "No token provided"
-        })
+    if (!authHeader) {
+        return res.status(401).json({
+            success: false,
+            message: "Authorization header missing",
+        });
     }
 
-    const token = authHeader.split(' ')[1]
+    const parts = authHeader.split(" ");
+    if (parts.length !== 2 || parts[0] !== "Bearer") {
+        return res.status(401).json({
+            success: false,
+            message: "Invalid authorization format",
+        });
+    }
 
+    const token = parts[1];
 
-    try{
-        const decode = jwt.verify(token, process.env.JWT_SECRET)
-        req.user = decode
-        next()
-    } catch (err){
-        res.status(401).json({
-             "sucess": false,
-            "message": "Invalid or expired token"
-        })
+    try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        req.user = decoded;
+        next();
+    } catch (err) {
+        return res.status(401).json({
+            success: false,
+            message: "Invalid or expired token",
+        });
     }
 }
 
-
-module.exports = {authMiddleware}
+module.exports = { authMiddleware };
