@@ -1,78 +1,78 @@
-'use strict';
+"use strict";
 
-const { DataTypes } = require('sequelize');
+const { DataTypes } = require("sequelize");
 
 /** @type {import('sequelize-cli').Migration} */
 module.exports = {
   async up(queryInterface, Sequelize) {
-    await queryInterface.createTable('users', {
+    await queryInterface.createTable("users", {
       id: {
-  allowNull: false,
-  primaryKey: true,
-  type: Sequelize.UUID,
-  defaultValue: Sequelize.literal('gen_random_uuid()')
-},
-
+        allowNull: false,
+        primaryKey: true,
+        type: Sequelize.UUID,
+        defaultValue: Sequelize.UUIDV4,
+      },
       first_name: {
         type: Sequelize.STRING,
-       allowNull: false
+        allowNull: false,
       },
       last_name: {
         type: Sequelize.STRING,
-       allowNull: false
+        allowNull: false,
       },
       gender: {
-        type: Sequelize.STRING,
-        defaultValue: "Unknown",
-        allowNull: false
+        type: Sequelize.ENUM('male', 'female', 'others'),
+        defaultValue: "male",
+        allowNull: false,
       },
       email: {
         type: Sequelize.STRING,
-       allowNull: false
+        allowNull: false,
       },
       role: {
-        type: Sequelize.STRING,
-       allowNull: false
+        type: Sequelize.ENUM('tenant', 'landlord'),
+        defaultValue: "tenant",
+        allowNull: false,
       },
       phone_no: {
         type: Sequelize.STRING,
-       allowNull: false
+        allowNull: false,
       },
       address: {
         type: Sequelize.STRING,
-       allowNull: false
+        allowNull: false,
       },
       state: {
         type: Sequelize.STRING,
-       allowNull: false
+        allowNull: false,
       },
       country: {
-       type: DataTypes.STRING,
-       allowNull: false
+        type: DataTypes.STRING,
+        allowNull: false,
       },
-       password: {
+      password: {
         type: Sequelize.STRING,
-        allowNull: false
+        allowNull: false,
       },
-       otpCode: {
+      otpCode: {
         type: Sequelize.INTEGER,
-        allowNull: true
+        allowNull: true,
       },
       otpExpiresAt: {
         type: DataTypes.DATE,
-        allowNull: true
+        allowNull: true,
       },
       createdAt: {
         allowNull: false,
-        type: Sequelize.DATE
+        type: Sequelize.DATE,
       },
       updatedAt: {
         allowNull: false,
-        type: Sequelize.DATE
-      }
+        type: Sequelize.DATE,
+      },
     });
   },
   async down(queryInterface, Sequelize) {
-    await queryInterface.dropTable('users');
-  }
+    await queryInterface.dropTable("users");
+  },
 };
