@@ -20,7 +20,7 @@ module.exports = (sequelize, DataTypes) => {
   Users.init({
     first_name: DataTypes.STRING,
     last_name: DataTypes.STRING,
-    gender: DataTypes.STRING,
+    gender: DataTypes.ENUM('male', 'female', 'others'),
     email: DataTypes.STRING,
     role: {
       type: DataTypes.ENUM('tenant', 'landlord'),

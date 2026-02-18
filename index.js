@@ -27,7 +27,7 @@ app.use("/auth", rentalsRoute);
 // DB CONNECTION
 const PORT = process.env.PORT;
 
-db.sync({ force: false, alter: false })
+db.sync({ force: true, alter: false })
   .then(async () => {
     
     app.listen(PORT, () => {
@@ -39,3 +39,5 @@ db.sync({ force: false, alter: false })
   .catch((e) => {
     console.log(`Database connection failed:`, e);
   });
+
+  
