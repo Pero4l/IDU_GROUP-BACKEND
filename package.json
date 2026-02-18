@@ -6,7 +6,7 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "nodemon index.js",
-     "mg": " npx sequelize-cli db:migrate",
+    "mg": " npx sequelize-cli db:migrate",
     "mg:undo": "npx sequelize-cli db:migrate:undo"
   },
   "repository": {
@@ -22,6 +22,7 @@
   "homepage": "https://github.com/Pero4l/IDU_GROUP-BACKEND#readme",
   "dependencies": {
     "bcrypt": "^6.0.0",
+    "cors": "^2.8.6",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "jsonwebtoken": "^9.0.2",
