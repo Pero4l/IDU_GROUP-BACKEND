@@ -1,6 +1,11 @@
-const Rentals = require("../models/rentals");
-const Users = require("../models/users");
-const sequelize = require("../config/config");
+const {Rentals, Users} = require("../models");
+const cloudinary = require("cloudinary").v2;
+const { v4: uuidv4 } = require("uuid");
+require("dotenv").config();
+
+
+
+
 
 
 // only agnet/landlord can be able to add an apartment to the plartform
