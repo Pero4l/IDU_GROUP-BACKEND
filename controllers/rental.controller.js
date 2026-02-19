@@ -3,7 +3,37 @@ const cloudinary = require("cloudinary").v2;
 const { v4: uuidv4 } = require("uuid");
 require("dotenv").config();
 
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+  secure: true
+});
 
+// Upload from buffer (memoryStorage)
+function uploadBufferToCloudinary(buffer, mimetype, folder) {
+  return new Promise((resolve, reject) => {
+    const type = mimetype.startsWith("video") ? "video" : "image";
+
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder,
+        resource_type: type, 
+        public_id: uuidv4(),
+      },
+      (error, result) => {
+        if (error) {
+          console.error("Cloudinary Upload Error:", error);
+          reject(error);
+        } else {
+          resolve(result);
+        }
+      }
+    );
+
+    stream.end(buffer);
+  });
+}
 
 
 
