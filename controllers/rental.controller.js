@@ -41,7 +41,13 @@ function uploadBufferToCloudinary(buffer, mimetype, folder) {
 // only agnet/landlord can be able to add an apartment to the plartform
 async function addRental(req, res) {
   try {
-    const { title, description, propertyType, location, price, priceType, images, status } = req.body;
+    const { title, description, propertyType, location, price, priceType, status } = req.body;
+
+
+    const images = req.files?.images || [];
+    const videos = req.files?.videos || [];
+
+    console.log("Files received:", req.files);
 
     if (!title || !description || !propertyType || !location || !price || !priceType) {
       return res.status(400).json({
