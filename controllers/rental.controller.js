@@ -63,6 +63,51 @@ async function addRental(req, res) {
       });
     }
 
+       // VALIDATION
+    if (images.length && !videos.length && images.length > 10)
+      return res.status(400).json({ success: false, message: "Max 10 images allowed" });
+
+    if (videos.length && !images.length && videos.length > 4)
+      return res.status(400).json({ success: false, message: "Max 4 videos allowed" });
+
+    if (images.length && videos.length && (images.length > 4 || videos.length > 2))
+      return res.status(400).json({
+        success: false,
+        message: "When uploading both, max is 4 images + 2 videos",
+      });
+
+    // UPLOAD IMAGES
+   const uploadedImages = await Promise.all(
+  images.map((img) =>
+    uploadBufferToCloudinary(img.buffer, img.mimetype, "posts/images")
+  )
+);
+
+  // ---- UPLOAD VIDEOS ----
+const uploadedVideos = await Promise.all(
+  videos.map((vid) =>
+    new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        {
+          folder: "posts/videos",
+          resource_type: "video",
+          public_id: uuidv4(),
+        },
+        (error, result) => {
+          if (error) {
+            console.error("Video upload error:", error);
+            reject(error);
+          } else {
+            resolve(result);
+          }
+        }
+      );
+
+      stream.end(vid.buffer);
+    })
+  )
+);
+
     const newRental = {
       title,
       description,
