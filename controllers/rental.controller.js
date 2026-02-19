@@ -1,12 +1,54 @@
-const Rentals = require("../models/rentals");
-const Users = require("../models/users");
-const sequelize = require("../config/config");
+const {Rentals, Users} = require("../models");
+const cloudinary = require("cloudinary").v2;
+const { v4: uuidv4 } = require("uuid");
+require("dotenv").config();
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+  secure: true
+});
+
+// Upload from buffer (memoryStorage)
+function uploadBufferToCloudinary(buffer, mimetype, folder) {
+  return new Promise((resolve, reject) => {
+    const type = mimetype.startsWith("video") ? "video" : "image";
+
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder,
+        resource_type: type, 
+        public_id: uuidv4(),
+      },
+      (error, result) => {
+        if (error) {
+          console.error("Cloudinary Upload Error:", error);
+          reject(error);
+        } else {
+          resolve(result);
+        }
+      }
+    );
+
+    stream.end(buffer);
+  });
+}
+
+
 
 
 // only agnet/landlord can be able to add an apartment to the plartform
 async function addRental(req, res) {
   try {
-    const { title, description, propertyType, location, price, priceType, images, status } = req.body;
+    const { title, description, propertyType, location, price, priceType, status } = req.body;
+
+
+    
+    const images = req.files?.images || [];
+    const videos = req.files?.videos || [];
+
+    console.log("Files received:", req.files);
 
     if (!title || !description || !propertyType || !location || !price || !priceType) {
       return res.status(400).json({
@@ -22,6 +64,51 @@ async function addRental(req, res) {
       });
     }
 
+       // VALIDATION
+    if (images.length && !videos.length && images.length > 10)
+      return res.status(400).json({ success: false, message: "Max 10 images allowed" });
+
+    if (videos.length && !images.length && videos.length > 4)
+      return res.status(400).json({ success: false, message: "Max 4 videos allowed" });
+
+    if (images.length && videos.length && (images.length > 4 || videos.length > 2))
+      return res.status(400).json({
+        success: false,
+        message: "When uploading both, max is 4 images + 2 videos",
+      });
+
+    // UPLOAD IMAGES
+   const uploadedImages = await Promise.all(
+  images.map((img) =>
+    uploadBufferToCloudinary(img.buffer, img.mimetype, "posts/images")
+  )
+);
+
+  // ---- UPLOAD VIDEOS ----
+const uploadedVideos = await Promise.all(
+  videos.map((vid) =>
+    new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        {
+          folder: "posts/videos",
+          resource_type: "video",
+          public_id: uuidv4(),
+        },
+        (error, result) => {
+          if (error) {
+            console.error("Video upload error:", error);
+            reject(error);
+          } else {
+            resolve(result);
+          }
+        }
+      );
+
+      stream.end(vid.buffer);
+    })
+  )
+);
+
     const newRental = {
       title,
       description,
@@ -30,7 +117,8 @@ async function addRental(req, res) {
       price,
       priceType,
       status,
-      images: JSON.stringify(images || []),
+      images: uploadedImages.map((i) => i.secure_url),
+      videos: uploadedVideos.map((v) => v.secure_url),
       UserId: req.user.id,
     };
 

@@ -17,60 +17,17 @@ module.exports = (sequelize, DataTypes) => {
   }
   
   Rentals.init({
-    id: {
-      type: DataTypes.UUID,
-      defaultValue: DataTypes.UUIDV4,
-      primaryKey: true
-    },
-    title: {
-      type: DataTypes.STRING,
-      allowNull: false
-    },
-    description: {
-      type: DataTypes.TEXT,
-      allowNull: false
-    },
-    UserId: {
-      type: DataTypes.UUID,
-      allowNull: false,
-      references: {
-        model: 'Users',
-        key: 'id'
-      }
-    },
-    likesCount: {
-      type: DataTypes.INTEGER,
-      allowNull: false,
-      defaultValue: 0
-    },
-    propertyType: {
-      type: DataTypes.ENUM('apartment', 'house', 'office', 'commercial', 'land'),
-        defaultValue: 'apartment',
-      allowNull: false
-    },
-    location: {
-      type: DataTypes.STRING,
-      allowNull: false
-    },
-    price: {
-      type: DataTypes.DECIMAL(12, 2),
-      allowNull: false
-    },
-    priceType: {
-      type: DataTypes.ENUM('monthly', 'yearly', 'one-time'),
-        defaultValue: 'monthly',
-      allowNull: false
-    },
-    images: {
-        type: DataTypes.TEXT,
-        allowNull: true,
-        defaultValue: null,
-    },
-    status: {
-        type: DataTypes.ENUM('available', 'rented', 'pending'),
-        allowNull: false,
-        defaultValue: 'available'
-    },
+    title: DataTypes.STRING,
+    description: DataTypes.TEXT,
+    UserId: DataTypes.UUID,
+    likesCount: DataTypes.INTEGER,
+    propertyType: DataTypes.ENUM('apartment', 'house', 'office', 'commercial', 'land'),
+    location: DataTypes.STRING,
+    price: DataTypes.DECIMAL(12, 2),
+    priceType: DataTypes.ENUM('monthly', 'yearly', 'one-time'),
+    images: DataTypes.JSON,
+    videos: DataTypes.JSON,
+    status: DataTypes.ENUM('available', 'rented', 'pending')
   }, {
     sequelize,
     modelName: 'Rentals',

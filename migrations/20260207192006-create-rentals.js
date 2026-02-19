@@ -54,9 +54,10 @@ module.exports = {
         allowNull: false
       },
       images: {
-        type: Sequelize.TEXT,
-        allowNull: true,
-        defaultValue: null,
+        type: Sequelize.JSON
+      },
+      videos: {
+        type: Sequelize.JSON
       },
       status: {
         type: Sequelize.ENUM('available', 'rented', 'pending'),
