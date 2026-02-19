@@ -44,6 +44,7 @@ async function addRental(req, res) {
     const { title, description, propertyType, location, price, priceType, status } = req.body;
 
 
+    
     const images = req.files?.images || [];
     const videos = req.files?.videos || [];
 
