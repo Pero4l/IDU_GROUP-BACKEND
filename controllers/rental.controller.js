@@ -116,7 +116,8 @@ const uploadedVideos = await Promise.all(
       price,
       priceType,
       status,
-      images: JSON.stringify(images || []),
+      images: uploadedImages.map((i) => i.secure_url),
+      videos: uploadedVideos.map((v) => v.secure_url),
       UserId: req.user.id,
     };
 
