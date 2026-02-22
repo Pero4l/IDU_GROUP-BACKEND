@@ -129,6 +129,8 @@ async function login(req, res) {
   );
 
   const role = req.data.role
+  console.log(role);
+  
 
   // const userId = req.data.id;
   // const currentUser = `${req.data.first_name} ${req.data.last_name}`;
@@ -158,7 +160,7 @@ async function login(req, res) {
       message: "Login Successfully",
       token: token,
       role: role,
-      
+
       // user: user,
     });
   }
