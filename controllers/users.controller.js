@@ -128,6 +128,10 @@ async function login(req, res) {
     { expiresIn: "24h" }
   );
 
+  const role = req.data.role
+
+  
+
   // const userId = req.data.id;
   // const currentUser = `${req.data.first_name} ${req.data.last_name}`;
   // const location = `${req.data.state}, ${req.data.country}`;
@@ -155,6 +159,8 @@ async function login(req, res) {
       success: true,
       message: "Login Successfully",
       token: token,
+      role: role,
+
       // user: user,
     });
   }
