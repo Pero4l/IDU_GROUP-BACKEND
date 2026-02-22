@@ -85,7 +85,6 @@ async function addRental(req, res) {
 );
 
 
-
   // ---- UPLOAD VIDEOS ----
 const uploadedVideos = await Promise.all(
   videos.map((vid) =>
