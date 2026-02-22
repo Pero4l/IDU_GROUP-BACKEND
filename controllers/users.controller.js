@@ -129,7 +129,7 @@ async function login(req, res) {
   );
 
   const role = req.data.role
-  console.log(role);
+
   
 
   // const userId = req.data.id;
