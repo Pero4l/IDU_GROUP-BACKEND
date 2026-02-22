@@ -21,6 +21,7 @@ async function loginMiddleware(req, res, next) {
       "state",
       "country",
       "email",
+      "role",
     ],
     where: { [Op.or]: [{ email: user }, { phone_no: user }] },
   });
