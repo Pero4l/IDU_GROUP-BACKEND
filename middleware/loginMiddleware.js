@@ -26,6 +26,7 @@ async function loginMiddleware(req, res, next) {
     where: { [Op.or]: [{ email: user }, { phone_no: user }] },
   });
 
+  
   if (!existingUser) {
     return res.status(404).json({
       success: false,
