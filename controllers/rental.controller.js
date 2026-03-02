@@ -146,10 +146,10 @@ async function addRental(req, res) {
   }
 }
 
-// all user's both agnet, landlord, tenant can be able to see all apartment in the plartform
+
 async function seeAllRentals(req, res) {
   try {
-    const where = {}; // Add filtering logic here if needed, for now empty
+    const where = {}; 
 
     // Get total count of rentals
     const total = await Rentals.count({ where });
