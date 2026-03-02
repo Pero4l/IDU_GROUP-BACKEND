@@ -5,6 +5,7 @@ async function getAllCounts(req, res) {
     const userCount = await Users.count();
     const rentalCount = await Rentals.count();
 
+    
     return res.status(200).json({
       success: true,
       data: {
