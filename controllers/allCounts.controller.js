@@ -8,8 +8,8 @@ async function getAllCounts(req, res) {
     return res.status(200).json({
       success: true,
       data: {
-        userCount,
-        rentalCount
+        totalUsers: userCount,
+        totalListings: rentalCount
       },
       message: "Counts retrieved successfully",
     });
