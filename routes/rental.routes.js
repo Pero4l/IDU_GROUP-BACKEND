@@ -4,10 +4,10 @@ const router = express.Router();
 const { authMiddleware } = require('../middleware/authUserMiddleware');
 const { addRental, seeAllRentals, getRental, updateRental, deleteRental } = require('../controllers/rental.controller');
 
-router.post('/post',  authMiddleware, addRental);
-router.post('/seeallrentals', authMiddleware, seeAllRentals);
-router.post('/seesinglerentals', authMiddleware, getRental); 
-router.post('/updaterentals/:id', authMiddleware, updateRental);
-router.post('/deleterentals/:id', authMiddleware, deleteRental); 
+router.post('/post', authMiddleware, addRental);
+router.get('/seeallrentals', authMiddleware, seeAllRentals);
+router.get('/seesinglerentals/:id', authMiddleware, getRental);
+router.put('/updaterentals/:id', authMiddleware, updateRental);
+router.delete('/deleterentals/:id', authMiddleware, deleteRental);
 
 module.exports = router;

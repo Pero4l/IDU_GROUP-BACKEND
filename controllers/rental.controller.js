@@ -1,4 +1,4 @@
-const {Rentals, Users} = require("../models");
+const { Rentals, Users } = require("../models");
 const cloudinary = require("cloudinary").v2;
 const { v4: uuidv4 } = require("uuid");
 require("dotenv").config();
@@ -18,7 +18,7 @@ function uploadBufferToCloudinary(buffer, mimetype, folder) {
     const stream = cloudinary.uploader.upload_stream(
       {
         folder,
-        resource_type: type, 
+        resource_type: type,
         public_id: uuidv4(),
       },
       (error, result) => {
@@ -44,7 +44,7 @@ async function addRental(req, res) {
     const { title, description, propertyType, location, price, priceType, status } = req.body;
 
 
-    
+
     const images = req.files?.images || [];
     const videos = req.files?.videos || [];
 
@@ -64,7 +64,7 @@ async function addRental(req, res) {
       });
     }
 
-       // VALIDATION
+    // VALIDATION
     if (images.length && !videos.length && images.length > 10)
       return res.status(400).json({ success: false, message: "Max 10 images allowed" });
 
@@ -78,36 +78,36 @@ async function addRental(req, res) {
       });
 
     // UPLOAD IMAGES
-   const uploadedImages = await Promise.all(
-  images.map((img) =>
-    uploadBufferToCloudinary(img.buffer, img.mimetype, "posts/images")
-  )
-);
+    const uploadedImages = await Promise.all(
+      images.map((img) =>
+        uploadBufferToCloudinary(img.buffer, img.mimetype, "posts/images")
+      )
+    );
 
-  // ---- UPLOAD VIDEOS ----
-const uploadedVideos = await Promise.all(
-  videos.map((vid) =>
-    new Promise((resolve, reject) => {
-      const stream = cloudinary.uploader.upload_stream(
-        {
-          folder: "posts/videos",
-          resource_type: "video",
-          public_id: uuidv4(),
-        },
-        (error, result) => {
-          if (error) {
-            console.error("Video upload error:", error);
-            reject(error);
-          } else {
-            resolve(result);
-          }
-        }
-      );
+    // ---- UPLOAD VIDEOS ----
+    const uploadedVideos = await Promise.all(
+      videos.map((vid) =>
+        new Promise((resolve, reject) => {
+          const stream = cloudinary.uploader.upload_stream(
+            {
+              folder: "posts/videos",
+              resource_type: "video",
+              public_id: uuidv4(),
+            },
+            (error, result) => {
+              if (error) {
+                console.error("Video upload error:", error);
+                reject(error);
+              } else {
+                resolve(result);
+              }
+            }
+          );
 
-      stream.end(vid.buffer);
-    })
-  )
-);
+          stream.end(vid.buffer);
+        })
+      )
+    );
 
     const newRental = {
       title,
@@ -149,15 +149,20 @@ const uploadedVideos = await Promise.all(
 // all user's both agnet, landlord, tenant can be able to see all apartment in the plartform
 async function seeAllRentals(req, res) {
   try {
+    const where = {}; // Add filtering logic here if needed, for now empty
+
+    // Get total count of rentals
+    const total = await Rentals.count({ where });
+
     const rentals = await Rentals.findAll({
       where,
       attributes: [
-        "id", "title", "description", "propertyType", "location", "price", 
+        "id", "title", "description", "propertyType", "location", "price",
         "priceType", "images", "status", "UserId", "createdAt"
       ],
       include: [{
         model: Users,
-        attributes: ["id", "first_name", "last_name", "phoneno"]
+        attributes: ["id", "first_name", "last_name", "phone_no"]
       }],
       order: [['createdAt', 'DESC']],
     });
@@ -190,17 +195,17 @@ async function getRental(req, res) {
 
     const rental = await Rentals.findByPk(id, {
       attributes: [
-        "id", 
-        "title", 
-        "description", 
-        "propertyType", 
-        "location", 
-        "price", 
-        "priceType",  
-        "images", 
-        "status", 
-        "UserId", 
-        "createdAt", 
+        "id",
+        "title",
+        "description",
+        "propertyType",
+        "location",
+        "price",
+        "priceType",
+        "images",
+        "status",
+        "UserId",
+        "createdAt",
         "updatedAt"
       ],
       include: [{
@@ -217,13 +222,15 @@ async function getRental(req, res) {
     }
 
     const rentalData = rental.toJSON();
-    
+
     return res.status(200).json({
       success: true,
       data: {
         ...rentalData,
-        images: rentalData.images ? JSON.parse(rentalData.images) : [],
-        landlord: rentalData.Users || { first_name, last_name },
+        // Sequelize handles JSON parsing for us
+        images: rentalData.images || [],
+        videos: rentalData.videos || [],
+        landlord: rentalData.Users || { first_name: "Unknown", last_name: "User" },
       },
       message: "Rental retrieved successfully",
     });
@@ -241,7 +248,7 @@ async function getRental(req, res) {
 async function updateRental(req, res) {
   try {
     const { id } = req.params;
-    const { title, description, propertyType, location, price, priceType, images, status } = req.body;
+    const { title, description, propertyType, location, price, priceType, images, videos, status } = req.body;
 
     const rental = await Rentals.findByPk(id);
 
@@ -266,7 +273,8 @@ async function updateRental(req, res) {
       location: location || rental.location,
       price: price || rental.price,
       priceType: priceType || rental.priceType,
-      images: images ? JSON.stringify(images) : rental.images,
+      images: images || rental.images,
+      videos: videos || rental.videos,
       status: status || rental.status,
     });
 
@@ -325,10 +333,10 @@ async function deleteRental(req, res) {
   }
 }
 
-module.exports = { 
-  addRental, 
-  seeAllRentals, 
-  getRental, 
-  updateRental, 
-  deleteRental 
+module.exports = {
+  addRental,
+  seeAllRentals,
+  getRental,
+  updateRental,
+  deleteRental
 };
