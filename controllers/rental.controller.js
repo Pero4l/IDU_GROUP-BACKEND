@@ -50,17 +50,17 @@ async function addRental(req, res) {
 
     console.log("Files received:", req.files);
 
-    if (!title || !description || !propertyType || !location || !price || !priceType) {
+    if (!title || !description || !propertyType || !location || !price || !priceType || !status || !images ) {
       return res.status(400).json({
         success: false,
-        message: "Title, description, property type, location, price, and price type are required",
+        message: "All fields are required, including images or videos",
       });
     }
 
-    if (req.user.role !== 'landlord' && req.user.role !== 'agent') {
+    if (req.user.role !== 'landlord') {
       return res.status(403).json({
         success: false,
-        message: "Only landlords and agents can add rentals"
+        message: "Only landlords can add rentals"
       });
     }
 
@@ -109,6 +109,9 @@ async function addRental(req, res) {
       )
     );
 
+
+    
+
     const newRental = {
       title,
       description,
@@ -119,7 +122,7 @@ async function addRental(req, res) {
       status,
       images: uploadedImages.map((i) => i.secure_url),
       videos: uploadedVideos.map((v) => v.secure_url),
-      UserId: req.user.id,
+      UserId: req.user.userId,
     };
 
     const rental = await Rentals.create(newRental);

@@ -122,6 +122,7 @@ async function login(req, res) {
       userId: req.data.id,
       currentUser: `${req.data.first_name} ${req.data.last_name}`,
       location: `${req.data.state}, ${req.data.country}`,
+      role: `${req.data.role}`,
       email: `${req.data.email}`
     },
     process.env.JWT_SECRET,
