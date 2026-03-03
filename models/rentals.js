@@ -11,11 +11,12 @@ module.exports = (sequelize, DataTypes) => {
       // Rental belongs to ONE User (agent/owner)
       Rentals.belongsTo(models.Users, {
         foreignKey: "UserId",
-        as: 'agent'
+        // as: 'agent'
       });
     }
   }
-  
+
+
   Rentals.init({
     title: DataTypes.STRING,
     description: DataTypes.TEXT,
