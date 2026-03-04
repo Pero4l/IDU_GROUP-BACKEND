@@ -15,6 +15,7 @@ module.exports = (sequelize, DataTypes) => {
         foreignKey: "user_id",
         // as: "user"
       });
+      
     }
   }
   Notification.init({

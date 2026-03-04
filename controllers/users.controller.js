@@ -1,4 +1,4 @@
-const {Users} = require('../models');
+const {Users, Notifications} = require('../models');
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 require("dotenv").config();
@@ -71,17 +71,17 @@ async function register(req, res) {
 
 
     // HANDLE NOTIFICATION
-    // const isUser = await Users.findOne({ where: { email } });
-    // if (isUser) {
+    const isUser = await Users.findOne({ where: { email } });
+    if (isUser) {
 
-    //   await Notifications.create({
-    //     user_id: isUser.id,
-    //     type: "account",
-    //     notification: `Welcome to RentUIO ${isUser.first_name} ${isUser.last_name}! Your account has been successfully created.`,
-    //     is_read: false
-    //   })
+      await Notifications.create({
+        user_id: isUser.id,
+        type: "account",
+        notification: `Welcome to RentUIO ${isUser.first_name} ${isUser.last_name}! Your account has been successfully created.`,
+        is_read: false
+      })
       
-    // }
+    }
 
 
     // HANDLE PROFILE CREATION

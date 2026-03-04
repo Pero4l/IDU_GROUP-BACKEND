@@ -1,4 +1,4 @@
-const { Rentals, Users } = require("../models");
+const { Rentals, Users, Notifications } = require("../models");
 const cloudinary = require("cloudinary").v2;
 const { v4: uuidv4 } = require("uuid");
 require("dotenv").config();
@@ -132,6 +132,14 @@ async function addRental(req, res) {
         model: Users,
         attributes: ["id", "first_name", "last_name", "phone_no"]
       }]
+    });
+
+    // Notification
+    Notifications.create({
+      user_id: req.user.userId,
+      type: "rental",
+      notification: `Your rental "${title}" has been successfully added to the platform!`,
+      is_read: false
     });
 
     return res.status(201).json({
