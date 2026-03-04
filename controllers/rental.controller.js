@@ -142,6 +142,7 @@ async function addRental(req, res) {
       is_read: false
     });
 
+    
     return res.status(201).json({
       success: true,
       data: rentalWithLandlord,
