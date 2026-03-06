@@ -1,10 +1,13 @@
 const {Notifications, Users} = require("../models");
 
 async function getNotifications(req, res) {
+
+    const userId = req.user.userId;
+
   try {
     const notifications = await Notifications.findAll({
-      where: { user_id: req.user.id },
-      include: [{ model: Users, attributes: ['first_name', 'last_name'] }],
+      where: { user_id: userId },
+    //   include: [{ model: Users, attributes: ['first_name', 'last_name'] }],
       order: [['createdAt', 'DESC']]
     });
 
@@ -19,9 +22,12 @@ async function getNotifications(req, res) {
 
 // Notification count
 async function notificationCount(req, res) {
+
+    const userId = req.user.userId;
+
   try {
     const count = await Notifications.count({
-      where: { user_id: req.user.id, is_read: false }
+      where: { user_id: userId, is_read: false }
     });
 
     res.status(200).json({ success: true, count });

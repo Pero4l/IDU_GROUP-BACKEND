@@ -127,12 +127,12 @@ async function addRental(req, res) {
 
     const rental = await Rentals.create(newRental);
 
-    const rentalWithLandlord = await Rentals.findByPk(rental.id, {
-      include: [{
-        model: Users,
-        attributes: ["id", "first_name", "last_name", "phone_no"]
-      }]
-    });
+    // const rentalWithLandlord = await Rentals.findByPk(rental.id, {
+    //   include: [{
+    //     model: Users,
+    //     attributes: ["id", "first_name", "last_name", "phone_no"]
+    //   }]
+    // });
 
     // Notification
     Notifications.create({
@@ -145,7 +145,6 @@ async function addRental(req, res) {
     
     return res.status(201).json({
       success: true,
-      data: rentalWithLandlord,
       message: "Rental property added successfully",
     });
   } catch (err) {

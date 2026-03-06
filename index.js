@@ -22,8 +22,8 @@ app.get("/", (req, res) => {
 });
 
 app.use("/auth", userAuth);
-app.use("/rental", rentalsRoute);
-app.use("/notifications", notificationRoute);
+app.use("/create", rentalsRoute);
+app.use("/notification", notificationRoute);
 
 
 // DB CONNECTION
