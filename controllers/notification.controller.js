@@ -1,4 +1,4 @@
-const {Notifications, Users} = require("../models");
+const {Notifications} = require("../models");
 
 async function getNotifications(req, res) {
 
@@ -19,8 +19,6 @@ async function getNotifications(req, res) {
 }
 
 
-
-
 async function notificationCount(req, res) {
 
     const userId = req.user.userId;
@@ -38,23 +36,48 @@ async function notificationCount(req, res) {
 }
 
 
-
 async function markAsRead(req, res) {
+
+    const {id} = req.body;
 
     const userId = req.user.userId;
 
   try {
     await Notifications.update(
       { is_read: true },
-      { where: { user_id: userId, is_read: false } }
+      { where: { id, user_id: userId } }
     );
 
-    res.status(200).json({ success: true, message: "Notifications marked as read" });
+    res.status(200).json({ success: true, message: "Notification marked as read" });
   } catch (error) {
-    console.error("Error marking notifications as read:", error);
+    console.error("Error marking notification as read:", error);
     res.status(500).json({ success: false, message: "Server error" });
   }
 }
+
+
+async function deleteNotification(req, res) {
+
+    const {id} = req.body;
+
+    const userId = req.user.userId;
+
+  try {
+    await Notifications.destroy(
+      { where: { id, user_id: userId } }
+    );
+
+    res.status(200).json({ success: true, message: "Notification deleted" });
+  } catch (error) {
+    console.error("Error deleting notification:", error);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+module.exports = {
+  getNotifications, notificationCount, markAsRead, deleteNotification
+};
+
 
 module.exports = {
   getNotifications, notificationCount, markAsRead
