@@ -15,6 +15,14 @@ async function getNotifications(req, res) {
   }
 }
 
+
+
+// Notification count
+const notificationCount = await Notifications.count({
+  where: { user_id: user.userId, is_read: false }
+});
+
 module.exports = {
-  getNotifications
+  getNotifications,
+  notificationCount,
 };
