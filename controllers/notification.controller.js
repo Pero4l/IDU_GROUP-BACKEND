@@ -18,11 +18,19 @@ async function getNotifications(req, res) {
 
 
 // Notification count
-const notificationCount = await Notifications.count({
-  where: { user_id: user.userId, is_read: false }
-});
+async function notificationCount(req, res) {
+  try {
+    const count = await Notifications.count({
+      where: { user_id: req.user.id, is_read: false }
+    });
+
+    res.status(200).json({ success: true, count });
+  } catch (error) {
+    console.error("Error fetching notification count:", error);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+}
 
 module.exports = {
-  getNotifications,
-  notificationCount,
+  getNotifications, notificationCount,
 };
