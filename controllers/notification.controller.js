@@ -77,8 +77,3 @@ async function deleteNotification(req, res) {
 module.exports = {
   getNotifications, notificationCount, markAsRead, deleteNotification
 };
-
-
-module.exports = {
-  getNotifications, notificationCount, markAsRead
-};
