@@ -24,6 +24,7 @@ async function getAllCounts(req, res) {
   }
 }
 
+
 module.exports = {
   getAllCounts
 };
