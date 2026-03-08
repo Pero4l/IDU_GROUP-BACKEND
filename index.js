@@ -26,6 +26,8 @@ app.use("/auth", userAuth);
 app.use("/create", rentalsRoute);
 app.use("/notification", notificationRoute);
 app.use('/counts', counts);
+
+
 // DB CONNECTION
 const PORT = process.env.PORT;
 
