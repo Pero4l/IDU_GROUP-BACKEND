@@ -138,7 +138,7 @@ async function addRental(req, res) {
     Notifications.create({
       user_id: req.user.userId,
       type: "rental",
-      notification: `Your rental "${title}" has been successfully added to the platform!`,
+      notification: `Your rental ${title} has been added successfully to the platform`,
       is_read: false
     });
 
