@@ -23,7 +23,7 @@ app.get("/", (req, res) => {
 });
 
 app.use("/auth", userAuth);
-app.use("/rentals", rentalsRoute);
+app.use("/rental", rentalsRoute);
 app.use("/notification", notificationRoute);
 app.use('/counts', counts);
 

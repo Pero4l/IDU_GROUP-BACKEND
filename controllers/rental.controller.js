@@ -214,6 +214,7 @@ async function getRental(req, res) {
         "price",
         "priceType",
         "images",
+        "videos",
         "status",
         "UserId",
         "createdAt",
@@ -239,8 +240,8 @@ async function getRental(req, res) {
       data: {
         ...rentalData,
         // Sequelize handles JSON parsing for us
-        images: rentalData.images || [],
-        videos: rentalData.videos || [],
+        // images: rentalData.images || [],
+        // videos: rentalData.videos || [],
         // landlord: rentalData.Users || { first_name: "", last_name: "User" },
       },
       message: "Rental retrieved successfully",
@@ -269,8 +270,8 @@ async function updateRental(req, res) {
         message: "Rental not found",
       });
     }
-
-    if (rental.UserId !== req.user.id || (req.user.role !== 'landlord')) {
+    
+    if (rental.UserId !== req.user.userId || (req.user.role !== 'landlord')) {
       return res.status(403).json({
         success: false,
         message: "You are not authorized to update this rental",
