@@ -221,7 +221,7 @@ async function getRental(req, res) {
       ],
       include: [{
         model: Users,
-        attributes: ["id", "first_name", "last_name", "phone_no", "email"]
+        attributes: ["id", "first_name", "last_name", "phone_no"]
       }]
     });
 
@@ -241,7 +241,7 @@ async function getRental(req, res) {
         // Sequelize handles JSON parsing for us
         images: rentalData.images || [],
         videos: rentalData.videos || [],
-        landlord: rentalData.Users || { first_name: "Unknown", last_name: "User" },
+        // landlord: rentalData.Users || { first_name: "", last_name: "User" },
       },
       message: "Rental retrieved successfully",
     });
