@@ -322,7 +322,7 @@ async function deleteRental(req, res) {
       });
     }
 
-    if (rental.UserId !== req.user.id || (req.user.role !== 'landlord' && req.user.role !== 'agent')) {
+    if (rental.UserId !== req.user.userId || (req.user.role !== 'landlord' && req.user.role !== 'agent')) {
       return res.status(403).json({
         success: false,
         message: "You are not authorized to delete this rental",
