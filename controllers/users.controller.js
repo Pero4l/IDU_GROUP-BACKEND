@@ -65,7 +65,7 @@ async function register(req, res) {
       phone_no,
       address,
       state,
-      country,
+      country: Nigeria,
       password: hashedPassword,
     });
 

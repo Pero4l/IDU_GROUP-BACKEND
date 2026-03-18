@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
-const { getAllCount } = require("../controller/allCount.controller");
+const { getAllCounts } = require("../controllers/allCounts.controller");
 
-router.get("/", getAllCount);
+router.get("/", getAllCounts);
 
 module.exports = router;
