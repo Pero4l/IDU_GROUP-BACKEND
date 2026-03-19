@@ -3,3 +3,5 @@ npx sequelize-cli model:generate --name users --attributes firstName:string,last
 npx sequelize-cli model:generate --name notification --attributes user_id:string,type:string,notification:string,is_read:boolean
 
 npx sequelize-cli model:generate --name profile --attributes user_id:string,phone:string,image:string,bio:string,address:string
+
+npx sequelize-cli model:generate --name progress --attributes user_id:string,booked:boolean,locked:boolean,liked:boolean,applied:boolean,payment_status:string,payment_id:string,payment_date:string,payment_amount:string,payment_method:string
