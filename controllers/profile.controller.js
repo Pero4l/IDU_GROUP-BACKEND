@@ -75,7 +75,6 @@ async function updateProfile(req, res) {
 
     return res.status(200).json({
       success: true,
-      data: profile,
       message: "Profile updated successfully"
     });
 
