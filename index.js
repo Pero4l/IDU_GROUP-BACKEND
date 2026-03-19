@@ -14,7 +14,8 @@ const db = require("./config/db");
 const userAuth = require('./routes/user.routes');
 const rentalsRoute = require('./routes/rental.routes');
 const notificationRoute = require('./routes/notification.routes');
-const counts = require('./routes/allCount.routes')
+const counts = require('./routes/allCount.routes');
+const progressRoute = require('./routes/progress.routes');
 
 app.get("/", (req, res) => {
   res.status(200).json({
@@ -26,6 +27,7 @@ app.use("/auth", userAuth);
 app.use("/rental", rentalsRoute);
 app.use("/notification", notificationRoute);
 app.use('/counts', counts);
+app.use('/progress', progressRoute);
 
 
 // DB CONNECTION

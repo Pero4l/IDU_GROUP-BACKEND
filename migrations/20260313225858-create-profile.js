@@ -5,21 +5,23 @@ module.exports = {
     await queryInterface.createTable('profiles', {
       id: {
         allowNull: false,
-        autoIncrement: true,
         primaryKey: true,
-        type: Sequelize.INTEGER
+        type: Sequelize.UUID,
+        defaultValue: Sequelize.UUIDV4
       },
       user_id: {
-        type: Sequelize.STRING
+        type: Sequelize.UUID
       },
       phone: {
         type: Sequelize.STRING
       },
       image: {
-        type: Sequelize.STRING
+        type: Sequelize.STRING,
+        defaultValue: ""
       },
       bio: {
-        type: Sequelize.STRING
+        type: Sequelize.STRING,
+        defaultValue: ""
       },
       address: {
         type: Sequelize.STRING
