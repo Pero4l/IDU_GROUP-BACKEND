@@ -25,10 +25,17 @@ module.exports = {
       },
       bio: {
         type: Sequelize.STRING,
-        defaultValue: ""
+        defaultValue: "Hey i'm a verified user at RentULO"
       },
       address: {
         type: Sequelize.STRING
+      },
+      location: {
+        type: Sequelize.STRING
+      },
+      verified: {
+        type: Sequelize.BOOLEAN,
+        defaultValue: false
       },
       createdAt: {
         allowNull: false,

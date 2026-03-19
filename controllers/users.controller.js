@@ -1,4 +1,4 @@
-const {Users, Notifications} = require('../models');
+const {Users, Notifications, Profile} = require('../models');
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 require("dotenv").config();
@@ -85,20 +85,21 @@ async function register(req, res) {
 
 
     // HANDLE PROFILE CREATION
-    // let location =  `${state}, ${country}`
-    // let share = `main/${phone_no}`
-    // const user = await Users.findOne({ where: { email } });
-    // if (user) {
+    let location =  `${state}, ${country}`
+    let share = `main/${phone_no}`
+    const user = await Users.findOne({ where: { email } });
+    if (user) {
 
-    //   await Profile.create({
-    //     user_id: user.id, 
-    //     bio: null || 'Excited to be part of the FarmChain community, let connect and grow together!',
-    //     organization: 'eg FarmChain',
-    //     location: location,
-    //     verified: false,
-    //     share_account: share,
-    //   });
-    // }
+      await Profile.create({
+        user_id: user.id, 
+        bio: null || 'Hey i\'m a verified user at RentULO',
+        phone: phone_no,
+        address: address,
+        location: location,
+        verified: false,
+        // share_account: share,
+      });
+    }
     
 
     return res.status(201).json({

@@ -20,7 +20,9 @@ module.exports = (sequelize, DataTypes) => {
     image: DataTypes.STRING,
     coverImage: DataTypes.STRING,
     bio: DataTypes.STRING,
-    address: DataTypes.STRING
+    address: DataTypes.STRING,
+    location: DataTypes.STRING,
+    verified: DataTypes.BOOLEAN
   }, {
     sequelize,
     modelName: 'Profile',
