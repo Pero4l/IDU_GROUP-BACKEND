@@ -138,7 +138,7 @@ async function addRental(req, res) {
     Notifications.create({
       user_id: req.user.userId,
       type: "rental",
-      notification: `Your rental "${title}" has been successfully added to the platform!`,
+      notification: `Your rental ${title} has been added successfully to the platform`,
       is_read: false
     });
 
@@ -214,6 +214,7 @@ async function getRental(req, res) {
         "price",
         "priceType",
         "images",
+        "videos",
         "status",
         "UserId",
         "createdAt",
@@ -221,7 +222,7 @@ async function getRental(req, res) {
       ],
       include: [{
         model: Users,
-        attributes: ["id", "first_name", "last_name", "phone_no", "email"]
+        attributes: ["id", "first_name", "last_name", "phone_no"]
       }]
     });
 
@@ -239,9 +240,9 @@ async function getRental(req, res) {
       data: {
         ...rentalData,
         // Sequelize handles JSON parsing for us
-        images: rentalData.images || [],
-        videos: rentalData.videos || [],
-        landlord: rentalData.Users || { first_name: "Unknown", last_name: "User" },
+        // images: rentalData.images || [],
+        // videos: rentalData.videos || [],
+        // landlord: rentalData.Users || { first_name: "", last_name: "User" },
       },
       message: "Rental retrieved successfully",
     });
@@ -269,8 +270,8 @@ async function updateRental(req, res) {
         message: "Rental not found",
       });
     }
-
-    if (rental.UserId !== req.user.id || (req.user.role !== 'landlord')) {
+    
+    if (rental.UserId !== req.user.userId || (req.user.role !== 'landlord')) {
       return res.status(403).json({
         success: false,
         message: "You are not authorized to update this rental",
@@ -321,7 +322,7 @@ async function deleteRental(req, res) {
       });
     }
 
-    if (rental.UserId !== req.user.id || (req.user.role !== 'landlord' && req.user.role !== 'agent')) {
+    if (rental.UserId !== req.user.userId || (req.user.role !== 'landlord' && req.user.role !== 'agent')) {
       return res.status(403).json({
         success: false,
         message: "You are not authorized to delete this rental",
