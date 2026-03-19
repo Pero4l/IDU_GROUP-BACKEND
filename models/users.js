@@ -25,6 +25,8 @@ module.exports = (sequelize, DataTypes) => {
         foreignKey: "user_id",
         // as: "progress"
       });
+
+      Users.hasOne(models.Profile, { foreignKey: 'user_id' });
     }
   }
   Users.init({
