@@ -12,6 +12,9 @@ module.exports = {
       user_id: {
         type: Sequelize.UUID
       },
+      rental_id: {
+        type: Sequelize.UUID
+      },
       booked: {
         type: Sequelize.BOOLEAN
       },
