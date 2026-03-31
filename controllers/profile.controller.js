@@ -10,6 +10,7 @@ cloudinary.config({
   secure: true
 });
 
+
 // Upload from buffer
 function uploadBufferToCloudinary(buffer, mimetype, folder) {
   return new Promise((resolve, reject) => {
