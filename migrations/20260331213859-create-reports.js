@@ -18,6 +18,9 @@ module.exports = {
       report_name: {
         type: Sequelize.STRING
       },
+      report_number: {
+        type: Sequelize.STRING
+      },
       report_type: {
         type: Sequelize.STRING
       },
