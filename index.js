@@ -18,6 +18,7 @@ const counts = require('./routes/allCount.routes');
 const progressRoute = require('./routes/progress.routes');
 const profileRoute = require('./routes/profile.routes');
 const reportRoute = require('./routes/report.routes');
+const searchRoute = require('./routes/search.routes');
 
 app.get("/", (req, res) => {
   res.status(200).json({

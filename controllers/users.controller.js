@@ -188,7 +188,7 @@ async function searchUsers(req, res) {
       attributes: ['id', 'first_name', 'last_name', 'email', 'role']
     });
 
-    return res.status(200).json({ success: true, data: users });
+    return res.status(200).json({ success: true, message: "Users fetched successfully", data: users });
   } catch (error) {
     console.error("Search error:", error);
     return res.status(500).json({ success: false, message: "Server error" });
