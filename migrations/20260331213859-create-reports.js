@@ -22,7 +22,7 @@ module.exports = {
         type: Sequelize.STRING
       },
       report_type: {
-        type: Sequelize.STRING
+        type: Sequelize.ENUM('spam', 'harassment', 'fraud', 'other')
       },
       report_message: {
         type: Sequelize.STRING

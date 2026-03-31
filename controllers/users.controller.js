@@ -1,4 +1,5 @@
 const {Users, Notifications, Profile} = require('../models');
+const { Op } = require('sequelize');
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 require("dotenv").config();
@@ -171,4 +172,28 @@ async function login(req, res) {
 }
 
 
-module.exports = {register, login}
+async function searchUsers(req, res) {
+  try {
+    const { name } = req.query;
+    if (!name) return res.status(400).json({ success: false, message: "Search name query parameter is required." });
+    
+    const users = await Users.findAll({
+      where: {
+        [Op.or]: [
+          { first_name: { [Op.iLike]: `%${name}%` } },
+          { last_name: { [Op.iLike]: `%${name}%` } },
+          { email: { [Op.iLike]: `%${name}%` } }
+        ]
+      },
+      attributes: ['id', 'first_name', 'last_name', 'email', 'role']
+    });
+
+    return res.status(200).json({ success: true, data: users });
+  } catch (error) {
+    console.error("Search error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+
+module.exports = {register, login, searchUsers}
