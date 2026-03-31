@@ -17,9 +17,10 @@ module.exports = (sequelize, DataTypes) => {
     user_id: DataTypes.UUID,
     report_user_id: DataTypes.UUID,
     report_name: DataTypes.STRING,
+    report_number: DataTypes.STRING,
     report_type: DataTypes.STRING,
     report_message: DataTypes.STRING,
-    report_status: DataTypes.STRING
+    report_status: DataTypes.ENUM('pending', 'resolved', 'rejected')
   }, {
     sequelize,
     modelName: 'Reports',
