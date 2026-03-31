@@ -1,9 +1,11 @@
-const { Reports, Users } = require('../models');
+const { Reports, Users, Notifications } = require('../models');
 const { Op } = require('sequelize');
 
 async function createReport(req, res) {
   try {
+    
     const { report_user_id, search_name, report_type, report_message } = req.body;
+
     const user_id = req.user.userId;
 
     if (!report_message) {
@@ -12,6 +14,10 @@ async function createReport(req, res) {
 
     if (!report_user_id && !search_name) {
       return res.status(400).json({ success: false, message: "Please provide either report_user_id or search_name to identify the user." });
+    }
+
+    if (report_user_id && search_name) {
+      return res.status(400).json({ success: false, message: "Please provide either report_user_id OR search_name, not both at the same time." });
     }
 
     let report_user = null;
@@ -42,6 +48,13 @@ async function createReport(req, res) {
       report_type,
       report_message,
       report_status: 'pending'
+    });
+
+    await Notifications.create({
+      user_id: user_id,
+      type: "account",
+      notification: `Your report against ${report_user.first_name} ${report_user.last_name} has been submitted successfully.`,
+      is_read: false
     });
 
     return res.status(201).json({
