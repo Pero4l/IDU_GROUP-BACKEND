@@ -32,6 +32,7 @@ app.use('/counts', counts);
 app.use('/progress', progressRoute);
 app.use('/profile', profileRoute);
 app.use('/report', reportRoute);
+app.use('/search', searchRoute);
 
 
 // DB CONNECTION
