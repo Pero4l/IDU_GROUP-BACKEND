@@ -345,6 +345,8 @@ async function deleteRental(req, res) {
   }
 }
 
+as
+
 module.exports = {
   addRental,
   seeAllRentals,
