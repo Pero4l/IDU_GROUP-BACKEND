@@ -23,7 +23,7 @@ module.exports = (sequelize, DataTypes) => {
     liked: DataTypes.BOOLEAN,
   }, {
     sequelize,
-    modelName: 'Progress',
+    modelName: 'Progress', 
     tableName: 'progress'
   });
   return Progress;

@@ -90,9 +90,9 @@ async function getUserProfile(req, res) {
   try {
     const { id } = req.params; // Get ID of the user whose profile is being viewed
 
-    // 1. Fetch User (ignoring password)
+    // 1. Fetch User (ignoring password and email)
     const user = await Users.findByPk(id, {
-      attributes: { exclude: ['password, email,'] }
+      attributes: { exclude: ['password', 'email'] }
     });
 
     if (!user) {
