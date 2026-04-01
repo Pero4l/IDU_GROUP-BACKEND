@@ -1,4 +1,4 @@
-const { progress: Progress, Users, Rentals } = require('../models');
+const { Progress, Users, Rentals } = require('../models');
 
 async function likeHouse(req, res) {
     try {
