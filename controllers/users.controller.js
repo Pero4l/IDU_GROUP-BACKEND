@@ -185,10 +185,11 @@ async function searchUsers(req, res) {
           { email: { [Op.iLike]: `%${name}%` } }
         ]
       },
-      attributes: ['id', 'first_name', 'last_name', 'email', 'role']
+      attributes: ['id', 'first_name', 'last_name', 'email', 'role'],
+      include: [{ model: Profile, attributes: ['image', 'verified'] }]
     });
 
-    return res.status(200).json({ success: true, data: users });
+    return res.status(200).json({ success: true, message: "Users fetched successfully", data: users });
   } catch (error) {
     console.error("Search error:", error);
     return res.status(500).json({ success: false, message: "Server error" });

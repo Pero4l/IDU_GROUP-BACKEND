@@ -1,4 +1,5 @@
-const { Rentals, Users, Notifications } = require("../models");
+const { Rentals, Users, Notifications, Profile } = require("../models");
+const { Op } = require('sequelize');
 const cloudinary = require("cloudinary").v2;
 const { v4: uuidv4 } = require("uuid");
 require("dotenv").config();
@@ -34,8 +35,6 @@ function uploadBufferToCloudinary(buffer, mimetype, folder) {
     stream.end(buffer);
   });
 }
-
-
 
 
 // only agnet/landlord can be able to add an apartment to the plartform
@@ -173,7 +172,8 @@ async function seeAllRentals(req, res) {
       ],
       include: [{
         model: Users,
-        attributes: ["id", "first_name", "last_name", "phone_no"]
+        attributes: ["id", "first_name", "last_name", "phone_no"],
+        include: [{ model: Profile, attributes: ['image', 'verified'] }]
       }],
       order: [['createdAt', 'DESC']],
     });
@@ -222,7 +222,8 @@ async function getRental(req, res) {
       ],
       include: [{
         model: Users,
-        attributes: ["id", "first_name", "last_name", "phone_no"]
+        attributes: ["id", "first_name", "last_name", "phone_no"],
+        include: [{ model: Profile, attributes: ['image', 'verified'] }]
       }]
     });
 
@@ -345,10 +346,39 @@ async function deleteRental(req, res) {
   }
 }
 
+async function searchRentals(req, res) {
+  try {
+    const { location } = req.query;
+    if (!location) return res.status(400).json({ success: false, message: "Search location query parameter is required." });
+    
+    const rentals = await Rentals.findAll({
+      where: {
+        location: { [Op.iLike]: `%${location}%` }
+      },
+      attributes: [
+        "id", "title", "description", "propertyType", "location", "price",
+        "priceType", "images", "status", "UserId", "createdAt"
+      ],
+      include: [{
+        model: Users,
+        attributes: ["id", "first_name", "last_name", "phone_no"],
+        include: [{ model: Profile, attributes: ['image', 'verified'] }]
+      }],
+      order: [['createdAt', 'DESC']],
+    });
+
+    return res.status(200).json({ success: true, message: "Rentals fetched successfully", data: rentals });
+  } catch (error) {
+    console.error("Search error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
 module.exports = {
   addRental,
   seeAllRentals,
   getRental,
   updateRental,
-  deleteRental
+  deleteRental,
+  searchRentals
 };
