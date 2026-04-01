@@ -30,6 +30,7 @@
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
     "mysql2": "^3.15.3",
+    "node-geocoder": "^4.4.1",
     "nodemon": "^3.1.11",
     "pg": "^8.16.3",
     "pg-hstore": "^2.3.4",
