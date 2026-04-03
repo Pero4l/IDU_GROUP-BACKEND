@@ -5,7 +5,6 @@ const jwt = require("jsonwebtoken");
 require("dotenv").config();
 
 
-
 async function register(req, res) {
   try {
     
@@ -55,7 +54,7 @@ async function register(req, res) {
     }
 
     const hashedPassword = await bcrypt.hash(password, 12);
-
+    
 
     await Users.create({
       first_name,
@@ -66,7 +65,7 @@ async function register(req, res) {
       phone_no,
       address,
       state,
-      country: Nigeria,
+      country: "Nigeria",
       password: hashedPassword,
     });
 
@@ -83,7 +82,6 @@ async function register(req, res) {
       })
       
     }
-
 
     // HANDLE PROFILE CREATION
     let location =  `${state}, ${country}`
@@ -134,8 +132,6 @@ async function login(req, res) {
   const role = req.data.role
 
   
-
-  // const userId = req.data.id;
   // const currentUser = `${req.data.first_name} ${req.data.last_name}`;
   // const location = `${req.data.state}, ${req.data.country}`;
   // const verified = req.data.verified

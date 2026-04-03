@@ -49,7 +49,8 @@ id: {
       },
       country: {
         type: DataTypes.STRING,
-        allowNull: false,
+        defaultValue: "Nigeria",
+        allowNull: true,
       },
       password: {
         type: Sequelize.STRING,
