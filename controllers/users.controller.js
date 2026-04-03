@@ -84,7 +84,6 @@ async function register(req, res) {
       
     }
 
-
     // HANDLE PROFILE CREATION
     let location =  `${state}, ${country}`
     let share = `main/${phone_no}`
