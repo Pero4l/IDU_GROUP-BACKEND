@@ -17,7 +17,6 @@ async function register(req, res) {
       email,
       address,
       state,
-      country,
       password,
     } = req.body;
 
@@ -29,7 +28,6 @@ async function register(req, res) {
       !phone_no ||
       !address ||
       !state ||
-      !country ||
       !email ||
       !password
     ) {
@@ -54,6 +52,8 @@ async function register(req, res) {
     }
 
     const hashedPassword = await bcrypt.hash(password, 12);
+
+    const country = "Nigeria";
     
 
     await Users.create({
@@ -65,7 +65,7 @@ async function register(req, res) {
       phone_no,
       address,
       state,
-      country: "Nigeria",
+      country,
       password: hashedPassword,
     });
 
@@ -115,56 +115,38 @@ async function register(req, res) {
   }
 }
 
+
 async function login(req, res) {
-  
-  const token = jwt.sign(
-    {
-      userId: req.data.id,
-      currentUser: `${req.data.first_name} ${req.data.last_name}`,
-      location: `${req.data.state}, ${req.data.country}`,
-      role: `${req.data.role}`,
-      email: `${req.data.email}`
-    },
-    process.env.JWT_SECRET,
-    { expiresIn: "24h" }
-  );
+  try {
+    const token = jwt.sign(
+      {
+        userId: req.data.id,
+        currentUser: `${req.data.first_name} ${req.data.last_name}`,
+        location: `${req.data.state}, ${req.data.country}`,
+        role: `${req.data.role}`,
+        email: `${req.data.email}`
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: "24h" }
+    );
 
-  const role = req.data.role
+    const role = req.data.role;
 
-  
-  // const currentUser = `${req.data.first_name} ${req.data.last_name}`;
-  // const location = `${req.data.state}, ${req.data.country}`;
-  // const verified = req.data.verified
-
-  // const user = { 
-  //  userId: req.data.id,
-  //  currentUser: `${req.data.first_name} ${req.data.last_name}`,
-  //  location: `${req.data.state}, ${req.data.country}`,
-  //  email: `${req.data.email}`
-  // }
-
-
-
-// Notification count
-// const notificationCount = await Notifications.count({
-//   where: { user_id: user.userId, is_read: false }
-// });
-
-
-
-
-  if (req.user) {
-    return res.status(200).json({
-      success: true,
-      message: "Login Successfully",
-      token: token,
-      role: role,
-
-      // user: user,
+    if (req.user) {
+      return res.status(200).json({
+        success: true,
+        message: "Login Successfully",
+        token: token,
+        role: role,
+      });
+    }
+  } catch (error) {
+    console.error("Login error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error during login",
     });
   }
-
-
 }
 
 
