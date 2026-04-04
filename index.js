@@ -6,7 +6,12 @@ const cors = require("cors");
 
 const app = express();
 app.use(express.json());
-app.use(cors({ origin: "*" }));
+    app.use(cors({
+      origin: true,
+      credentials: true,
+      methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+      allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization'],
+    }));
 app.use(express.urlencoded({ extended: true }));
 
 const db = require("./config/db");
