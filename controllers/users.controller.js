@@ -53,7 +53,7 @@ async function register(req, res) {
 
     const hashedPassword = await bcrypt.hash(password, 12);
 
-    
+    const country = "Nigeria";
     
 
     await Users.create({
@@ -65,7 +65,7 @@ async function register(req, res) {
       phone_no,
       address,
       state,
-      country: "Nigeria",
+      country,
       password: hashedPassword,
     });
 
