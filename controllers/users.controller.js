@@ -2,8 +2,40 @@ const {Users, Notifications, Profile} = require('../models');
 const { Op } = require('sequelize');
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
+const nodemailer = require("nodemailer");
 require("dotenv").config();
 
+// Create a transporter using Ethereal (free testing mailer) or real credentials
+const transporter = nodemailer.createTransport({
+  host: process.env.EMAIL_HOST || 'smtp.ethereal.email',
+  port: process.env.EMAIL_PORT || 587,
+  auth: {
+    user: process.env.EMAIL_USER || 'ethereal.user@ethereal.email', // Replace with real or env var
+    pass: process.env.EMAIL_PASS || 'ethereal_password'
+  }
+});
+
+// To generate a free test account automatically if env vars are missing:
+let testAccount = null;
+async function getTransporter() {
+  if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
+    return transporter;
+  }
+  
+  if (!testAccount) {
+    testAccount = await nodemailer.createTestAccount();
+  }
+  
+  return nodemailer.createTransport({
+    host: "smtp.ethereal.email",
+    port: 587,
+    secure: false,
+    auth: {
+      user: testAccount.user,
+      pass: testAccount.pass,
+    },
+  });
+}
 
 async function register(req, res) {
   try {
@@ -174,7 +206,6 @@ async function searchUsers(req, res) {
   }
 }
 
-
 async function forgotPassword(req, res) {
   try {
     const { email } = req.body;
@@ -196,18 +227,64 @@ async function forgotPassword(req, res) {
     user.otpExpiresAt = otpExpiresAt;
     await user.save();
 
-    // In a real application, send the OTP via email or SMS.
-    // Given we don't have a mailer configured, we return it in the response for testing.
+    // Setup mailer and send OTP
+    const mailer = await getTransporter();
+    
+    const mailOptions = {
+      from: '"RentULO Security" <no-reply@rentulo.com>',
+      to: email,
+      subject: 'Password Reset OTP',
+      text: `Your password reset OTP is ${otpCode}. It expires in 15 minutes.`,
+      html: `<p>Your password reset OTP is <b>${otpCode}</b>. It expires in 15 minutes.</p>`,
+    };
+
+    const info = await mailer.sendMail(mailOptions);
+    console.log("Message sent: %s", info.messageId);
+    
+    // Preview URL is available when using Ethereal mail
+    const previewUrl = nodemailer.getTestMessageUrl(info);
+    if (previewUrl) {
+      console.log("Preview URL: %s", previewUrl);
+    }
+
     return res.status(200).json({
       success: true,
-      message: "OTP generated successfully",
-      data: {
-        otpCode // Returning it so we can test the reset endpoint easily
-      }
+      message: "OTP sent to email successfully",
+      testMailUrl: previewUrl || null 
     });
 
   } catch (error) {
     console.error("Forgot password error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+async function confirmOtp(req, res) {
+  try {
+    const { email, otpCode } = req.body;
+    if (!email || !otpCode) {
+      return res.status(400).json({ success: false, message: "Email and OTP code are required" });
+    }
+
+    const user = await Users.findOne({ where: { email } });
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    if (user.otpCode !== parseInt(otpCode)) {
+      return res.status(400).json({ success: false, message: "Invalid OTP code" });
+    }
+
+    if (new Date() > new Date(user.otpExpiresAt)) {
+      return res.status(400).json({ success: false, message: "OTP code has expired" });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "OTP is correct. You may proceed to change your password."
+    });
+  } catch (error) {
+    console.error("Confirm OTP error:", error);
     return res.status(500).json({ success: false, message: "Server error" });
   }
 }
@@ -262,4 +339,4 @@ async function resetPassword(req, res) {
   }
 }
 
-module.exports = {register, login, searchUsers, forgotPassword, resetPassword}
+module.exports = {register, login, searchUsers, forgotPassword, confirmOtp, resetPassword}
