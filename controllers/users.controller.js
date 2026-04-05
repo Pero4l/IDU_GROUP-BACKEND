@@ -175,4 +175,91 @@ async function searchUsers(req, res) {
 }
 
 
-module.exports = {register, login, searchUsers}
+async function forgotPassword(req, res) {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ success: false, message: "Email is required" });
+    }
+
+    const user = await Users.findOne({ where: { email } });
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    // Generate a 6-digit OTP
+    const otpCode = Math.floor(100000 + Math.random() * 900000);
+    // Set expiration to 15 minutes from now
+    const otpExpiresAt = new Date(Date.now() + 15 * 60 * 1000);
+
+    user.otpCode = otpCode;
+    user.otpExpiresAt = otpExpiresAt;
+    await user.save();
+
+    // In a real application, send the OTP via email or SMS.
+    // Given we don't have a mailer configured, we return it in the response for testing.
+    return res.status(200).json({
+      success: true,
+      message: "OTP generated successfully",
+      data: {
+        otpCode // Returning it so we can test the reset endpoint easily
+      }
+    });
+
+  } catch (error) {
+    console.error("Forgot password error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+async function resetPassword(req, res) {
+  try {
+    const { email, otpCode, newPassword } = req.body;
+    if (!email || !otpCode || !newPassword) {
+      return res.status(400).json({ success: false, message: "Email, OTP code, and new password are required" });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ success: false, message: "Password must be at least 6 characters" });
+    } else if (!/[A-Z]/.test(newPassword) || !/[a-z]/.test(newPassword)) {
+      return res.status(400).json({ success: false, message: "Password must contain both uppercase and lowercase letters" });
+    } else if (!/[0-9]/.test(newPassword)) {
+      return res.status(400).json({ success: false, message: "Password must contain a number" });
+    }
+
+    const user = await Users.findOne({ where: { email } });
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    // Verify OTP
+    if (user.otpCode !== parseInt(otpCode)) {
+      return res.status(400).json({ success: false, message: "Invalid OTP code" });
+    }
+
+    // Check expiration
+    if (new Date() > new Date(user.otpExpiresAt)) {
+      return res.status(400).json({ success: false, message: "OTP code has expired" });
+    }
+
+    // Hash the new password
+    const hashedPassword = await bcrypt.hash(newPassword, 12);
+    user.password = hashedPassword;
+    
+    // Clear the OTP fields
+    user.otpCode = null;
+    user.otpExpiresAt = null;
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Password reset successful"
+    });
+
+  } catch (error) {
+    console.error("Reset password error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+module.exports = {register, login, searchUsers, forgotPassword, resetPassword}
