@@ -133,10 +133,81 @@ async function register(req, res) {
     }
     
 
+    // SEND WELCOME EMAIL
+    try {
+      const mailer = await getTransporter();
+     const mailOptions = {
+  from: '"RentULO Team" <no-reply@rentulo.com>',
+  to: email,
+  subject: 'Welcome to RentULO 🎉',
+
+  text: `Hi ${first_name},
+
+Welcome to RentULO!
+
+Your account has been successfully created. We're excited to have you join our platform.
+
+You can now explore listings, manage your rentals, and enjoy a seamless experience.
+
+If you have any questions, feel free to reach out to our support team anytime.
+
+Best regards,  
+The RentULO Team
+`,
+
+  html: `
+  <div style="font-family: Arial, sans-serif; background-color: #f9fafb; padding: 20px;">
+    <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; padding: 30px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
+      
+      <h2 style="color: #111827;">Welcome to RentULO, ${first_name} 👋</h2>
+      
+      <p style="color: #4b5563; font-size: 15px; line-height: 1.6;">
+        Your account has been successfully created. We're excited to have you on board and can't wait for you to start exploring everything RentULO has to offer.
+      </p>
+
+      <p style="color: #4b5563; font-size: 15px; line-height: 1.6;">
+        With RentULO, you can easily browse listings, manage your rentals, and enjoy a smooth, secure experience.
+      </p>
+
+      <div style="text-align: center; margin: 30px 0;">
+        <a href="https://rentulo.com/dashboard" 
+           style="background-color: #111827; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 6px; font-size: 14px;">
+          Go to Dashboard
+        </a>
+      </div>
+
+      <p style="color: #6b7280; font-size: 13px;">
+        If you have any questions, feel free to contact our support team anytime.
+      </p>
+
+      <hr style="margin: 30px 0; border: none; border-top: 1px solid #e5e7eb;" />
+
+      <p style="color: #9ca3af; font-size: 12px; text-align: center;">
+        © ${new Date().getFullYear()} RentULO. All rights reserved.
+      </p>
+
+    </div>
+  </div>
+  `,
+};
+
+      const info = await mailer.sendMail(mailOptions);
+      console.log("Welcome email sent: %s", info.messageId);
+      
+      const previewUrl = nodemailer.getTestMessageUrl(info);
+      if (previewUrl) {
+        console.log("Welcome email Preview URL: %s", previewUrl);
+      }
+    } catch (mailError) {
+      // Log the error but don't stop the registration process
+      console.error("Failed to send welcome email:", mailError);
+    }
+
     return res.status(201).json({
       success: true,
       message: "Account registered successfully",
     });
+
 
   } catch (error) {
     console.error(error);
