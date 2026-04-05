@@ -218,6 +218,7 @@ async function forgotPassword(req, res) {
       return res.status(404).json({ success: false, message: "User not found" });
     }
 
+
     // Generate a 6-digit OTP
     const otpCode = Math.floor(100000 + Math.random() * 900000);
     // Set expiration to 15 minutes from now
@@ -238,6 +239,7 @@ async function forgotPassword(req, res) {
       html: `<p>Your password reset OTP is <b>${otpCode}</b>. It expires in 15 minutes.</p>`,
     };
 
+    
     const info = await mailer.sendMail(mailOptions);
     console.log("Message sent: %s", info.messageId);
     
