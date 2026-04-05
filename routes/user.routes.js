@@ -6,7 +6,7 @@ const { loginMiddleware } = require('../middleware/loginMiddleware');
 const { authMiddleware } = require('../middleware/authUserMiddleware');
 
 router.post('/register', register);
-router.post('/login', loginMiddleware, login); 
+router.post('/login', loginMiddleware, login);
 router.get('/', authMiddleware, searchUsers);
 router.post('/forgot-password', forgotPassword);
 router.post('/confirm-otp', confirmOtp);
