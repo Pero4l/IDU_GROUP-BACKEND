@@ -5,21 +5,21 @@ const jwt = require("jsonwebtoken");
 const nodemailer = require("nodemailer");
 require("dotenv").config();
 
-// Create a transporter using Ethereal (free testing mailer) or real credentials
-const transporter = nodemailer.createTransport({
-  host: process.env.EMAIL_HOST || 'smtp.ethereal.email',
-  port: process.env.EMAIL_PORT || 587,
-  auth: {
-    user: process.env.EMAIL_USER || 'ethereal.user@ethereal.email', // Replace with real or env var
-    pass: process.env.EMAIL_PASS || 'ethereal_password'
-  }
-});
-
 // To generate a free test account automatically if env vars are missing:
 let testAccount = null;
 async function getTransporter() {
   if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
-    return transporter;
+    // If user provided a real email, configure it dynamically properly
+    return nodemailer.createTransport({
+      service: process.env.EMAIL_HOST && process.env.EMAIL_HOST.includes('gmail') ? 'gmail' : undefined,
+      host: process.env.EMAIL_HOST || 'smtp.ethereal.email',
+      port: process.env.EMAIL_PORT ? parseInt(process.env.EMAIL_PORT) : 587,
+      secure: process.env.EMAIL_PORT == '465' ? true : false,
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS,
+      }
+    });
   }
   
   if (!testAccount) {
