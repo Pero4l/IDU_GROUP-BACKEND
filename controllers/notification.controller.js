@@ -1,4 +1,4 @@
-const {Notifications} = require("../models");
+const {Notifications, Users} = require("../models");
 
 async function getNotifications(req, res) {
 
@@ -74,6 +74,24 @@ async function deleteNotification(req, res) {
   }
 }
 
+async function notifySuperAdmins(message, type = "system") {
+  try {
+    const superAdmins = await Users.findAll({ where: { is_superadmin: true } });
+    if (superAdmins.length === 0) return;
+
+    const notifications = superAdmins.map(admin => ({
+      user_id: admin.id,
+      type: type,
+      notification: message,
+      is_read: false
+    }));
+
+    await Notifications.bulkCreate(notifications);
+  } catch (error) {
+    console.error("Error notifying super admins:", error);
+  }
+}
+
 module.exports = {
-  getNotifications, notificationCount, markAsRead, deleteNotification
+  getNotifications, notificationCount, markAsRead, deleteNotification, notifySuperAdmins
 };

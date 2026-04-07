@@ -4,6 +4,7 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const nodemailer = require("nodemailer");
 require("dotenv").config();
+const { notifySuperAdmins } = require('./notification.controller');
 
 // To generate a free test account automatically if env vars are missing:
 let testAccount = null;
@@ -202,6 +203,9 @@ The RentULO Team
       // Log the error but don't stop the registration process
       console.error("Failed to send welcome email:", mailError);
     }
+    
+    // Broadcast notification to Super Admins
+    await notifySuperAdmins(`New user registered: ${first_name} ${last_name} (${role})`, 'system');
 
     return res.status(201).json({
       success: true,
