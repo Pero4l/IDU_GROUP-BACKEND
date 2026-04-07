@@ -76,6 +76,83 @@ async function makeSuperAdmin(req, res) {
   }
 }
 
+async function getAllRentals(req, res) {
+  try {
+    const rentals = await Rentals.findAll({
+      include: [{ model: Users, attributes: ['first_name', 'last_name', 'email'] }]
+    });
+    return res.status(200).json({ success: true, count: rentals.length, data: rentals });
+  } catch (error) {
+    console.error("Super Admin - getAllRentals error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+async function deleteRental(req, res) {
+  try {
+    const { id } = req.params;
+    const rental = await Rentals.findByPk(id);
+    if (!rental) {
+      return res.status(404).json({ success: false, message: "Rental not found" });
+    }
+    await Rentals.destroy({ where: { id } });
+    return res.status(200).json({ success: true, message: "Rental deleted successfully" });
+  } catch (error) {
+    console.error("Super Admin - deleteRental error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+async function getLockedHouses(req, res) {
+  try {
+    const lockedProgress = await Progress.findAll({
+      where: { locked: true },
+      include: [
+        { model: Rentals },
+        { model: Users, attributes: ['first_name', 'last_name', 'email'] }
+      ]
+    });
+    return res.status(200).json({ success: true, count: lockedProgress.length, data: lockedProgress });
+  } catch (error) {
+    console.error("Super Admin - getLockedHouses error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+async function getAllReports(req, res) {
+  try {
+    const reports = await Reports.findAll({
+      include: [
+        { model: Users, as: 'user', attributes: ['first_name', 'last_name', 'email'] },
+        { model: Users, as: 'report_user', attributes: ['first_name', 'last_name', 'email'] }
+      ]
+    });
+    return res.status(200).json({ success: true, count: reports.length, data: reports });
+  } catch (error) {
+    console.error("Super Admin - getAllReports error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+async function updateReportStatus(req, res) {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    const report = await Reports.findByPk(id);
+    if (!report) {
+      return res.status(404).json({ success: false, message: "Report not found" });
+    }
+    if (status) {
+      report.report_status = status;
+      await report.save();
+    }
+    return res.status(200).json({ success: true, message: `Report status updated to ${status}`, data: report });
+  } catch (error) {
+    console.error("Super Admin - updateReportStatus error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
 module.exports = { 
   getAllUsers, 
   toggleUserStatus, 
