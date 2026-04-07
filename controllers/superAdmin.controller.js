@@ -59,22 +59,6 @@ async function deleteUser(req, res) {
   }
 }
 
-// Temporary endpoint to create first admin or elevate an existing admin
-async function makeSuperAdmin(req, res) {
-  try {
-    const { id } = req.params;
-    const user = await Users.findByPk(id);
-    if (!user) {
-      return res.status(404).json({ success: false, message: "User not found" });
-    }
-    user.is_superadmin = true;
-    await user.save();
-    return res.status(200).json({ success: true, message: "User elevated to super admin", data: user });
-  } catch (error) {
-    console.error("Super Admin - makeSuperAdmin error:", error);
-    return res.status(500).json({ success: false, message: "Server error" });
-  }
-}
 
 async function getAllRentals(req, res) {
   try {
@@ -158,7 +142,6 @@ module.exports = {
   getAllUsers, 
   toggleUserStatus, 
   deleteUser, 
-  makeSuperAdmin,
   getAllRentals,
   deleteRental,
   getLockedHouses,

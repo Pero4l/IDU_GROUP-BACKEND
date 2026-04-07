@@ -78,3 +78,4 @@ id: {
     await queryInterface.dropTable("users");
   },
 };
+
