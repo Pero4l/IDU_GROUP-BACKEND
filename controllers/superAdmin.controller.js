@@ -1,4 +1,4 @@
-const { Users } = require('../models');
+const { Users, Rentals, Reports, Progress } = require('../models');
 
 async function getAllUsers(req, res) {
   try {
@@ -76,4 +76,14 @@ async function makeSuperAdmin(req, res) {
   }
 }
 
-module.exports = { getAllUsers, toggleUserStatus, deleteUser, makeSuperAdmin };
+module.exports = { 
+  getAllUsers, 
+  toggleUserStatus, 
+  deleteUser, 
+  makeSuperAdmin,
+  getAllRentals,
+  deleteRental,
+  getLockedHouses,
+  getAllReports,
+  updateReportStatus
+};
