@@ -4,6 +4,7 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const nodemailer = require("nodemailer");
 require("dotenv").config();
+const { notifySuperAdmins } = require('./notification.controller');
 
 // To generate a free test account automatically if env vars are missing:
 let testAccount = null;
@@ -159,7 +160,7 @@ The RentULO Team
   <div style="font-family: Arial, sans-serif; background-color: #f9fafb; padding: 20px;">
     <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; padding: 30px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
       
-      <h2 style="color: #111827;">Welcome to RentULO, ${first_name} 👋</h2>
+      <h2 style="color: #111827;">Welcome to RentULO, ${first_name} ${last_name}👋</h2>
       
       <p style="color: #4b5563; font-size: 15px; line-height: 1.6;">
         Your account has been successfully created. We're excited to have you on board and can't wait for you to start exploring everything RentULO has to offer.
@@ -202,6 +203,9 @@ The RentULO Team
       // Log the error but don't stop the registration process
       console.error("Failed to send welcome email:", mailError);
     }
+    
+    // Broadcast notification to Super Admins
+    await notifySuperAdmins(`New user registered: ${first_name} ${last_name} (${role})`, 'system');
 
     return res.status(201).json({
       success: true,

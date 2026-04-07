@@ -1,5 +1,7 @@
 const { Progress, Users, Rentals } = require('../models');
 
+const { notifySuperAdmins } = require('./notification.controller');
+
 async function likeHouse(req, res) {
     try {
         const { rental_id } = req.body;
@@ -125,6 +127,8 @@ async function lockHouse(req, res) {
 
     progressRecord.locked = true;
     await progressRecord.save();
+
+    await notifySuperAdmins(`A property has been successfully locked by a user.`, 'system');
 
     return res.status(200).json({
       success: true,

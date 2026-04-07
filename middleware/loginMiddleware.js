@@ -22,6 +22,8 @@ async function loginMiddleware(req, res, next) {
       "country",
       "email",
       "role",
+      "is_active",
+      "is_superadmin"
     ],
     where: { [Op.or]: [{ email: user }, { phone_no: user }] },
   });
@@ -31,6 +33,13 @@ async function loginMiddleware(req, res, next) {
     return res.status(404).json({
       success: false,
       message: "User does not exist",
+    });
+  }
+
+  if (existingUser.is_active === false) {
+    return res.status(403).json({
+      success: false,
+      message: "Account disabled. Please contact support.",
     });
   }
 

@@ -45,7 +45,7 @@ module.exports = (sequelize, DataTypes) => {
     gender: DataTypes.ENUM('male', 'female', 'others'),
     email: DataTypes.STRING,
     role: {
-      type: DataTypes.ENUM('tenant', 'landlord', 'agent'),
+      type: DataTypes.ENUM('tenant', 'landlord', 'admin'),
       defaultValue: 'tenant',
     },
     phone_no: DataTypes.STRING,
@@ -54,11 +54,19 @@ module.exports = (sequelize, DataTypes) => {
     country: DataTypes.STRING,
     password: DataTypes.STRING,
     otpCode: DataTypes.INTEGER,
-    otpExpiresAt: DataTypes.DATE
+    otpExpiresAt: DataTypes.DATE,
+    is_superadmin: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
+    },
+    is_active: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: true,
+    }
   }, {
     sequelize,
     modelName: 'Users',
     tableName: "users"
   });
   return Users;
-};
+}; 

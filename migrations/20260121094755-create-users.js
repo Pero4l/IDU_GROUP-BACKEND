@@ -31,7 +31,7 @@ id: {
         allowNull: false,
       },
       role: {
-        type: Sequelize.ENUM('tenant', 'landlord'),
+        type: Sequelize.ENUM('tenant', 'landlord', 'admin'),
         defaultValue: "tenant",
         allowNull: false,
       },
@@ -78,3 +78,4 @@ id: {
     await queryInterface.dropTable("users");
   },
 };
+
