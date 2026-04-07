@@ -206,7 +206,6 @@ The RentULO Team
     return res.status(201).json({
       success: true,
       message: "Account registered successfully",
-      // id: user.id
     });
 
 
