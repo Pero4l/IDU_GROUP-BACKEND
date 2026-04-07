@@ -59,7 +59,6 @@ async function deleteUser(req, res) {
   }
 }
 
-
 async function getAllRentals(req, res) {
   try {
     const rentals = await Rentals.findAll({
