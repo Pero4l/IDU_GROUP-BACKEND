@@ -54,7 +54,15 @@ module.exports = (sequelize, DataTypes) => {
     country: DataTypes.STRING,
     password: DataTypes.STRING,
     otpCode: DataTypes.INTEGER,
-    otpExpiresAt: DataTypes.DATE
+    otpExpiresAt: DataTypes.DATE,
+    is_superadmin: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
+    },
+    is_active: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: true,
+    }
   }, {
     sequelize,
     modelName: 'Users',
