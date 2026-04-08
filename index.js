@@ -1,10 +1,13 @@
 const express = require('express');
-
+const http = require('http');
 require('dotenv').config();
 const cors = require("cors");
-
+const socketConfig = require('./config/socket');
 
 const app = express();
+const server = http.createServer(app);
+socketConfig.init(server);
+
 app.use(express.json());
     app.use(cors({
       origin: true,
@@ -51,7 +54,7 @@ const PORT = process.env.PORT;
 db.sync({ force: true, alter: false })
   .then(async () => {
     
-    app.listen(PORT, () => {
+    server.listen(PORT, () => {
       console.log(
         `Database connected successfully and Server running on PORT:${PORT}`
       );

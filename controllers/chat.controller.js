@@ -1,5 +1,6 @@
 const { Conversations, Messages, Users } = require("../models");
 const { Op } = require("sequelize");
+const socketConfig = require('../config/socket');
 
 exports.initiateChat = async (req, res) => {
   try {
@@ -97,6 +98,12 @@ exports.sendMessage = async (req, res) => {
 
     conversation.changed('updatedAt', true);
     await conversation.save();
+
+    const io = socketConfig.getIo();
+    io.to(`conversation_${conversation_id}`).emit('new_message', {
+      success: true,
+      data: message
+    });
 
     res.status(201).json({ success: true, message });
   } catch (err) {
