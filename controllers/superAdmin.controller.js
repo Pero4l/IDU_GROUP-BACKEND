@@ -1,4 +1,4 @@
-const { Users, Rentals, Reports, Progress } = require('../models');
+const { Users, Rentals, Reports, Progress, Conversations, Messages } = require('../models');
 
 async function getAllUsers(req, res) {
   try {
@@ -137,6 +137,39 @@ async function updateReportStatus(req, res) {
 }
 
 
+async function getAllConversations(req, res) {
+  try {
+    const conversations = await Conversations.findAll({
+      include: [
+        { model: Users, as: 'tenant', attributes: ['first_name', 'last_name', 'email'] },
+        { model: Users, as: 'landlord', attributes: ['first_name', 'last_name', 'email'] }
+      ],
+      order: [['updatedAt', 'DESC']]
+    });
+    return res.status(200).json({ success: true, count: conversations.length, data: conversations });
+  } catch (error) {
+    console.error("Super Admin - getAllConversations error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+async function getConversationMessages(req, res) {
+  try {
+    const { id } = req.params;
+    const messages = await Messages.findAll({
+      where: { conversation_id: id },
+      include: [
+        { model: Users, as: 'sender', attributes: ['first_name', 'last_name', 'email'] }
+      ],
+      order: [['createdAt', 'ASC']]
+    });
+    return res.status(200).json({ success: true, count: messages.length, data: messages });
+  } catch (error) {
+    console.error("Super Admin - getConversationMessages error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
 module.exports = { 
   getAllUsers, 
   toggleUserStatus, 
@@ -145,5 +178,7 @@ module.exports = {
   deleteRental,
   getLockedHouses,
   getAllReports,
-  updateReportStatus
+  updateReportStatus,
+  getAllConversations,
+  getConversationMessages
 };

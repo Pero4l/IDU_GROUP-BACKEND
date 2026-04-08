@@ -5,7 +5,8 @@ const { requireSuperAdmin } = require('../middleware/superAdminMiddleware');
 const { 
   getAllUsers, toggleUserStatus, deleteUser,
   getAllRentals, deleteRental, getLockedHouses,
-  getAllReports, updateReportStatus
+  getAllReports, updateReportStatus,
+  getAllConversations, getConversationMessages
 } = require('../controllers/superAdmin.controller');
 
 
@@ -24,5 +25,9 @@ router.get('/rentals/locked', authMiddleware, requireSuperAdmin, getLockedHouses
 // Reports oversight
 router.get('/reports', authMiddleware, requireSuperAdmin, getAllReports);
 router.put('/reports/:id/status', authMiddleware, requireSuperAdmin, updateReportStatus);
+
+// Chat oversight
+router.get('/chats', authMiddleware, requireSuperAdmin, getAllConversations);
+router.get('/chats/:id/messages', authMiddleware, requireSuperAdmin, getConversationMessages);
 
 module.exports = router;

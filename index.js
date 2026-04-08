@@ -25,6 +25,7 @@ const profileRoute = require('./routes/profile.routes');
 const reportRoute = require('./routes/report.routes');
 const searchRoute = require('./routes/search.routes');
 const superAdminRoute = require('./routes/superAdmin.routes');
+const chatRoute = require('./routes/chat.routes');
 
 app.get("/", (req, res) => {
   res.status(200).json({
@@ -41,6 +42,7 @@ app.use('/profile', profileRoute);
 app.use('/report', reportRoute);
 app.use('/search', searchRoute);
 app.use('/admin', superAdminRoute);
+app.use('/chat', chatRoute);
 
 
 // DB CONNECTION

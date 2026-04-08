@@ -37,6 +37,10 @@ module.exports = (sequelize, DataTypes) => {
         foreignKey: "report_user_id",
         // as: "reports"
       });
+
+      Users.hasMany(models.Conversations, { foreignKey: 'tenant_id' });
+      Users.hasMany(models.Conversations, { foreignKey: 'landlord_id' });
+      Users.hasMany(models.Messages, { foreignKey: 'sender_id' });
     }
   }
   Users.init({
