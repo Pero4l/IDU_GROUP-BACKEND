@@ -1,10 +1,13 @@
 const express = require('express');
-
+const http = require('http');
 require('dotenv').config();
 const cors = require("cors");
-
+const socketConfig = require('./config/socket');
 
 const app = express();
+const server = http.createServer(app);
+socketConfig.init(server);
+
 app.use(express.json());
     app.use(cors({
       origin: true,
@@ -25,6 +28,7 @@ const profileRoute = require('./routes/profile.routes');
 const reportRoute = require('./routes/report.routes');
 const searchRoute = require('./routes/search.routes');
 const superAdminRoute = require('./routes/superAdmin.routes');
+const chatRoute = require('./routes/chat.routes');
 
 app.get("/", (req, res) => {
   res.status(200).json({
@@ -41,6 +45,7 @@ app.use('/profile', profileRoute);
 app.use('/report', reportRoute);
 app.use('/search', searchRoute);
 app.use('/admin', superAdminRoute);
+app.use('/chat', chatRoute);
 
 
 // DB CONNECTION
@@ -49,7 +54,7 @@ const PORT = process.env.PORT;
 db.sync({ force: true, alter: false })
   .then(async () => {
     
-    app.listen(PORT, () => {
+    server.listen(PORT, () => {
       console.log(
         `Database connected successfully and Server running on PORT:${PORT}`
       );
