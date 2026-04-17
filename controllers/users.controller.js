@@ -8,6 +8,7 @@ const { notifySuperAdmins } = require('./notification.controller');
 
 // To generate a free test account automatically if env vars are missing:
 let testAccount = null;
+
 async function getTransporter() {
   if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
     // If user provided a real email, configure it dynamically properly
