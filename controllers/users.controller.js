@@ -6,7 +6,7 @@ const nodemailer = require("nodemailer");
 require("dotenv").config();
 const { OAuth2Client } = require('google-auth-library');
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
-const { notifySuperAdmins } = require('./notification.controller');
+const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
 
 // To generate a free test account automatically if env vars are missing:
 let testAccount = null;
@@ -243,6 +243,7 @@ async function login(req, res) {
     const role = req.data.role;
 
     if (req.user) {
+      await logAndEmailUser(req.data.id, req.data.email, "New Login Alert", "A successful login to your RentULO account was just detected.");
       return res.status(200).json({
         success: true,
         message: "Login Successfully",
@@ -480,6 +481,7 @@ async function googleAuth(req, res) {
     );
 
     // Return standard 200 OK since the auth was successful.
+    await logAndEmailUser(user.id, user.email, "New Login Alert", "A successful login via Google was just detected on your RentULO account.");
     return res.status(200).json({
       success: true,
       message: "Google Auth Successful",

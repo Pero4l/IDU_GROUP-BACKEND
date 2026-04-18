@@ -1,4 +1,21 @@
 const {Notifications, Users} = require("../models");
+const { sendEmail } = require('../utils/mailer');
+
+async function logAndEmailUser(userId, userEmail, title, html) {
+  try {
+    await Notifications.create({
+      user_id: userId,
+      type: "system",
+      notification: title,
+      is_read: false
+    });
+    if (userEmail) {
+      await sendEmail(userEmail, title, title, html);
+    }
+  } catch (err) {
+    console.error("Error logging or emailing user:", err);
+  }
+}
 
 async function getNotifications(req, res) {
 
@@ -87,11 +104,12 @@ async function notifySuperAdmins(message, type = "system") {
     }));
 
     await Notifications.bulkCreate(notifications);
+    await sendEmail("rentulonigeria@gmail.com", "Admin Alert: " + message, message);
   } catch (error) {
     console.error("Error notifying super admins:", error);
   }
 }
 
 module.exports = {
-  getNotifications, notificationCount, markAsRead, deleteNotification, notifySuperAdmins
+  getNotifications, notificationCount, markAsRead, deleteNotification, notifySuperAdmins, logAndEmailUser
 };

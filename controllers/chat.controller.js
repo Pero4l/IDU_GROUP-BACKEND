@@ -1,6 +1,7 @@
 const { Conversations, Messages, Users } = require("../models");
 const { Op } = require("sequelize");
 const socketConfig = require('../config/socket');
+const { logAndEmailUser } = require('./notification.controller');
 
 exports.initiateChat = async (req, res) => {
   try {
@@ -98,6 +99,13 @@ exports.sendMessage = async (req, res) => {
 
     conversation.changed('updatedAt', true);
     await conversation.save();
+
+    // Notification
+    const receiver_id = conversation.tenant_id === current_user_id ? conversation.landlord_id : conversation.tenant_id;
+    const receiver = await Users.findByPk(receiver_id);
+    if (receiver) {
+      await logAndEmailUser(receiver_id, receiver.email, "New Chat Message", `You received a new message on RentULO: "${content}"`);
+    }
 
     const io = socketConfig.getIo();
     io.to(`conversation_${conversation_id}`).emit('new_message', {

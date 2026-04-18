@@ -1,4 +1,5 @@
 const { Rentals, Users, Notifications, Profile } = require("../models");
+const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
 const { Op } = require('sequelize');
 const cloudinary = require("cloudinary").v2;
 const { v4: uuidv4 } = require("uuid");
@@ -134,12 +135,9 @@ async function addRental(req, res) {
     // });
 
     // Notification
-    Notifications.create({
-      user_id: req.user.userId,
-      type: "rental",
-      notification: `Your rental ${title} has been added successfully to the platform`,
-      is_read: false
-    });
+    const landlord = await Users.findByPk(req.user.userId);
+    await logAndEmailUser(req.user.userId, landlord?.email, "Rental Added", `Your rental ${title} has been added successfully to the platform`);
+    await notifySuperAdmins(`New rental posted by user ${req.user.userId}: ${title}`, "rental");
 
     
     return res.status(201).json({
@@ -292,8 +290,13 @@ async function updateRental(req, res) {
     });
 
     const updatedRental = await Rentals.findByPk(id, {
-      include: [{ model: Users, attributes: ["id", "first_name", "last_name"] }]
+      include: [{ model: Users, attributes: ["id", "first_name", "last_name", "email"] }]
     });
+
+    if (updatedRental.User) {
+        await logAndEmailUser(req.user.userId, updatedRental.User.email, "Rental Updated", `Your rental ${updatedRental.title} has been updated.`);
+    }
+    await notifySuperAdmins(`Rental ${id} was updated by user ${req.user.userId}`, "rental");
 
     return res.status(200).json({
       success: true,
@@ -330,7 +333,12 @@ async function deleteRental(req, res) {
       });
     }
 
+    const rentalTitle = rental.title;
     await rental.destroy();
+
+    const landlord = await Users.findByPk(req.user.userId);
+    await logAndEmailUser(req.user.userId, landlord?.email, "Rental Deleted", `Your rental ${rentalTitle} has been deleted.`);
+    await notifySuperAdmins(`Rental ${rentalTitle} was deleted by user ${req.user.userId}`, "rental");
 
     return res.status(200).json({
       success: true,
