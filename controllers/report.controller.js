@@ -1,6 +1,6 @@
 const { Reports, Users, Notifications } = require('../models');
 const { Op } = require('sequelize');
-const { notifySuperAdmins } = require('./notification.controller');
+const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
 
 async function createReport(req, res) {
   try {
@@ -51,12 +51,8 @@ async function createReport(req, res) {
       report_status: 'pending'
     });
 
-    await Notifications.create({
-      user_id: user_id,
-      type: "account",
-      notification: `Your report against ${report_user.first_name} ${report_user.last_name} has been submitted successfully.`,
-      is_read: false
-    });
+    const reporter = await Users.findByPk(user_id);
+    await logAndEmailUser(user_id, reporter?.email, "Report Submitted", `Your report against ${report_user.first_name} ${report_user.last_name} has been submitted successfully and is being reviewed.`);
 
     // Notify Super Admins
     await notifySuperAdmins(`New system report filed against ${report_user.first_name} ${report_user.last_name}`, 'warning');
