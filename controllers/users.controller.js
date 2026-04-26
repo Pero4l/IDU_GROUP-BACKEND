@@ -241,6 +241,7 @@ async function login(req, res) {
     );
 
     const role = req.data.role;
+    const id = req.data.id;
 
     if (req.user) {
       await logAndEmailUser(req.data.id, req.data.email, "New Login Alert", "A successful login to your RentULO account was just detected.");
@@ -249,6 +250,7 @@ async function login(req, res) {
         message: "Login Successfully",
         token: token,
         role: role,
+        id: id
       });
     }
   } catch (error) {

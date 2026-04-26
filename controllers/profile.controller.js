@@ -104,9 +104,11 @@ async function getUserProfile(req, res) {
 
     let responseData = {
       ...user.toJSON(),
-      profile: profile || null
+      profile: profile || null,
+      
     };
 
+  
     // 3. Optional: If user is a landlord, get all the apartments they posted
     if (user.role === 'landlord') {
       const posts = await Rentals.findAll({
