@@ -4,10 +4,13 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const nodemailer = require("nodemailer");
 require("dotenv").config();
-const { notifySuperAdmins } = require('./notification.controller');
+const { OAuth2Client } = require('google-auth-library');
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
 
 // To generate a free test account automatically if env vars are missing:
 let testAccount = null;
+
 async function getTransporter() {
   if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
     // If user provided a real email, configure it dynamically properly
@@ -238,13 +241,16 @@ async function login(req, res) {
     );
 
     const role = req.data.role;
+    const id = req.data.id;
 
     if (req.user) {
+      await logAndEmailUser(req.data.id, req.data.email, "New Login Alert", "A successful login to your RentULO account was just detected.");
       return res.status(200).json({
         success: true,
         message: "Login Successfully",
         token: token,
         role: role,
+        id: id
       });
     }
   } catch (error) {
@@ -416,4 +422,79 @@ async function resetPassword(req, res) {
   }
 }
 
-module.exports = {register, login, searchUsers, forgotPassword, confirmOtp, resetPassword}
+async function googleAuth(req, res) {
+  try {
+    const { idToken } = req.body;
+    if (!idToken) return res.status(400).json({ success: false, message: "idToken is required" });
+
+    const ticket = await googleClient.verifyIdToken({
+      idToken,
+      audience: process.env.GOOGLE_CLIENT_ID
+    });
+    const payload = ticket.getPayload();
+    const { email, given_name, family_name } = payload;
+
+    let user = await Users.findOne({ where: { email } });
+    
+    if (!user) {
+      // Create user if they don't exist
+      const randomPassword = Math.random().toString(36).slice(-8) + "Aa1@";
+      const hashedPassword = await bcrypt.hash(randomPassword, 12);
+      
+      user = await Users.create({
+        first_name: given_name || "Google",
+        last_name: family_name || "User",
+        email,
+        password: hashedPassword,
+        // Optional fields left empty to enforce profile completion
+        gender: null,
+        phone_no: null,
+        address: null,
+        state: null,
+        country: "Nigeria", // default
+      });
+
+      await Notifications.create({
+        user_id: user.id,
+        type: "account",
+        notification: `Welcome to RentUIO ${user.first_name} ${user.last_name}! Your account has been successfully created via Google.`,
+        is_read: false
+      });
+
+      await Profile.create({
+        user_id: user.id,
+        bio: null || 'Hey I am a verified user at RentULO',
+        verified: false
+      });
+
+      await notifySuperAdmins(`New user registered via Google: ${user.first_name} ${user.last_name} (tenant)`, 'system');
+    }
+
+    const token = jwt.sign(
+      {
+        userId: user.id,
+        currentUser: `${user.first_name} ${user.last_name}`,
+        location: user.state ? `${user.state}, ${user.country}` : 'Not fully set',
+        role: `${user.role}`,
+        email: `${user.email}`
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: "24h" }
+    );
+
+    // Return standard 200 OK since the auth was successful.
+    await logAndEmailUser(user.id, user.email, "New Login Alert", "A successful login via Google was just detected on your RentULO account.");
+    return res.status(200).json({
+      success: true,
+      message: "Google Auth Successful",
+      token: token,
+      role: user.role
+    });
+
+  } catch (error) {
+    console.error("Google Auth error:", error);
+    return res.status(500).json({ success: false, message: "Server error during Google auth" });
+  }
+}
+
+module.exports = {register, login, searchUsers, forgotPassword, confirmOtp, resetPassword, googleAuth}

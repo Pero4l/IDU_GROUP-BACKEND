@@ -1,4 +1,5 @@
 const { Rentals, Users, Notifications, Profile } = require("../models");
+const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
 const { Op } = require('sequelize');
 const cloudinary = require("cloudinary").v2;
 const { v4: uuidv4 } = require("uuid");
@@ -134,12 +135,9 @@ async function addRental(req, res) {
     // });
 
     // Notification
-    Notifications.create({
-      user_id: req.user.userId,
-      type: "rental",
-      notification: `Your rental ${title} has been added successfully to the platform`,
-      is_read: false
-    });
+    const landlord = await Users.findByPk(req.user.userId);
+    await logAndEmailUser(req.user.userId, landlord?.email, "Rental Added", `Your rental ${title} has been added successfully to the platform`);
+    await notifySuperAdmins(`New rental posted by user ${req.user.userId}: ${title}`, "rental");
 
     
     return res.status(201).json({
@@ -167,7 +165,7 @@ async function seeAllRentals(req, res) {
     const rentals = await Rentals.findAll({
       where,
       attributes: [
-        "id", "title", "description", "propertyType", "location", "price",
+        "id", "slug", "title", "description", "propertyType", "location", "price",
         "priceType", "images", "status", "UserId", "createdAt"
       ],
       include: [{
@@ -204,9 +202,10 @@ async function getRental(req, res) {
   try {
     const { id } = req.params;
 
-    const rental = await Rentals.findByPk(id, {
+    const query = {
       attributes: [
         "id",
+        "slug",
         "title",
         "description",
         "propertyType",
@@ -225,7 +224,19 @@ async function getRental(req, res) {
         attributes: ["id", "first_name", "last_name", "phone_no"],
         include: [{ model: Profile, attributes: ['image', 'verified'] }]
       }]
-    });
+    };
+
+    // Check if ID is a valid UUID, otherwise search by slug
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+    let rental;
+    if (isUUID) {
+      rental = await Rentals.findByPk(id, query);
+    } else {
+      rental = await Rentals.findOne({
+        where: { slug: id },
+        ...query
+      });
+    }
 
     if (!rental) {
       return res.status(404).json({
@@ -241,9 +252,9 @@ async function getRental(req, res) {
       data: {
         ...rentalData,
         // Sequelize handles JSON parsing for us
-        // images: rentalData.images || [],
-        // videos: rentalData.videos || [],
-        // landlord: rentalData.Users || { first_name: "", last_name: "User" },
+        images: rentalData.images || [],
+        videos: rentalData.videos || [],
+        landlord: rentalData.Users || { first_name: "", last_name: "User" },
       },
       message: "Rental retrieved successfully",
     });
@@ -292,8 +303,13 @@ async function updateRental(req, res) {
     });
 
     const updatedRental = await Rentals.findByPk(id, {
-      include: [{ model: Users, attributes: ["id", "first_name", "last_name"] }]
+      include: [{ model: Users, attributes: ["id", "first_name", "last_name", "email"] }]
     });
+
+    if (updatedRental.User) {
+        await logAndEmailUser(req.user.userId, updatedRental.User.email, "Rental Updated", `Your rental ${updatedRental.title} has been updated.`);
+    }
+    await notifySuperAdmins(`Rental ${id} was updated by user ${req.user.userId}`, "rental");
 
     return res.status(200).json({
       success: true,
@@ -330,7 +346,12 @@ async function deleteRental(req, res) {
       });
     }
 
+    const rentalTitle = rental.title;
     await rental.destroy();
+
+    const landlord = await Users.findByPk(req.user.userId);
+    await logAndEmailUser(req.user.userId, landlord?.email, "Rental Deleted", `Your rental ${rentalTitle} has been deleted.`);
+    await notifySuperAdmins(`Rental ${rentalTitle} was deleted by user ${req.user.userId}`, "rental");
 
     return res.status(200).json({
       success: true,
@@ -356,7 +377,7 @@ async function searchRentals(req, res) {
         location: { [Op.iLike]: `%${location}%` }
       },
       attributes: [
-        "id", "title", "description", "propertyType", "location", "price",
+        "id", "slug", "title", "description", "propertyType", "location", "price",
         "priceType", "images", "status", "UserId", "createdAt"
       ],
       include: [{

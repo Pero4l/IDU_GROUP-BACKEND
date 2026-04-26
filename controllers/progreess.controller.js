@@ -1,6 +1,5 @@
 const { Progress, Users, Rentals } = require('../models');
-
-const { notifySuperAdmins } = require('./notification.controller');
+const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
 
 async function likeHouse(req, res) {
     try {
@@ -26,6 +25,10 @@ async function likeHouse(req, res) {
                 booked: false,
             });
         }
+
+        const userObj = await Users.findByPk(user_id);
+        await logAndEmailUser(user_id, userObj?.email, "Property Liked", "You have successfully liked a property on RentULO.");
+        await notifySuperAdmins(`A property has been liked by user ${user_id}.`, 'system');
 
         return res.status(200).json({
             success: true,
@@ -128,7 +131,9 @@ async function lockHouse(req, res) {
     progressRecord.locked = true;
     await progressRecord.save();
 
-    await notifySuperAdmins(`A property has been successfully locked by a user.`, 'system');
+    const userObj = await Users.findByPk(user_id);
+    await logAndEmailUser(user_id, userObj?.email, "Property Locked", "You have successfully locked a property. It is now reserved for you.");
+    await notifySuperAdmins(`A property has been successfully locked by user ${user_id}.`, 'system');
 
     return res.status(200).json({
       success: true,
@@ -231,6 +236,10 @@ async function bookHouse(req, res) {
 
     progressRecord.booked = true;
     await progressRecord.save();
+
+    const userObj = await Users.findByPk(user_id);
+    await logAndEmailUser(user_id, userObj?.email, "Property Booked", "You have successfully booked a property on RentULO.");
+    await notifySuperAdmins(`A property has been successfully booked by user ${user_id}.`, 'system');
 
     return res.status(200).json({
       success: true,
