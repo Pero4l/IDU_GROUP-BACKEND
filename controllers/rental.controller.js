@@ -165,7 +165,7 @@ async function seeAllRentals(req, res) {
     const rentals = await Rentals.findAll({
       where,
       attributes: [
-        "id", "title", "description", "propertyType", "location", "price",
+        "id", "slug", "title", "description", "propertyType", "location", "price",
         "priceType", "images", "status", "UserId", "createdAt"
       ],
       include: [{
@@ -202,9 +202,10 @@ async function getRental(req, res) {
   try {
     const { id } = req.params;
 
-    const rental = await Rentals.findByPk(id, {
+    const query = {
       attributes: [
         "id",
+        "slug",
         "title",
         "description",
         "propertyType",
@@ -223,7 +224,19 @@ async function getRental(req, res) {
         attributes: ["id", "first_name", "last_name", "phone_no"],
         include: [{ model: Profile, attributes: ['image', 'verified'] }]
       }]
-    });
+    };
+
+    // Check if ID is a valid UUID, otherwise search by slug
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+    let rental;
+    if (isUUID) {
+      rental = await Rentals.findByPk(id, query);
+    } else {
+      rental = await Rentals.findOne({
+        where: { slug: id },
+        ...query
+      });
+    }
 
     if (!rental) {
       return res.status(404).json({
@@ -239,9 +252,9 @@ async function getRental(req, res) {
       data: {
         ...rentalData,
         // Sequelize handles JSON parsing for us
-        // images: rentalData.images || [],
-        // videos: rentalData.videos || [],
-        // landlord: rentalData.Users || { first_name: "", last_name: "User" },
+        images: rentalData.images || [],
+        videos: rentalData.videos || [],
+        landlord: rentalData.Users || { first_name: "", last_name: "User" },
       },
       message: "Rental retrieved successfully",
     });
@@ -364,7 +377,7 @@ async function searchRentals(req, res) {
         location: { [Op.iLike]: `%${location}%` }
       },
       attributes: [
-        "id", "title", "description", "propertyType", "location", "price",
+        "id", "slug", "title", "description", "propertyType", "location", "price",
         "priceType", "images", "status", "UserId", "createdAt"
       ],
       include: [{
