@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 
-const { register, login, searchUsers, forgotPassword, confirmOtp, resetPassword, googleAuth } = require('../controllers/users.controller');
+const { register, login, searchUsers, forgotPassword, confirmOtp, resetPassword, googleAuth, getMe, logout } = require('../controllers/users.controller');
 const { loginMiddleware } = require('../middleware/loginMiddleware');
 const { authMiddleware } = require('../middleware/authUserMiddleware');
 
@@ -12,5 +12,8 @@ router.get('/', authMiddleware, searchUsers);
 router.post('/forgot-password', forgotPassword);
 router.post('/confirm-otp', confirmOtp);
 router.post('/reset-password', resetPassword);
+
+router.get('/me', getMe);
+router.post('/logout', logout);
 
 module.exports = router;
