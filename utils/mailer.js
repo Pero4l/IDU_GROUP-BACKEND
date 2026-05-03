@@ -13,7 +13,11 @@ async function getTransporter() {
       auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS,
-      }
+      },
+      family: 4, // Force IPv4 to avoid ENETUNREACH on Render
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 10000,
     });
   }
   
