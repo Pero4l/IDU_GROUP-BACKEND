@@ -245,6 +245,18 @@ async function login(req, res) {
 
     if (req.user) {
       await logAndEmailUser(req.data.id, req.data.email, "New Login Alert", "A successful login to your RentULO account was just detected.");
+      
+      const cookieOptions = {
+        httpOnly: true,
+        secure: true,
+        sameSite: 'strict',
+        path: '/',
+        maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days in milliseconds
+      };
+      
+      res.cookie('token', token, cookieOptions);
+      res.cookie('userRole', role, cookieOptions);
+
       return res.status(200).json({
         success: true,
         message: "Login Successfully",
@@ -484,6 +496,18 @@ async function googleAuth(req, res) {
 
     // Return standard 200 OK since the auth was successful.
     await logAndEmailUser(user.id, user.email, "New Login Alert", "A successful login via Google was just detected on your RentULO account.");
+    
+    const cookieOptions = {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'strict',
+      path: '/',
+      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days in milliseconds
+    };
+    
+    res.cookie('token', token, cookieOptions);
+    res.cookie('userRole', user.role, cookieOptions);
+
     return res.status(200).json({
       success: true,
       message: "Google Auth Successful",
@@ -497,4 +521,35 @@ async function googleAuth(req, res) {
   }
 }
 
-module.exports = {register, login, searchUsers, forgotPassword, confirmOtp, resetPassword, googleAuth}
+async function getMe(req, res) {
+  const token = req.cookies.token;
+  const userRole = req.cookies.userRole;
+
+  if (token && userRole) {
+    return res.status(200).json({
+      isLoggedIn: true,
+      userRole: userRole
+    });
+  } else {
+    return res.status(200).json({
+      isLoggedIn: false,
+      userRole: null
+    });
+  }
+}
+
+async function logout(req, res) {
+  const cookieOptions = {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'strict',
+    path: '/'
+  };
+  
+  res.clearCookie('token', cookieOptions);
+  res.clearCookie('userRole', cookieOptions);
+  
+  return res.status(200).json({ success: true, message: "Logged out successfully" });
+}
+
+module.exports = {register, login, searchUsers, forgotPassword, confirmOtp, resetPassword, googleAuth, getMe, logout}

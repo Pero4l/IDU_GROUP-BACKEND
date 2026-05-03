@@ -2,22 +2,24 @@ const express = require('express');
 const http = require('http');
 require('dotenv').config();
 const cors = require("cors");
+const cookieParser = require('cookie-parser');
 const socketConfig = require('./config/socket');
 
 const app = express();
 const server = http.createServer(app);
 socketConfig.init(server);
 
+app.use(cookieParser());
 app.use(express.json());
-    app.use(cors({
-      origin: true,
-      credentials: true,
-      methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-      allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization'],
-    }));
+app.use(cors({
+  origin: true,
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization'],
+}));
 app.use(express.urlencoded({ extended: true }));
 
-const db = require("./config/db");
+const db = require("./models");
 
 const userAuth = require('./routes/user.routes');
 const rentalsRoute = require('./routes/rental.routes');
@@ -33,7 +35,7 @@ const chatRoute = require('./routes/chat.routes');
 app.get("/", (req, res) => {
   res.status(200).json({
     message: "Welcome to RentULO",
-  }); 
+  });
 });
 
 app.use("/auth", userAuth);
@@ -51,9 +53,12 @@ app.use('/chat', chatRoute);
 // DB CONNECTION
 const PORT = process.env.PORT;
 
-db.sync({ force: true, alter: false })
-  .then(async () => {
+// db.sync({ force: true, alter: false })
+//   .then(async () => {
     
+
+db.sequelize.authenticate()
+  .then(() => {
     server.listen(PORT, () => {
       console.log(
         `Database connected successfully and Server running on PORT:${PORT}`
@@ -64,4 +69,3 @@ db.sync({ force: true, alter: false })
     console.log(`Database connection failed:`, e);
   });
 
-  
