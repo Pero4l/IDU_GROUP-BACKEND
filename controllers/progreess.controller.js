@@ -1,5 +1,6 @@
-const { Progress, Users, Rentals } = require('../models');
+const { Progress, Users, Rentals, Transactions } = require('../models');
 const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
+const axios = require('axios');
 
 async function likeHouse(req, res) {
     try {
@@ -111,11 +112,12 @@ async function deleteAllLikedHouses(req, res) {
 // LOCKED HOUSE CONTROLLERS
 // ==========================
 
-// 1. Add house to locked house database ===> POST
-async function lockHouse(req, res) {
+// 1. Initialize lock payment via Paystack ===> POST
+async function initializeLockPayment(req, res) {
   try {
     const { rental_id } = req.body;
     const user_id = req.user.userId;
+    const userEmail = req.user.email; // Extracted from JWT token
 
     if (!rental_id) {
       return res.status(400).json({ success: false, message: "rental_id is required" });
@@ -128,21 +130,113 @@ async function lockHouse(req, res) {
       return res.status(400).json({ success: false, message: "You must like the house first before locking it" });
     }
 
-    progressRecord.locked = true;
-    await progressRecord.save();
+    // Amount to lock house in kobo (e.g., 10000 NGN = 1000000 kobo)
+    const amountInKobo = 5000; 
 
-    const userObj = await Users.findByPk(user_id);
-    await logAndEmailUser(user_id, userObj?.email, "Property Locked", "You have successfully locked a property. It is now reserved for you.");
-    await notifySuperAdmins(`A property has been successfully locked by user ${user_id}.`, 'system');
+    // Generate Paystack initialization request
+    const response = await axios.post(
+      'https://api.paystack.co/transaction/initialize',
+      {
+        email: userEmail,
+        amount: amountInKobo,
+        metadata: {
+          user_id,
+          rental_id,
+          payment_type: 'lock_fee'
+        }
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    const { authorization_url, reference } = response.data.data;
+
+    // Create a pending transaction record
+    await Transactions.create({
+      user_id,
+      rental_id,
+      reference,
+      amount: amountInKobo / 100, // store in NGN
+      status: 'pending',
+      payment_type: 'lock_fee'
+    });
 
     return res.status(200).json({
       success: true,
-      message: "House locked successfully",
-      data: progressRecord
+      message: "Payment initialization successful",
+      authorization_url,
+      reference
     });
+
   } catch (error) {
-    console.error("Error locking house:", error);
-    return res.status(500).json({ success: false, message: "Server error" });
+    console.error("Error initializing lock payment:", error.response ? error.response.data : error.message);
+    return res.status(500).json({ success: false, message: "Server error during payment initialization" });
+  }
+}
+
+// 1.5. Verify lock payment and successfully lock the house ===> POST
+async function verifyLockPayment(req, res) {
+  try {
+    const { reference } = req.body;
+    const user_id = req.user.userId;
+
+    if (!reference) {
+      return res.status(400).json({ success: false, message: "Transaction reference is required" });
+    }
+
+    // Find the pending transaction
+    const transaction = await Transactions.findOne({ where: { reference, user_id } });
+    if (!transaction) {
+      return res.status(404).json({ success: false, message: "Transaction not found" });
+    }
+
+    if (transaction.status === 'success') {
+      return res.status(400).json({ success: false, message: "Transaction already processed" });
+    }
+
+    // Verify with Paystack
+    const response = await axios.get(`https://api.paystack.co/transaction/verify/${reference}`, {
+      headers: {
+        Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`
+      }
+    });
+
+    const paymentStatus = response.data.data.status;
+
+    if (paymentStatus === 'success') {
+      // Update transaction
+      transaction.status = 'success';
+      await transaction.save();
+
+      // Update progress record
+      let progressRecord = await Progress.findOne({ where: { user_id, rental_id: transaction.rental_id } });
+      if (progressRecord) {
+        progressRecord.locked = true;
+        await progressRecord.save();
+      }
+
+      const userObj = await Users.findByPk(user_id);
+      await logAndEmailUser(user_id, userObj?.email, "Property Locked", "You have successfully paid the lock fee and locked a property. It is now reserved for you.");
+      await notifySuperAdmins(`A property has been successfully locked by user ${user_id} after successful payment.`, 'system');
+
+      return res.status(200).json({
+        success: true,
+        message: "Payment verified and house locked successfully",
+        data: progressRecord
+      });
+    } else {
+      transaction.status = 'failed';
+      await transaction.save();
+      return res.status(400).json({ success: false, message: `Payment verification failed. Status: ${paymentStatus}` });
+    }
+
+  } catch (error) {
+    console.error("Error verifying payment:", error.response ? error.response.data : error.message);
+    return res.status(500).json({ success: false, message: "Server error during payment verification" });
   }
 }
 
@@ -326,7 +420,8 @@ module.exports = {
   deleteAllLikedHouses,
 
   // Locked
-  lockHouse,
+  initializeLockPayment,
+  verifyLockPayment,
   getLockedHouses,
   deleteLockedHouse,
   deleteAllLockedHouses,
