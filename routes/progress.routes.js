@@ -4,7 +4,7 @@ const router = express.Router();
 const { authMiddleware } = require('../middleware/authUserMiddleware');
 const {
   likeHouse, getLikedHouses, unlikeHouse, deleteAllLikedHouses,
-  lockHouse, getLockedHouses, deleteLockedHouse, deleteAllLockedHouses,
+  initializeLockPayment, verifyLockPayment, getLockedHouses, deleteLockedHouse, deleteAllLockedHouses,
   bookHouse, getBookedHouses, deleteBookedHouse, deleteAllBookedHouses
 } = require('../controllers/progreess.controller');
 
@@ -15,7 +15,8 @@ router.delete('/like/:id', authMiddleware, unlikeHouse);
 router.delete('/like', authMiddleware, deleteAllLikedHouses);
 
 // Locked endpoints
-router.post('/lock', authMiddleware, lockHouse);
+router.post('/lock/initialize', authMiddleware, initializeLockPayment);
+router.post('/lock/verify', authMiddleware, verifyLockPayment);
 router.get('/lock', authMiddleware, getLockedHouses);
 router.delete('/lock/:id', authMiddleware, deleteLockedHouse);
 router.delete('/lock', authMiddleware, deleteAllLockedHouses);
