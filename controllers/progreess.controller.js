@@ -1,5 +1,6 @@
 const { Progress, Users, Rentals, Transactions } = require('../models');
 const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
+require('dotenv').config();
 const axios = require('axios');
 
 async function likeHouse(req, res) {
