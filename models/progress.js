@@ -24,7 +24,7 @@ module.exports = (sequelize, DataTypes) => {
   }, {
     sequelize,
     modelName: 'Progress', 
-    tableName: 'progress'
+    tableName: 'progresses'
   });
   return Progress;
 };
