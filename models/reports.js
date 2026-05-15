@@ -23,6 +23,12 @@ module.exports = (sequelize, DataTypes) => {
     }
   }
   Reports.init({
+    id: {
+      type: DataTypes.UUID,
+      defaultValue: DataTypes.UUIDV4,
+      primaryKey: true,
+      allowNull: false
+    },
     user_id: DataTypes.UUID,
     report_user_id: DataTypes.UUID,
     report_name: DataTypes.STRING,
