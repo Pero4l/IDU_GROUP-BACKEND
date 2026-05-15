@@ -28,7 +28,7 @@ module.exports = (sequelize, DataTypes) => {
     priceType: DataTypes.ENUM('monthly', 'yearly', 'one-time'),
     images: DataTypes.JSON,
     videos: DataTypes.JSON,
-    status: DataTypes.ENUM('available', 'rented', 'pending'),
+    status: DataTypes.ENUM('available', 'rented', 'pending', 'locked'),
     slug: {
       type: DataTypes.STRING,
       unique: true

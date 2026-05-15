@@ -127,8 +127,14 @@ async function initializeLockPayment(req, res) {
     // Find if a progress record exists for this user and rental
     let progressRecord = await Progress.findOne({ where: { user_id, rental_id } });
 
-    if (!progressRecord || !progressRecord.liked) {
-      return res.status(400).json({ success: false, message: "You must like the house first before locking it" });
+    if (!progressRecord) {
+      progressRecord = await Progress.create({
+        user_id,
+        rental_id,
+        liked: false,
+        locked: false,
+        booked: false,
+      });
     }
 
     // Amount to lock house in kobo (e.g., 10000 NGN = 1000000 kobo)
