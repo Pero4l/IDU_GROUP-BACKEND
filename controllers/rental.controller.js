@@ -395,11 +395,49 @@ async function searchRentals(req, res) {
   }
 }
 
+async function seeRecentRentals(req, res) {
+  try {
+    const rentals = await Rentals.findAll({
+      attributes: [
+        "id", "slug", "title", "description", "propertyType", "location", "price",
+        "priceType", "images", "status", "UserId", "createdAt"
+      ],
+      include: [{
+        model: Users,
+        attributes: ["id", "first_name", "last_name", "phone_no"],
+        include: [{ model: Profile, attributes: ['image', 'verified'] }]
+      }],
+      order: [['createdAt', 'DESC']],
+      limit: 10
+    });
+
+    if (!rentals || rentals.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "No recent rentals found",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: rentals,
+      message: "Recent rentals retrieved successfully",
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
+}
+
 module.exports = {
   addRental,
   seeAllRentals,
   getRental,
   updateRental,
   deleteRental,
-  searchRentals
+  searchRentals,
+  seeRecentRentals
 };
