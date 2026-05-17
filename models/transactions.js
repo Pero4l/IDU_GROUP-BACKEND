@@ -14,8 +14,8 @@ module.exports = (sequelize, DataTypes) => {
     }
   }
   Transactions.init({
-    user_id: DataTypes.INTEGER,
-    rental_id: DataTypes.INTEGER,
+    user_id: DataTypes.UUID,
+    rental_id: DataTypes.UUID,
     reference: DataTypes.STRING,
     amount: DataTypes.INTEGER,
     status: DataTypes.STRING,
