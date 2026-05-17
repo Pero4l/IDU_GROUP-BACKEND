@@ -6,7 +6,7 @@ const { logAndEmailUser } = require('./notification.controller');
 exports.initiateChat = async (req, res) => {
   try {
     const { other_user_id } = req.body;
-    const current_user_id = req.user.id;
+    const current_user_id = req.user.userId;
     const current_user_role = req.user.role;
 
     if (!other_user_id) {
@@ -55,7 +55,7 @@ exports.initiateChat = async (req, res) => {
 
 exports.getChats = async (req, res) => {
   try {
-    const current_user_id = req.user.id;
+    const current_user_id = req.user.userId;
     const conversations = await Conversations.findAll({
       where: {
         [Op.or]: [{ tenant_id: current_user_id }, { landlord_id: current_user_id }]
@@ -76,7 +76,7 @@ exports.getChats = async (req, res) => {
 exports.sendMessage = async (req, res) => {
   try {
     const { conversation_id, content } = req.body;
-    const current_user_id = req.user.id;
+    const current_user_id = req.user.userId;
 
     if (!conversation_id || !content) {
         return res.status(400).json({ success: false, message: "conversation_id and content are required" });
@@ -123,7 +123,7 @@ exports.sendMessage = async (req, res) => {
 exports.getMessages = async (req, res) => {
   try {
     const { conversation_id } = req.params;
-    const current_user_id = req.user.id;
+    const current_user_id = req.user.userId;
 
     const conversation = await Conversations.findByPk(conversation_id);
     if (!conversation) {
