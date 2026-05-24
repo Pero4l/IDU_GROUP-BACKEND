@@ -5,6 +5,7 @@ const { register, login, searchUsers, forgotPassword, confirmOtp, resetPassword,
 const { loginMiddleware } = require('../middleware/loginMiddleware');
 const { authMiddleware } = require('../middleware/authUserMiddleware');
 
+
 router.post('/register', register);
 router.post('/register-admin', registerAdmin);
 router.post('/verify-admin', verifyAdmin);
