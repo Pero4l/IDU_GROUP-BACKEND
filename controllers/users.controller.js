@@ -566,7 +566,14 @@ async function registerAdmin(req, res) {
       address,
       state,
       password,
+      adminSecretKey,
     } = req.body;
+
+    const secretKey = (adminSecretKey || req.headers?.['x-admin-secret'])?.trim();
+    const systemSecret = (process.env.ADMIN_SECRET_KEY || 'rentulo_secret_admin_key_2026')?.trim();
+    if (secretKey !== systemSecret) {
+      return res.status(403).json({ success: false, message: "Unauthorized. Invalid admin secret key." });
+    }
 
     if (
       !first_name ||
@@ -617,6 +624,7 @@ async function registerAdmin(req, res) {
       existingUser.country = country;
       existingUser.password = hashedPassword;
       existingUser.role = 'admin';
+      existingUser.is_superadmin = true;
       existingUser.otpCode = otpCode;
       existingUser.otpExpiresAt = otpExpiresAt;
       await existingUser.save();
@@ -634,6 +642,7 @@ async function registerAdmin(req, res) {
         country,
         password: hashedPassword,
         is_active: false,
+        is_superadmin: true,
         otpCode,
         otpExpiresAt,
       });
