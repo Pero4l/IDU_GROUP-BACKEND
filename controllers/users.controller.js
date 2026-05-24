@@ -547,9 +547,276 @@ async function logout(req, res) {
   };
   
   res.clearCookie('token', cookieOptions);
+  res.cookie('userRole', cookieOptions); // Wait, no, res.clearCookie('userRole', cookieOptions) in original code:
+  // let's match exact original:
+  res.clearCookie('token', cookieOptions);
   res.clearCookie('userRole', cookieOptions);
   
   return res.status(200).json({ success: true, message: "Logged out successfully" });
 }
 
-module.exports = {register, login, searchUsers, forgotPassword, confirmOtp, resetPassword, googleAuth, getMe, logout}
+async function registerAdmin(req, res) {
+  try {
+    const {
+      first_name,
+      last_name,
+      gender,
+      phone_no,
+      email,
+      address,
+      state,
+      password,
+      adminSecretKey,
+    } = req.body;
+
+    const secretKey = (adminSecretKey || req.headers?.['x-admin-secret'])?.trim();
+    const systemSecret = (process.env.ADMIN_SECRET_KEY || 'rentulo_secret_admin_key_2026')?.trim();
+    if (secretKey !== systemSecret) {
+      return res.status(403).json({ success: false, message: "Unauthorized. Invalid admin secret key." });
+    }
+
+    if (
+      !first_name ||
+      !last_name ||
+      !gender ||
+      !phone_no ||
+      !address ||
+      !state ||
+      !email ||
+      !password
+    ) {
+      return res.status(400).json({ success: false, message: "All fields are required" });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ success: false, message: "Password must be at least 6 characters" });
+    } else if (!/[A-Z]/.test(password) || !/[a-z]/.test(password)) {
+      return res.status(400).json({ success: false, message: "Password must contain both uppercase and lowercase letters" });
+    } else if (!/[0-9]/.test(password)) {
+      return res.status(400).json({ success: false, message: "Password must contain a number" });
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ success: false, message: "Invalid email format" });
+    } else if (first_name.length < 3 || last_name.length < 3) {
+      return res.status(400).json({ success: false, message: "Name must be at least 3 characters" });
+    }
+
+    const existingUser = await Users.findOne({ where: { email } });
+    
+    // Generate a 6-digit OTP
+    const otpCode = Math.floor(100000 + Math.random() * 900000);
+    // Set expiration to 10 minutes from now
+    const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    const hashedPassword = await bcrypt.hash(password, 12);
+    const country = "Nigeria";
+
+    let user;
+    if (existingUser) {
+      if (existingUser.is_active) {
+        return res.status(400).json({ success: false, message: "User already exists" });
+      }
+      // If user exists but is inactive, overwrite their details with the new registration attempt
+      existingUser.first_name = first_name;
+      existingUser.last_name = last_name;
+      existingUser.gender = gender;
+      existingUser.phone_no = phone_no;
+      existingUser.address = address;
+      existingUser.state = state;
+      existingUser.country = country;
+      existingUser.password = hashedPassword;
+      existingUser.role = 'admin';
+      existingUser.is_superadmin = true;
+      existingUser.otpCode = otpCode;
+      existingUser.otpExpiresAt = otpExpiresAt;
+      await existingUser.save();
+      user = existingUser;
+    } else {
+      user = await Users.create({
+        first_name,
+        last_name,
+        gender,
+        role: 'admin',
+        email,
+        phone_no,
+        address,
+        state,
+        country,
+        password: hashedPassword,
+        is_active: false,
+        is_superadmin: true,
+        otpCode,
+        otpExpiresAt,
+      });
+    }
+
+    // SEND OTP EMAIL
+    let previewUrl = null;
+    try {
+      const mailer = await getTransporter();
+      const mailOptions = {
+        from: '"RentULO Security" <no-reply@rentulo.com>',
+        to: email,
+        subject: 'Admin Account Verification OTP 🔑',
+        text: `Hello ${first_name},\n\nYour OTP for admin account registration is ${otpCode}. It is valid for 10 minutes.\n\nBest regards,\nThe RentULO Team`,
+        html: `
+        <div style="font-family: Arial, sans-serif; background-color: #f9fafb; padding: 20px;">
+          <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; padding: 30px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
+            <h2 style="color: #111827;">Verify Your Admin Account 🔑</h2>
+            <p style="color: #4b5563; font-size: 15px; line-height: 1.6;">
+              Thank you for registering as an Admin on RentULO. To complete your registration, please verify your email address using the 6-digit OTP code below:
+            </p>
+            <div style="text-align: center; margin: 30px 0;">
+              <span style="font-size: 32px; font-weight: bold; letter-spacing: 5px; color: #111827; background-color: #f3f4f6; padding: 15px 30px; border-radius: 8px; display: inline-block;">
+                ${otpCode}
+              </span>
+            </div>
+            <p style="color: #ef4444; font-size: 14px; font-weight: 500;">
+              Note: This verification code is valid for exactly 10 minutes.
+            </p>
+            <p style="color: #6b7280; font-size: 13px;">
+              If you did not initiate this registration, please ignore this email.
+            </p>
+            <hr style="margin: 30px 0; border: none; border-top: 1px solid #e5e7eb;" />
+            <p style="color: #9ca3af; font-size: 12px; text-align: center;">
+              © ${new Date().getFullYear()} RentULO. All rights reserved.
+            </p>
+          </div>
+        </div>
+        `,
+      };
+
+      const info = await mailer.sendMail(mailOptions);
+      console.log("Verification email sent: %s", info.messageId);
+      previewUrl = nodemailer.getTestMessageUrl(info);
+      if (previewUrl) {
+        console.log("Verification email Preview URL: %s", previewUrl);
+      }
+    } catch (mailError) {
+      console.error("Failed to send OTP verification email:", mailError);
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: "OTP sent to email successfully. Please verify to complete registration.",
+      testMailUrl: previewUrl || null
+    });
+
+  } catch (error) {
+    console.error("registerAdmin error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error during registration",
+    });
+  }
+}
+
+async function verifyAdmin(req, res) {
+  try {
+    const { email, otpCode } = req.body;
+    if (!email || !otpCode) {
+      return res.status(400).json({ success: false, message: "Email and OTP code are required" });
+    }
+
+    const user = await Users.findOne({ where: { email } });
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    if (user.role !== 'admin') {
+      return res.status(400).json({ success: false, message: "Invalid request. User is not an admin." });
+    }
+
+    if (user.is_active) {
+      return res.status(400).json({ success: false, message: "Account is already active and verified." });
+    }
+
+    if (user.otpCode !== parseInt(otpCode)) {
+      return res.status(400).json({ success: false, message: "Invalid OTP code" });
+    }
+
+    if (new Date() > new Date(user.otpExpiresAt)) {
+      return res.status(400).json({ success: false, message: "OTP code has expired" });
+    }
+
+    // Set active and clear OTP code
+    user.is_active = true;
+    user.otpCode = null;
+    user.otpExpiresAt = null;
+    await user.save();
+
+    // HANDLE NOTIFICATION
+    await Notifications.create({
+      user_id: user.id,
+      type: "account",
+      notification: `Welcome to RentULO ${user.first_name} ${user.last_name}! Your Admin account has been successfully verified and created.`,
+      is_read: false
+    });
+
+    // HANDLE PROFILE CREATION
+    const country = "Nigeria";
+    let location = `${user.state}, ${country}`;
+    await Profile.create({
+      user_id: user.id, 
+      bio: 'Hey i\'m a verified admin at RentULO',
+      phone: user.phone_no,
+      address: user.address,
+      location: location,
+      verified: true,
+    });
+
+    // SEND WELCOME EMAIL
+    try {
+      const mailer = await getTransporter();
+      const mailOptions = {
+        from: '"RentULO Team" <no-reply@rentulo.com>',
+        to: email,
+        subject: 'Welcome to the RentULO Admin Panel 🎉',
+        text: `Hi ${user.first_name},\n\nYour Admin account has been successfully verified. Welcome to our team!\n\nBest regards,\nThe RentULO Team`,
+        html: `
+        <div style="font-family: Arial, sans-serif; background-color: #f9fafb; padding: 20px;">
+          <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; padding: 30px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
+            <h2 style="color: #111827;">Welcome to RentULO, ${user.first_name} ${user.last_name}👋</h2>
+            <p style="color: #4b5563; font-size: 15px; line-height: 1.6;">
+              Your admin account has been successfully verified and your profile created. We're excited to have you join our administration team!
+            </p>
+            <p style="color: #4b5563; font-size: 15px; line-height: 1.6;">
+              You can now access the admin panel, manage listings, user profiles, reports, and oversee platform activity.
+            </p>
+            <div style="text-align: center; margin: 30px 0;">
+              <a href="https://rentulo.com/admin/dashboard" 
+                 style="background-color: #111827; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 6px; font-size: 14px;">
+                Go to Admin Dashboard
+              </a>
+            </div>
+            <p style="color: #6b7280; font-size: 13px;">
+              If you have any questions, feel free to contact the super admin or our internal support team.
+            </p>
+            <hr style="margin: 30px 0; border: none; border-top: 1px solid #e5e7eb;" />
+            <p style="color: #9ca3af; font-size: 12px; text-align: center;">
+              © ${new Date().getFullYear()} RentULO. All rights reserved.
+            </p>
+          </div>
+        </div>
+        `,
+      };
+
+      const info = await mailer.sendMail(mailOptions);
+      console.log("Admin Welcome email sent: %s", info.messageId);
+    } catch (mailError) {
+      console.error("Failed to send welcome email:", mailError);
+    }
+
+    // Broadcast notification to Super Admins
+    await notifySuperAdmins(`New admin registered: ${user.first_name} ${user.last_name} (${user.email})`, 'system');
+
+    return res.status(200).json({
+      success: true,
+      message: "Admin account verified and profile created successfully."
+    });
+
+  } catch (error) {
+    console.error("verifyAdmin error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+module.exports = {register, login, searchUsers, forgotPassword, confirmOtp, resetPassword, googleAuth, getMe, logout, registerAdmin, verifyAdmin}

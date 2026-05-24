@@ -210,6 +210,8 @@ async function verifyLockPayment(req, res) {
       headers: {
         Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`
       }
+
+      
     });
 
     const paymentStatus = response.data.data.status;
@@ -233,12 +235,21 @@ async function verifyLockPayment(req, res) {
       return res.status(200).json({
         success: true,
         message: "Payment verified and house locked successfully",
-        data: progressRecord
+        data: progressRecord,
+        redirectUrl: process.env.PAYSTACK_REDIRECT_URL || "https://idu-group-backend.onrender.com/progress/lock"
+        // If you prefer direct server-side HTTP redirection, uncomment the line below and comment out the res.status(...).json(...) above:
+        // return res.redirect(process.env.PAYSTACK_REDIRECT_URL || "https://idu-group-backend.onrender.com/progress/lock");
       });
     } else {
       transaction.status = 'failed';
       await transaction.save();
-      return res.status(400).json({ success: false, message: `Payment verification failed. Status: ${paymentStatus}` });
+      return res.status(400).json({
+        success: false,
+        message: `Payment verification failed. Status: ${paymentStatus}`,
+        redirectUrl: process.env.PAYSTACK_FAILURE_URL || "https://idu-group-backend.onrender.com/progress/lock"
+        // If you prefer direct server-side HTTP redirection, uncomment the line below and comment out the res.status(...).json(...) above:
+        // return res.redirect(process.env.PAYSTACK_FAILURE_URL || "https://idu-group-backend.onrender.com/progress/lock");
+      });
     }
 
   } catch (error) {

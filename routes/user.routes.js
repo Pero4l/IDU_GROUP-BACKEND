@@ -1,11 +1,14 @@
 const express = require('express');
 const router = express.Router();
 
-const { register, login, searchUsers, forgotPassword, confirmOtp, resetPassword, googleAuth, getMe, logout } = require('../controllers/users.controller');
+const { register, login, searchUsers, forgotPassword, confirmOtp, resetPassword, googleAuth, getMe, logout, registerAdmin, verifyAdmin } = require('../controllers/users.controller');
 const { loginMiddleware } = require('../middleware/loginMiddleware');
 const { authMiddleware } = require('../middleware/authUserMiddleware');
 
+
 router.post('/register', register);
+router.post('/register-admin', registerAdmin);
+router.post('/verify-admin', verifyAdmin);
 router.post('/login', loginMiddleware, login);
 router.post('/google-auth', googleAuth);
 router.get('/', authMiddleware, searchUsers);
