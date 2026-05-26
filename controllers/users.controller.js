@@ -22,7 +22,8 @@ async function getTransporter() {
       auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS,
-      }
+      },
+      family: 4, 
     });
   }
   
@@ -38,6 +39,7 @@ async function getTransporter() {
       user: testAccount.user,
       pass: testAccount.pass,
     },
+    family: 4, // Force IPv4 to avoid ENETUNREACH on environments without IPv6 routing
   });
 }
 
@@ -696,8 +698,7 @@ async function registerAdmin(req, res) {
 
     return res.status(201).json({
       success: true,
-      message: "OTP sent to email successfully. Please verify to complete registration.",
-      testMailUrl: previewUrl || null
+      message: "OTP sent to email successfully. Please verify to complete registration."
     });
 
   } catch (error) {
