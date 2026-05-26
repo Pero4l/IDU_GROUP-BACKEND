@@ -6,8 +6,7 @@ let testAccount = null;
 async function getTransporter() {
   if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
     return nodemailer.createTransport({
-      service: process.env.EMAIL_HOST && process.env.EMAIL_HOST.includes('gmail') ? 'gmail' : undefined,
-      host: process.env.EMAIL_HOST || 'smtp.ethereal.email',
+      host: process.env.EMAIL_HOST || 'smtp.gmail.com',
       port: process.env.EMAIL_PORT ? parseInt(process.env.EMAIL_PORT) : 587,
       secure: process.env.EMAIL_PORT == '465' ? true : false,
       auth: {
@@ -33,14 +32,19 @@ async function getTransporter() {
       user: testAccount.user,
       pass: testAccount.pass,
     },
+    family: 4,
   });
 }
 
 async function sendEmail(to, subject, text, html) {
   try {
     const mailer = await getTransporter();
+    const fromAddress = process.env.EMAIL_USER 
+      ? `"RentULO Team" <${process.env.EMAIL_USER}>` 
+      : '"RentULO Team" <no-reply@rentulo.com>';
+
     const mailOptions = {
-      from: '"RentULO Team" <no-reply@rentulo.com>',
+      from: fromAddress,
       to,
       subject,
       text,
@@ -54,9 +58,12 @@ async function sendEmail(to, subject, text, html) {
     if (previewUrl) {
       console.log("Email Preview URL: %s", previewUrl);
     }
+    return previewUrl || null;
   } catch (error) {
     console.error("Failed to send email:", error);
+    throw error;
   }
 }
 
 module.exports = { sendEmail };
+

@@ -2,46 +2,11 @@ const {Users, Notifications, Profile} = require('../models');
 const { Op } = require('sequelize');
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
-const nodemailer = require("nodemailer");
 require("dotenv").config();
 const { OAuth2Client } = require('google-auth-library');
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
-
-// To generate a free test account automatically if env vars are missing:
-let testAccount = null;
-
-async function getTransporter() {
-  if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
-    // If user provided a real email, configure it dynamically properly
-    return nodemailer.createTransport({
-      service: process.env.EMAIL_HOST && process.env.EMAIL_HOST.includes('gmail') ? 'gmail' : undefined,
-      host: process.env.EMAIL_HOST || 'smtp.ethereal.email',
-      port: process.env.EMAIL_PORT ? parseInt(process.env.EMAIL_PORT) : 587,
-      secure: process.env.EMAIL_PORT == '465' ? true : false,
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS,
-      },
-      family: 4, 
-    });
-  }
-  
-  if (!testAccount) {
-    testAccount = await nodemailer.createTestAccount();
-  }
-  
-  return nodemailer.createTransport({
-    host: "smtp.ethereal.email",
-    port: 587,
-    secure: false,
-    auth: {
-      user: testAccount.user,
-      pass: testAccount.pass,
-    },
-    family: 4, // Force IPv4 to avoid ENETUNREACH on environments without IPv6 routing
-  });
-}
+const { sendEmail } = require('../utils/mailer');
 
 async function register(req, res) {
   try {
@@ -141,13 +106,7 @@ async function register(req, res) {
 
     // SEND WELCOME EMAIL
     try {
-      const mailer = await getTransporter();
-     const mailOptions = {
-  from: '"RentULO Team" <no-reply@rentulo.com>',
-  to: email,
-  subject: 'Welcome to RentULO 🎉',
-
-  text: `Hi ${first_name},
+      const welcomeText = `Hi ${first_name},
 
 Welcome to RentULO!
 
@@ -159,9 +118,9 @@ If you have any questions, feel free to reach out to our support team anytime.
 
 Best regards,  
 The RentULO Team
-`,
+`;
 
-  html: `
+      const welcomeHtml = `
   <div style="font-family: Arial, sans-serif; background-color: #f9fafb; padding: 20px;">
     <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; padding: 30px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
       
@@ -194,16 +153,9 @@ The RentULO Team
 
     </div>
   </div>
-  `,
-};
+  `;
 
-      const info = await mailer.sendMail(mailOptions);
-      console.log("Welcome email sent: %s", info.messageId);
-      
-      const previewUrl = nodemailer.getTestMessageUrl(info);
-      if (previewUrl) {
-        console.log("Welcome email Preview URL: %s", previewUrl);
-      }
+      await sendEmail(email, 'Welcome to RentULO 🎉', welcomeText, welcomeHtml);
     } catch (mailError) {
       // Log the error but don't stop the registration process
       console.error("Failed to send welcome email:", mailError);
@@ -324,30 +276,22 @@ async function forgotPassword(req, res) {
     await user.save();
 
     // Setup mailer and send OTP
-    const mailer = await getTransporter();
-    
-    const mailOptions = {
-      from: '"RentULO Security" <no-reply@rentulo.com>',
-      to: email,
-      subject: 'Password Reset OTP',
-      text: `Your password reset OTP is ${otpCode}. It expires in 15 minutes.`,
-      html: `<p>Your password reset OTP is <b>${otpCode}</b>. It expires in 15 minutes.</p>`,
-    };
-
-    
-    const info = await mailer.sendMail(mailOptions);
-    console.log("Message sent: %s", info.messageId);
-    
-    // Preview URL is available when using Ethereal mail
-    const previewUrl = nodemailer.getTestMessageUrl(info);
-    if (previewUrl) {
-      console.log("Preview URL: %s", previewUrl);
+    let previewUrl = null;
+    try {
+      previewUrl = await sendEmail(
+        email,
+        'Password Reset OTP',
+        `Your password reset OTP is ${otpCode}. It expires in 15 minutes.`,
+        `<p>Your password reset OTP is <b>${otpCode}</b>. It expires in 15 minutes.</p>`
+      );
+    } catch (mailError) {
+      console.error("Forgot password email error:", mailError);
     }
 
     return res.status(200).json({
       success: true,
       message: "OTP sent to email successfully",
-      testMailUrl: previewUrl || null 
+      testMailUrl: previewUrl
     });
 
   } catch (error) {
@@ -653,13 +597,7 @@ async function registerAdmin(req, res) {
     // SEND OTP EMAIL
     let previewUrl = null;
     try {
-      const mailer = await getTransporter();
-      const mailOptions = {
-        from: '"RentULO Security" <no-reply@rentulo.com>',
-        to: email,
-        subject: 'Admin Account Verification OTP 🔑',
-        text: `Hello ${first_name},\n\nYour OTP for admin account registration is ${otpCode}. It is valid for 10 minutes.\n\nBest regards,\nThe RentULO Team`,
-        html: `
+      const adminOtpHtml = `
         <div style="font-family: Arial, sans-serif; background-color: #f9fafb; padding: 20px;">
           <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; padding: 30px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
             <h2 style="color: #111827;">Verify Your Admin Account 🔑</h2>
@@ -683,15 +621,14 @@ async function registerAdmin(req, res) {
             </p>
           </div>
         </div>
-        `,
-      };
+      `;
 
-      const info = await mailer.sendMail(mailOptions);
-      console.log("Verification email sent: %s", info.messageId);
-      previewUrl = nodemailer.getTestMessageUrl(info);
-      if (previewUrl) {
-        console.log("Verification email Preview URL: %s", previewUrl);
-      }
+      previewUrl = await sendEmail(
+        email,
+        'Admin Account Verification OTP 🔑',
+        `Hello ${first_name},\n\nYour OTP for admin account registration is ${otpCode}. It is valid for 10 minutes.\n\nBest regards,\nThe RentULO Team`,
+        adminOtpHtml
+      );
     } catch (mailError) {
       console.error("Failed to send OTP verification email:", mailError);
     }
@@ -766,13 +703,7 @@ async function verifyAdmin(req, res) {
 
     // SEND WELCOME EMAIL
     try {
-      const mailer = await getTransporter();
-      const mailOptions = {
-        from: '"RentULO Team" <no-reply@rentulo.com>',
-        to: email,
-        subject: 'Welcome to the RentULO Admin Panel 🎉',
-        text: `Hi ${user.first_name},\n\nYour Admin account has been successfully verified. Welcome to our team!\n\nBest regards,\nThe RentULO Team`,
-        html: `
+      const adminWelcomeHtml = `
         <div style="font-family: Arial, sans-serif; background-color: #f9fafb; padding: 20px;">
           <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; padding: 30px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
             <h2 style="color: #111827;">Welcome to RentULO, ${user.first_name} ${user.last_name}👋</h2>
@@ -797,11 +728,14 @@ async function verifyAdmin(req, res) {
             </p>
           </div>
         </div>
-        `,
-      };
+      `;
 
-      const info = await mailer.sendMail(mailOptions);
-      console.log("Admin Welcome email sent: %s", info.messageId);
+      await sendEmail(
+        email,
+        'Welcome to the RentULO Admin Panel 🎉',
+        `Hi ${user.first_name},\n\nYour Admin account has been successfully verified. Welcome to our team!\n\nBest regards,\nThe RentULO Team`,
+        adminWelcomeHtml
+      );
     } catch (mailError) {
       console.error("Failed to send welcome email:", mailError);
     }
