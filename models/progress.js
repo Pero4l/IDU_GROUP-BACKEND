@@ -27,6 +27,7 @@ module.exports = (sequelize, DataTypes) => {
     booked: DataTypes.BOOLEAN,
     locked: DataTypes.BOOLEAN,
     liked: DataTypes.BOOLEAN,
+    locked_at: DataTypes.DATE,
   }, {
     sequelize,
     modelName: 'Progress', 

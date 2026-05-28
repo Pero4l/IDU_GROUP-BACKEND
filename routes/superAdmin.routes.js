@@ -6,13 +6,17 @@ const {
   getAllUsers, toggleUserStatus, deleteUser,
   getAllRentals, deleteRental, getLockedHouses,
   getAllReports, updateReportStatus,
-  getAllConversations, getConversationMessages
+  getAllConversations, getConversationMessages,
+  getAnalytics, suspendUser, unsuspendUser
 } = require('../controllers/superAdmin.controller');
 
 
 // Protected Admin Endpoints
+router.get('/analytics', authMiddleware, requireSuperAdmin, getAnalytics);
 router.get('/users', authMiddleware, requireSuperAdmin, getAllUsers);
 router.put('/users/:id/status', authMiddleware, requireSuperAdmin, toggleUserStatus);
+router.put('/users/:id/suspend', authMiddleware, requireSuperAdmin, suspendUser);
+router.put('/users/:id/unsuspend', authMiddleware, requireSuperAdmin, unsuspendUser);
 router.delete('/users/:id', authMiddleware, requireSuperAdmin, deleteUser);
 
 // Rentals Oversight

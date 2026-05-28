@@ -1,8 +1,9 @@
-const { Rentals, Users, Notifications, Profile } = require("../models");
+const { Rentals, Users, Notifications, Profile, Progress } = require("../models");
 const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
 const { Op } = require('sequelize');
 const cloudinary = require("cloudinary").v2;
 const { v4: uuidv4 } = require("uuid");
+const jwt = require("jsonwebtoken");
 require("dotenv").config();
 
 cloudinary.config({
@@ -183,9 +184,28 @@ async function seeAllRentals(req, res) {
       });
     }
 
+    let likedRentalIds = new Set();
+    if (req.user && req.user.userId) {
+      const userLikes = await Progress.findAll({
+        where: { user_id: req.user.userId, liked: true },
+        attributes: ['rental_id']
+      });
+      likedRentalIds = new Set(userLikes.map(like => like.rental_id));
+    }
+
+    const rentalsWithLiked = rentals.map(rental => {
+      const rentalData = rental.toJSON();
+      return {
+        ...rentalData,
+        liked: likedRentalIds.has(rental.id),
+        images: rentalData.images || [],
+        videos: rentalData.videos || [],
+      };
+    });
+
     return res.status(200).json({
       success: true,
-      data: rentals,
+      data: rentalsWithLiked,
       message: "Rentals retrieved successfully",
     });
   } catch (error) {
@@ -247,10 +267,21 @@ async function getRental(req, res) {
 
     const rentalData = rental.toJSON();
 
+    let liked = false;
+    if (req.user && req.user.userId) {
+      const progressRecord = await Progress.findOne({
+        where: { user_id: req.user.userId, rental_id: rental.id }
+      });
+      if (progressRecord && progressRecord.liked) {
+        liked = true;
+      }
+    }
+
     return res.status(200).json({
       success: true,
       data: {
         ...rentalData,
+        liked,
         // Sequelize handles JSON parsing for us
         images: rentalData.images || [],
         videos: rentalData.videos || [],
@@ -388,7 +419,26 @@ async function searchRentals(req, res) {
       order: [['createdAt', 'DESC']],
     });
 
-    return res.status(200).json({ success: true, message: "Rentals fetched successfully", data: rentals });
+    let likedRentalIds = new Set();
+    if (req.user && req.user.userId) {
+      const userLikes = await Progress.findAll({
+        where: { user_id: req.user.userId, liked: true },
+        attributes: ['rental_id']
+      });
+      likedRentalIds = new Set(userLikes.map(like => like.rental_id));
+    }
+
+    const rentalsWithLiked = rentals.map(rental => {
+      const rentalData = rental.toJSON();
+      return {
+        ...rentalData,
+        liked: likedRentalIds.has(rental.id),
+        images: rentalData.images || [],
+        videos: rentalData.videos || [],
+      };
+    });
+
+    return res.status(200).json({ success: true, message: "Rentals fetched successfully", data: rentalsWithLiked });
   } catch (error) {
     console.error("Search error:", error);
     return res.status(500).json({ success: false, message: "Server error" });
@@ -418,9 +468,43 @@ async function seeRecentRentals(req, res) {
       });
     }
 
+    // Optional user authentication to determine liked status
+    let userId = null;
+    const authHeader = req.headers["authorization"];
+    if (authHeader) {
+      const parts = authHeader.split(" ");
+      if (parts.length === 2 && parts[0] === "Bearer") {
+        try {
+          const decoded = jwt.verify(parts[1], process.env.JWT_SECRET);
+          userId = decoded.userId;
+        } catch (err) {
+          // Ignore invalid token verification errors for optional auth
+        }
+      }
+    }
+
+    let likedRentalIds = new Set();
+    if (userId) {
+      const userLikes = await Progress.findAll({
+        where: { user_id: userId, liked: true },
+        attributes: ['rental_id']
+      });
+      likedRentalIds = new Set(userLikes.map(like => like.rental_id));
+    }
+
+    const rentalsWithLiked = rentals.map(rental => {
+      const rentalData = rental.toJSON();
+      return {
+        ...rentalData,
+        liked: likedRentalIds.has(rental.id),
+        images: rentalData.images || [],
+        videos: rentalData.videos || [],
+      };
+    });
+
     return res.status(200).json({
       success: true,
-      data: rentals,
+      data: rentalsWithLiked,
       message: "Recent rentals retrieved successfully",
     });
   } catch (error) {
