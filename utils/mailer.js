@@ -4,6 +4,7 @@ require("dotenv").config();
 
 let testAccount = null;
 
+
 async function getTransporter() {
   if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
     return nodemailer.createTransport({
