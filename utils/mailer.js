@@ -1,4 +1,5 @@
 const nodemailer = require("nodemailer");
+const axios = require("axios");
 require("dotenv").config();
 
 let testAccount = null;
@@ -37,6 +38,40 @@ async function getTransporter() {
 }
 
 async function sendEmail(to, subject, text, html) {
+  // HYBRID MODE: If RESEND_API_KEY is defined, send via HTTP API (Bypasses Render's Free Tier SMTP blocks)
+  if (process.env.RESEND_API_KEY) {
+    try {
+      console.log(`Using Resend API to send email to ${to}...`);
+      // Resend sandbox only allows sending from onboarding@resend.dev by default
+      const fromAddress = process.env.EMAIL_USER && !process.env.EMAIL_USER.includes('gmail')
+        ? `RentULO Team <${process.env.EMAIL_USER}>` 
+        : 'RentULO Team <onboarding@resend.dev>';
+
+      const response = await axios.post(
+        'https://api.resend.com/emails',
+        {
+          from: fromAddress,
+          to: [to],
+          subject: subject,
+          text: text,
+          html: html || `<p>${text}</p>`,
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+      console.log("Email sent successfully via Resend API:", response.data.id);
+      return null;
+    } catch (error) {
+      console.error("Failed to send email via Resend API:", error.response ? error.response.data : error.message);
+      throw error;
+    }
+  }
+
+  // FALLBACK MODE: Use standard SMTP (For local development or when paid Render is used)
   try {
     const mailer = await getTransporter();
     const fromAddress = process.env.EMAIL_USER 
@@ -51,7 +86,7 @@ async function sendEmail(to, subject, text, html) {
       html: html || `<p>${text}</p>`,
     };
     const info = await mailer.sendMail(mailOptions);
-    console.log(`Email sent to ${to}: %s`, info.messageId);
+    console.log(`Email sent to ${to} via SMTP: %s`, info.messageId);
     
     // For test ethereal accounts, log preview url
     const previewUrl = nodemailer.getTestMessageUrl(info);
@@ -60,7 +95,7 @@ async function sendEmail(to, subject, text, html) {
     }
     return previewUrl || null;
   } catch (error) {
-    console.error("Failed to send email:", error);
+    console.error("Failed to send email via SMTP:", error);
     throw error;
   }
 }

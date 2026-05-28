@@ -1,5 +1,6 @@
 const { Progress, Users, Rentals, Transactions } = require('../models');
 const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
+const { Op } = require('sequelize');
 require('dotenv').config();
 const axios = require('axios');
 
@@ -124,6 +125,48 @@ async function initializeLockPayment(req, res) {
       return res.status(400).json({ success: false, message: "rental_id is required" });
     }
 
+    // Auto-release expired locks (older than 24 hours)
+    const expiryTime = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    await Progress.update(
+      { locked: false },
+      {
+        where: {
+          locked: true,
+          locked_at: { [Op.lt]: expiryTime }
+        }
+      }
+    );
+
+    // Check if this user already has an active locked house
+    const userActiveLock = await Progress.findOne({
+      where: {
+        user_id,
+        locked: true
+      }
+    });
+
+    if (userActiveLock) {
+      return res.status(400).json({
+        success: false,
+        message: "You can only lock one house at a time. You already have an active locked property."
+      });
+    }
+
+    // Check if the property is already locked by another user
+    const alreadyLocked = await Progress.findOne({
+      where: {
+        rental_id,
+        locked: true
+      }
+    });
+
+    if (alreadyLocked) {
+      return res.status(400).json({
+        success: false,
+        message: "This property is already locked by another user"
+      });
+    }
+
     // Find if a progress record exists for this user and rental
     let progressRecord = await Progress.findOne({ where: { user_id, rental_id } });
 
@@ -225,6 +268,7 @@ async function verifyLockPayment(req, res) {
       let progressRecord = await Progress.findOne({ where: { user_id, rental_id: transaction.rental_id } });
       if (progressRecord) {
         progressRecord.locked = true;
+        progressRecord.locked_at = new Date();
         await progressRecord.save();
       }
 
@@ -263,6 +307,18 @@ async function getLockedHouses(req, res) {
   try {
     const user_id = req.user.userId;
 
+    // Auto-release expired locks (older than 24 hours)
+    const expiryTime = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    await Progress.update(
+      { locked: false },
+      {
+        where: {
+          locked: true,
+          locked_at: { [Op.lt]: expiryTime }
+        }
+      }
+    );
+
     const lockedHouses = await Progress.findAll({
       where: { user_id, locked: true },
       include: [{ model: Rentals }] // Include rental details automatically
@@ -293,6 +349,7 @@ async function deleteLockedHouse(req, res) {
 
     // Update flag to false instead of deleting the whole row to keep other progress states intact
     progressRecord.locked = false;
+    progressRecord.locked_at = null;
     await progressRecord.save();
 
     return res.status(200).json({
