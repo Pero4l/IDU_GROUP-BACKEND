@@ -3,7 +3,7 @@ const router = express.Router();
 const { authMiddleware } = require('../middleware/authUserMiddleware');
 const { requireSuperAdmin } = require('../middleware/superAdminMiddleware');
 const { 
-  getAllUsers, toggleUserStatus, deleteUser``,
+  getAllUsers, toggleUserStatus, deleteUser,
   getAllRentals, deleteRental, getLockedHouses,
   getAllReports, updateReportStatus,
   getAllConversations, getConversationMessages,
