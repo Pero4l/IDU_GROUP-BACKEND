@@ -42,7 +42,7 @@ function uploadBufferToCloudinary(buffer, mimetype, folder) {
 // only agnet/landlord can be able to add an apartment to the plartform
 async function addRental(req, res) {
   try {
-    const { title, description, propertyType, location, price, priceType, status } = req.body;
+    const { title, description, propertyType, location, price, priceType, status, amenities } = req.body;
 
 
 
@@ -113,6 +113,23 @@ async function addRental(req, res) {
 
     
 
+    let amenitiesData = [];
+    if (amenities) {
+      if (typeof amenities === 'string') {
+        try {
+          amenitiesData = JSON.parse(amenities);
+        } catch (e) {
+          if (amenities.includes(',')) {
+            amenitiesData = amenities.split(',').map(item => item.trim());
+          } else {
+            amenitiesData = [amenities];
+          }
+        }
+      } else if (Array.isArray(amenities)) {
+        amenitiesData = amenities;
+      }
+    }
+
     const newRental = {
       title,
       description,
@@ -123,6 +140,7 @@ async function addRental(req, res) {
       status,
       images: uploadedImages.map((i) => i.secure_url),
       videos: uploadedVideos.map((v) => v.secure_url),
+      amenities: amenitiesData,
       UserId: req.user.userId,
     };
 
@@ -167,7 +185,7 @@ async function seeAllRentals(req, res) {
       where,
       attributes: [
         "id", "slug", "title", "description", "propertyType", "location", "price",
-        "priceType", "images", "status", "UserId", "createdAt"
+        "priceType", "images", "amenities", "status", "UserId", "createdAt"
       ],
       include: [{
         model: Users,
@@ -200,6 +218,7 @@ async function seeAllRentals(req, res) {
         liked: likedRentalIds.has(rental.id),
         images: rentalData.images || [],
         videos: rentalData.videos || [],
+        amenities: rentalData.amenities || [],
       };
     });
 
@@ -234,6 +253,7 @@ async function getRental(req, res) {
         "priceType",
         "images",
         "videos",
+        "amenities",
         "status",
         "UserId",
         "createdAt",
@@ -285,6 +305,7 @@ async function getRental(req, res) {
         // Sequelize handles JSON parsing for us
         images: rentalData.images || [],
         videos: rentalData.videos || [],
+        amenities: rentalData.amenities || [],
         landlord: rentalData.Users || { first_name: "", last_name: "User" },
       },
       message: "Rental retrieved successfully",
@@ -303,7 +324,7 @@ async function getRental(req, res) {
 async function updateRental(req, res) {
   try {
     const { id } = req.params;
-    const { title, description, propertyType, location, price, priceType, images, videos, status } = req.body;
+    const { title, description, propertyType, location, price, priceType, images, videos, status, amenities } = req.body;
 
     const rental = await Rentals.findByPk(id);
 
@@ -321,6 +342,23 @@ async function updateRental(req, res) {
       });
     }
 
+    let amenitiesData = undefined;
+    if (amenities !== undefined) {
+      if (typeof amenities === 'string') {
+        try {
+          amenitiesData = JSON.parse(amenities);
+        } catch (e) {
+          if (amenities.includes(',')) {
+            amenitiesData = amenities.split(',').map(item => item.trim());
+          } else {
+            amenitiesData = [amenities];
+          }
+        }
+      } else if (Array.isArray(amenities)) {
+        amenitiesData = amenities;
+      }
+    }
+
     await rental.update({
       title: title || rental.title,
       description: description || rental.description,
@@ -331,6 +369,7 @@ async function updateRental(req, res) {
       images: images || rental.images,
       videos: videos || rental.videos,
       status: status || rental.status,
+      amenities: amenitiesData !== undefined ? amenitiesData : rental.amenities,
     });
 
     const updatedRental = await Rentals.findByPk(id, {
@@ -409,7 +448,7 @@ async function searchRentals(req, res) {
       },
       attributes: [
         "id", "slug", "title", "description", "propertyType", "location", "price",
-        "priceType", "images", "status", "UserId", "createdAt"
+        "priceType", "images", "amenities", "status", "UserId", "createdAt"
       ],
       include: [{
         model: Users,
@@ -435,6 +474,7 @@ async function searchRentals(req, res) {
         liked: likedRentalIds.has(rental.id),
         images: rentalData.images || [],
         videos: rentalData.videos || [],
+        amenities: rentalData.amenities || [],
       };
     });
 
@@ -450,7 +490,7 @@ async function seeRecentRentals(req, res) {
     const rentals = await Rentals.findAll({
       attributes: [
         "id", "slug", "title", "description", "propertyType", "location", "price",
-        "priceType", "images", "status", "UserId", "createdAt"
+        "priceType", "images", "amenities", "status", "UserId", "createdAt"
       ],
       include: [{
         model: Users,
@@ -499,6 +539,7 @@ async function seeRecentRentals(req, res) {
         liked: likedRentalIds.has(rental.id),
         images: rentalData.images || [],
         videos: rentalData.videos || [],
+        amenities: rentalData.amenities || [],
       };
     });
 
