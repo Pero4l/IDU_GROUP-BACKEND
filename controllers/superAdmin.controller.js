@@ -136,7 +136,6 @@ async function updateReportStatus(req, res) {
   }
 }
 
-
 async function getAllConversations(req, res) {
   try {
     const conversations = await Conversations.findAll({
