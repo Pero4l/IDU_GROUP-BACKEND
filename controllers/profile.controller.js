@@ -90,23 +90,22 @@ async function getUserProfile(req, res) {
   try {
     const { id } = req.params; // Get ID of the user whose profile is being viewed
 
-    // 1. Fetch User (ignoring password and email)
+    // 1. Fetch User along with their Profile in a single consolidated query (ignoring password and email)
     const user = await Users.findByPk(id, {
-      attributes: { exclude: ['password', 'email'] }
+      attributes: { exclude: ['password', 'email'] },
+      include: [{ model: Profile }]
     });
 
     if (!user) {
       return res.status(404).json({ success: false, message: "User not found" });
     }
 
-    // 2. Fetch Profile details
-    const profile = await Profile.findOne({ where: { user_id: id } });
-
+    const userData = user.toJSON();
     let responseData = {
-      ...user.toJSON(),
-      profile: profile || null,
-      
+      ...userData,
+      profile: userData.Profile || null,
     };
+    delete responseData.Profile;
 
   
     // 3. Optional: If user is a landlord, get all the apartments they posted

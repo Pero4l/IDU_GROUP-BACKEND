@@ -171,33 +171,44 @@ async function getConversationMessages(req, res) {
 
 async function getAnalytics(req, res) {
   try {
-    // 1. User metrics
-    const totalUsers = await Users.count();
-    const activeUsers = await Users.count({ where: { is_active: true } });
-    const suspendedUsers = await Users.count({ where: { is_active: false } });
-    const tenantsCount = await Users.count({ where: { role: 'tenant' } });
-    const landlordsCount = await Users.count({ where: { role: 'landlord' } });
-    const adminsCount = await Users.count({ where: { role: 'admin' } });
+    // Run all database calls in parallel to maximize performance
+    const [
+      totalUsers,
+      activeUsers,
+      suspendedUsers,
+      tenantsCount,
+      landlordsCount,
+      adminsCount,
+      totalRentals,
+      totalLikes,
+      totalLocks,
+      totalBookings,
+      totalReports,
+      pendingReports,
+      resolvedReports,
+      rejectedReports,
+      successfulTransactions
+    ] = await Promise.all([
+      Users.count(),
+      Users.count({ where: { is_active: true } }),
+      Users.count({ where: { is_active: false } }),
+      Users.count({ where: { role: 'tenant' } }),
+      Users.count({ where: { role: 'landlord' } }),
+      Users.count({ where: { role: 'admin' } }),
+      Rentals.count(),
+      Progress.count({ where: { liked: true } }),
+      Progress.count({ where: { locked: true } }),
+      Progress.count({ where: { booked: true } }),
+      Reports.count(),
+      Reports.count({ where: { report_status: 'pending' } }),
+      Reports.count({ where: { report_status: 'resolved' } }),
+      Reports.count({ where: { report_status: 'rejected' } }),
+      Transactions.findAll({
+        where: { status: 'success', payment_type: 'lock_fee' },
+        attributes: ['amount']
+      })
+    ]);
 
-    // 2. Rental metrics
-    const totalRentals = await Rentals.count();
-    
-    // 3. User interaction progress metrics
-    const totalLikes = await Progress.count({ where: { liked: true } });
-    const totalLocks = await Progress.count({ where: { locked: true } });
-    const totalBookings = await Progress.count({ where: { booked: true } });
-
-    // 4. Incident reports metrics
-    const totalReports = await Reports.count();
-    const pendingReports = await Reports.count({ where: { report_status: 'pending' } });
-    const resolvedReports = await Reports.count({ where: { report_status: 'resolved' } });
-    const rejectedReports = await Reports.count({ where: { report_status: 'rejected' } });
-
-    // 5. Total transactions/revenue (lock fees)
-    const successfulTransactions = await Transactions.findAll({
-      where: { status: 'success', payment_type: 'lock_fee' },
-      attributes: ['amount']
-    });
     const totalRevenue = successfulTransactions.reduce((acc, t) => acc + (t.amount || 0), 0);
 
     return res.status(200).json({

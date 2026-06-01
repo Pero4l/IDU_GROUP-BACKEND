@@ -137,13 +137,21 @@ async function initializeLockPayment(req, res) {
       }
     );
 
-    // Check if this user already has an active locked house
-    const userActiveLock = await Progress.findOne({
-      where: {
-        user_id,
-        locked: true
-      }
-    });
+    // Check concurrent active locks in parallel
+    const [userActiveLock, alreadyLocked] = await Promise.all([
+      Progress.findOne({
+        where: {
+          user_id,
+          locked: true
+        }
+      }),
+      Progress.findOne({
+        where: {
+          rental_id,
+          locked: true
+        }
+      })
+    ]);
 
     if (userActiveLock) {
       return res.status(400).json({
@@ -151,14 +159,6 @@ async function initializeLockPayment(req, res) {
         message: "You can only lock one house at a time. You already have an active locked property."
       });
     }
-
-    // Check if the property is already locked by another user
-    const alreadyLocked = await Progress.findOne({
-      where: {
-        rental_id,
-        locked: true
-      }
-    });
 
     if (alreadyLocked) {
       return res.status(400).json({
