@@ -1,4 +1,4 @@
-const { Users, Rentals, Reports, Progress, Conversations, Messages, Transactions } = require('../models');
+const { Users, Rentals, Reports, Progress, Conversations, Messages, Transactions, Waitlist } = require('../models');
 
 async function getAllUsers(req, res) {
   try {
@@ -291,6 +291,18 @@ async function unsuspendUser(req, res) {
   }
 }
 
+async function getWaitlist(req, res) {
+  try {
+    const list = await Waitlist.findAll({
+      order: [['createdAt', 'DESC']]
+    });
+    return res.status(200).json({ success: true, count: list.length, data: list });
+  } catch (error) {
+    console.error("Super Admin - getWaitlist error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
 module.exports = { 
   getAllUsers, 
   toggleUserStatus, 
@@ -304,5 +316,6 @@ module.exports = {
   getConversationMessages,
   getAnalytics,
   suspendUser,
-  unsuspendUser
+  unsuspendUser,
+  getWaitlist
 };
