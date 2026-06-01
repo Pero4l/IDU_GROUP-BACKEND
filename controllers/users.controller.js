@@ -59,11 +59,11 @@ async function register(req, res) {
     const country = "Nigeria";
     
 
-    await Users.create({
+    const newUser = await Users.create({
       first_name,
       last_name,
-      gender,
       role,
+      gender,
       email,
       phone_no,
       address,
@@ -74,34 +74,24 @@ async function register(req, res) {
 
 
     // HANDLE NOTIFICATION
-    const isUser = await Users.findOne({ where: { email } });
-    if (isUser) {
-
-      await Notifications.create({
-        user_id: isUser.id,
-        type: "account",
-        notification: `Welcome to RentUIO ${isUser.first_name} ${isUser.last_name}! Your account has been successfully created.`,
-        is_read: false
-      })
-      
-    }
+    await Notifications.create({
+      user_id: newUser.id,
+      type: "account",
+      notification: `Welcome to RentUIO ${newUser.first_name} ${newUser.last_name}! Your account has been successfully created.`,
+      is_read: false
+    });
 
     // HANDLE PROFILE CREATION
     let location =  `${state}, ${country}`
     let share = `main/${phone_no}`
-    const user = await Users.findOne({ where: { email } });
-    if (user) {
-
-      await Profile.create({
-        user_id: user.id, 
-        bio: null || 'Hey i\'m a verified user at RentULO',
-        phone: phone_no,
-        address: address,
-        location: location,
-        verified: false,
-        // share_account: share,
-      });
-    }
+    await Profile.create({
+      user_id: newUser.id, 
+      bio: 'Hey i\'m a verified user at RentULO',
+      phone: phone_no,
+      address: address,
+      location: location,
+      verified: false,
+    });
     
 
     // SEND WELCOME EMAIL
@@ -547,6 +537,9 @@ async function registerAdmin(req, res) {
     }
 
     const existingUser = await Users.findOne({ where: { email } });
+    if (existingUser && existingUser.is_active) {
+      return res.status(400).json({ success: false, message: "User already exists" });
+    }
     
     // Generate a 6-digit OTP
     const otpCode = Math.floor(100000 + Math.random() * 900000);
@@ -557,9 +550,6 @@ async function registerAdmin(req, res) {
 
     let user;
     if (existingUser) {
-      if (existingUser.is_active) {
-        return res.status(400).json({ success: false, message: "User already exists" });
-      }
       // If user exists but is inactive, overwrite their details with the new registration attempt
       existingUser.first_name = first_name;
       existingUser.last_name = last_name;

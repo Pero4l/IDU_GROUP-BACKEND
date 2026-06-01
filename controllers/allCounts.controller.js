@@ -4,10 +4,12 @@ async function getAllCounts(req, res) {
   
   
   try {
-    const userCount = await Users.count();
-    const rentalCount = await Rentals.count();
-    const totalLandlords = await Users.count({ where: { role: 'landlord' } });
-    const totalTenants = await Users.count({ where: { role: 'tenant' } });
+    const [userCount, rentalCount, totalLandlords, totalTenants] = await Promise.all([
+      Users.count(),
+      Rentals.count(),
+      Users.count({ where: { role: 'landlord' } }),
+      Users.count({ where: { role: 'tenant' } })
+    ]);
     
 
     

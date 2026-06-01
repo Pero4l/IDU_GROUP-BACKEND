@@ -178,9 +178,6 @@ async function seeAllRentals(req, res) {
   try {
     const where = {}; 
 
-    // Get total count of rentals
-    const total = await Rentals.count({ where });
-
     const rentals = await Rentals.findAll({
       where,
       attributes: [
@@ -195,7 +192,7 @@ async function seeAllRentals(req, res) {
       order: [['createdAt', 'DESC']],
     });
 
-    if (total === 0) {
+    if (!rentals || rentals.length === 0) {
       return res.status(404).json({
         success: false,
         message: "No rentals found",
