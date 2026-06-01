@@ -57,6 +57,7 @@ app.use('/chat', chatRoute);
 app.use('/waitlist', waitlistRoute);
 
 
+
 // DB CONNECTION
 const PORT = process.env.PORT;
 
