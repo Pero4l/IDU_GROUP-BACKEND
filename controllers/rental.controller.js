@@ -42,7 +42,7 @@ function uploadBufferToCloudinary(buffer, mimetype, folder) {
 // only agnet/landlord can be able to add an apartment to the plartform
 async function addRental(req, res) {
   try {
-    const { title, description, propertyType, location, price, priceType, status, amenities } = req.body;
+    const { title, description, propertyType, location, price, priceType, status, amenities, legalFee, cautionFee, brokeFee, mgtServiceCharge } = req.body;
 
 
 
@@ -137,6 +137,10 @@ async function addRental(req, res) {
       location,
       price,
       priceType,
+      legalFee: legalFee || 0.00,
+      cautionFee: cautionFee || 0.00,
+      brokeFee: brokeFee || 0.00,
+      mgtServiceCharge: mgtServiceCharge || 0.00,
       status,
       images: uploadedImages.map((i) => i.secure_url),
       videos: uploadedVideos.map((v) => v.secure_url),
@@ -182,7 +186,7 @@ async function seeAllRentals(req, res) {
       where,
       attributes: [
         "id", "slug", "title", "description", "propertyType", "location", "price",
-        "priceType", "images", "amenities", "status", "UserId", "createdAt"
+        "priceType", "legalFee", "cautionFee", "brokeFee", "mgtServiceCharge", "images", "amenities", "status", "UserId", "createdAt"
       ],
       include: [{
         model: Users,
@@ -248,6 +252,10 @@ async function getRental(req, res) {
         "location",
         "price",
         "priceType",
+        "legalFee",
+        "cautionFee",
+        "brokeFee",
+        "mgtServiceCharge",
         "images",
         "videos",
         "amenities",
@@ -321,7 +329,7 @@ async function getRental(req, res) {
 async function updateRental(req, res) {
   try {
     const { id } = req.params;
-    const { title, description, propertyType, location, price, priceType, images, videos, status, amenities } = req.body;
+    const { title, description, propertyType, location, price, priceType, images, videos, status, amenities, legalFee, cautionFee, brokeFee, mgtServiceCharge } = req.body;
 
     const rental = await Rentals.findByPk(id);
 
@@ -363,6 +371,10 @@ async function updateRental(req, res) {
       location: location || rental.location,
       price: price || rental.price,
       priceType: priceType || rental.priceType,
+      legalFee: legalFee !== undefined ? legalFee : rental.legalFee,
+      cautionFee: cautionFee !== undefined ? cautionFee : rental.cautionFee,
+      brokeFee: brokeFee !== undefined ? brokeFee : rental.brokeFee,
+      mgtServiceCharge: mgtServiceCharge !== undefined ? mgtServiceCharge : rental.mgtServiceCharge,
       images: images || rental.images,
       videos: videos || rental.videos,
       status: status || rental.status,
@@ -445,7 +457,7 @@ async function searchRentals(req, res) {
       },
       attributes: [
         "id", "slug", "title", "description", "propertyType", "location", "price",
-        "priceType", "images", "amenities", "status", "UserId", "createdAt"
+        "priceType", "legalFee", "cautionFee", "brokeFee", "mgtServiceCharge", "images", "amenities", "status", "UserId", "createdAt"
       ],
       include: [{
         model: Users,
@@ -487,7 +499,7 @@ async function seeRecentRentals(req, res) {
     const rentals = await Rentals.findAll({
       attributes: [
         "id", "slug", "title", "description", "propertyType", "location", "price",
-        "priceType", "images", "amenities", "status", "UserId", "createdAt"
+        "priceType", "legalFee", "cautionFee", "brokeFee", "mgtServiceCharge", "images", "amenities", "status", "UserId", "createdAt"
       ],
       include: [{
         model: Users,
@@ -554,6 +566,70 @@ async function seeRecentRentals(req, res) {
   }
 }
 
+async function seeRecommendedRentals(req, res) {
+  try {
+    const userId = req.user.userId;
+
+    // 1. Fetch user to get their state or location
+    const user = await Users.findByPk(userId, {
+      include: [{ model: Profile, attributes: ['location'] }]
+    });
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    // Determine the search location: prefer user state, fallback to profile location, then Nigeria
+    const state = user.state;
+    const profileLocation = user.Profile?.location;
+    const searchLocation = state || (profileLocation ? profileLocation.split(',')[0] : null) || 'Nigeria';
+
+    // 2. Fetch all rentals matching this location (case-insensitive)
+    const rentals = await Rentals.findAll({
+      where: {
+        location: { [Op.iLike]: `%${searchLocation.trim()}%` }
+      },
+      attributes: [
+        "id", "slug", "title", "description", "propertyType", "location", "price",
+        "priceType", "legalFee", "cautionFee", "brokeFee", "mgtServiceCharge", "images", "amenities", "status", "UserId", "createdAt"
+      ],
+      include: [{
+        model: Users,
+        attributes: ["id", "first_name", "last_name", "phone_no"],
+        include: [{ model: Profile, attributes: ['image', 'verified'] }]
+      }],
+      order: [['createdAt', 'DESC']],
+    });
+
+    // Determine liked status
+    const userLikes = await Progress.findAll({
+      where: { user_id: userId, liked: true },
+      attributes: ['rental_id']
+    });
+    const likedRentalIds = new Set(userLikes.map(like => like.rental_id));
+
+    const rentalsWithLiked = rentals.map(rental => {
+      const rentalData = rental.toJSON();
+      return {
+        ...rentalData,
+        liked: likedRentalIds.has(rental.id),
+        images: rentalData.images || [],
+        videos: rentalData.videos || [],
+        amenities: rentalData.amenities || [],
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: rentalsWithLiked,
+      message: `Recommended rentals in ${searchLocation} retrieved successfully`,
+    });
+  } catch (error) {
+    console.error("Recommended rentals error:", error);
+    return res.status(500).json({ success: false, message: "Server error retrieving recommendations" });
+  }
+}
+
 module.exports = {
   addRental,
   seeAllRentals,
@@ -561,5 +637,6 @@ module.exports = {
   updateRental,
   deleteRental,
   searchRentals,
-  seeRecentRentals
+  seeRecentRentals,
+  seeRecommendedRentals
 };

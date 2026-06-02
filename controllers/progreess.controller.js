@@ -183,12 +183,19 @@ async function initializeLockPayment(req, res) {
     // Amount to lock house in kobo (e.g., 10000 NGN = 1000000 kobo)
     const amountInKobo = 5000; 
 
+    // Dynamically build default callback url pointing back to our server
+    const host = req.get('host');
+    const protocol = req.protocol;
+    const defaultCallback = `${protocol}://${host}/progress/lock/verify-callback`;
+    const callbackUrl = process.env.PAYSTACK_CALLBACK_URL || defaultCallback;
+
     // Generate Paystack initialization request
     const response = await axios.post(
       'https://api.paystack.co/transaction/initialize',
       {
         email: userEmail,
         amount: amountInKobo,
+        callback_url: callbackUrl,
         metadata: {
           user_id,
           rental_id,
@@ -299,6 +306,63 @@ async function verifyLockPayment(req, res) {
   } catch (error) {
     console.error("Error verifying payment:", error.response ? error.response.data : error.message);
     return res.status(500).json({ success: false, message: "Server error during payment verification" });
+  }
+}
+
+async function verifyLockPaymentCallback(req, res) {
+  try {
+    const { reference } = req.query;
+
+    if (!reference) {
+      return res.redirect(process.env.PAYSTACK_FAILURE_URL || "https://rentulo.com/payment-failed");
+    }
+
+    // Find the pending transaction
+    const transaction = await Transactions.findOne({ where: { reference } });
+    if (!transaction) {
+      return res.redirect(process.env.PAYSTACK_FAILURE_URL || "https://rentulo.com/payment-failed");
+    }
+
+    if (transaction.status === 'success') {
+      return res.redirect(process.env.PAYSTACK_REDIRECT_URL || "https://rentulo.com/payment-success");
+    }
+
+    // Verify with Paystack
+    const response = await axios.get(`https://api.paystack.co/transaction/verify/${reference}`, {
+      headers: {
+        Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`
+      }
+    });
+
+    const paymentStatus = response.data.data.status;
+
+    if (paymentStatus === 'success') {
+      // Update transaction
+      transaction.status = 'success';
+      await transaction.save();
+
+      // Update progress record
+      let progressRecord = await Progress.findOne({ where: { user_id: transaction.user_id, rental_id: transaction.rental_id } });
+      if (progressRecord) {
+        progressRecord.locked = true;
+        progressRecord.locked_at = new Date();
+        await progressRecord.save();
+      }
+
+      const userObj = await Users.findByPk(transaction.user_id);
+      await logAndEmailUser(transaction.user_id, userObj?.email, "Property Locked", "You have successfully paid the lock fee and locked a property. It is now reserved for you.");
+      await notifySuperAdmins(`A property has been successfully locked by user ${transaction.user_id} after successful payment.`, 'system');
+
+      return res.redirect(process.env.PAYSTACK_REDIRECT_URL || "https://rentulo.com/payment-success");
+    } else {
+      transaction.status = 'failed';
+      await transaction.save();
+      return res.redirect(process.env.PAYSTACK_FAILURE_URL || "https://rentulo.com/payment-failed");
+    }
+
+  } catch (error) {
+    console.error("Error in verifyLockPaymentCallback:", error.response ? error.response.data : error.message);
+    return res.redirect(process.env.PAYSTACK_FAILURE_URL || "https://rentulo.com/payment-failed");
   }
 }
 
@@ -497,6 +561,7 @@ module.exports = {
   // Locked
   initializeLockPayment,
   verifyLockPayment,
+  verifyLockPaymentCallback,
   getLockedHouses,
   deleteLockedHouse,
   deleteAllLockedHouses,
