@@ -1,20 +1,37 @@
 const nodemailer = require("nodemailer");
 const axios = require("axios");
+const dnsPromises = require("dns").promises;
 require("dotenv").config();
 
 let testAccount = null;
 
-
-
 async function getTransporter() {
   if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
+    const originalHost = process.env.EMAIL_HOST || 'smtp.gmail.com';
+    let host = originalHost;
+    const port = process.env.EMAIL_PORT ? parseInt(process.env.EMAIL_PORT) : 587;
+
+    // Dynamically resolve ANY host (gmail, brevo, etc.) to an IPv4 address to guarantee IPv6 is bypassed!
+    try {
+      const addresses = await dnsPromises.resolve4(originalHost);
+      if (addresses && addresses.length > 0) {
+        host = addresses[0];
+        console.log(`[EMAIL HELPER] Resolved ${originalHost} to IPv4: ${host}`);
+      }
+    } catch (dnsErr) {
+      console.error(`[EMAIL HELPER] Failed to resolve ${originalHost} to IPv4, falling back to hostname:`, dnsErr);
+    }
+
     return nodemailer.createTransport({
-      host: process.env.EMAIL_HOST || 'smtp.gmail.com',
-      port: process.env.EMAIL_PORT ? parseInt(process.env.EMAIL_PORT) : 587,
-      secure: process.env.EMAIL_PORT == '465' ? true : false,
+      host: host,
+      port: port,
+      secure: port === 465,
       auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS,
+      },
+      tls: {
+        servername: originalHost // CRITICAL: Ensures SSL/TLS validation matches the original hostname
       },
       family: 4, // Force IPv4 to avoid ENETUNREACH on Render
       connectionTimeout: 10000,
@@ -40,67 +57,70 @@ async function getTransporter() {
 }
 
 async function sendEmail(to, subject, text, html) {
-  // HYBRID MODE: If RESEND_API_KEY is defined, send via HTTP API (Bypasses Render's Free Tier SMTP blocks)
-  if (process.env.RESEND_API_KEY) {
+  // 1. BREVO HTTP API (Uses Port 443 HTTPS - 100% immune to Render's SMTP port blocks)
+  if (process.env.BREVO_API_KEY) {
     try {
-      console.log(`Using Resend API to send email to ${to}...`);
-      // Resend sandbox only allows sending from onboarding@resend.dev by default
-      const fromAddress = process.env.EMAIL_USER && !process.env.EMAIL_USER.includes('gmail')
-        ? `RentULO Team <${process.env.EMAIL_USER}>` 
-        : 'RentULO Team <onboarding@resend.dev>';
-
+      console.log(`[EMAIL HELPER] Initiating Brevo HTTPS API delivery to ${to}...`);
+      const emailUser = process.env.EMAIL_USER || "no-reply@rentulo.com";
+      
       const response = await axios.post(
-        'https://api.resend.com/emails',
+        "https://api.brevo.com/v3/smtp/email",
         {
-          from: fromAddress,
-          to: [to],
+          sender: { name: "RentULO Team", email: emailUser },
+          to: [{ email: to }],
           subject: subject,
-          text: text,
-          html: html || `<p>${text}</p>`,
+          htmlContent: html || `<p>${text}</p>`,
+          textContent: text || ""
         },
         {
           headers: {
-            'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
-            'Content-Type': 'application/json',
-          },
+            "api-key": process.env.BREVO_API_KEY,
+            "Content-Type": "application/json"
+          }
         }
       );
-      console.log("Email sent successfully via Resend API:", response.data.id);
-      return null;
-    } catch (error) {
-      console.error("Failed to send email via Resend API:", error.response ? error.response.data : error.message);
-      throw error;
+
+      if (response.status >= 200 && response.status < 300) {
+        console.log(`[EMAIL HELPER] Email sent successfully via Brevo HTTPS API! Message ID: ${response.data.messageId}`);
+        return null;
+      } else {
+        console.error("[EMAIL HELPER] Brevo HTTPS API rejection:", response.data);
+        throw new Error(response.data.message || "Failed via Brevo API");
+      }
+    } catch (apiErr) {
+      console.error("[EMAIL HELPER] Brevo HTTPS API failed, falling back to SMTP:", apiErr.response ? apiErr.response.data : apiErr.message);
     }
   }
 
-  // FALLBACK MODE: Use standard SMTP (For local development or when paid Render is used)
+  // 2. SMTP FALLBACK (Gmail SMTP, Brevo SMTP or Ethereal local test account)
   try {
     const mailer = await getTransporter();
-    const fromAddress = process.env.EMAIL_USER 
-      ? `"RentULO Team" <${process.env.EMAIL_USER}>` 
-      : '"RentULO Team" <no-reply@rentulo.com>';
+    const emailUser = process.env.EMAIL_USER || "no-reply@rentulo.com";
+    const fromAddress = `"RentULO Team" <${emailUser}>`;
 
     const mailOptions = {
       from: fromAddress,
       to,
       subject,
-      text,
+      text: text || "",
       html: html || `<p>${text}</p>`,
     };
+
     const info = await mailer.sendMail(mailOptions);
-    console.log(`Email sent to ${to} via SMTP: %s`, info.messageId);
+    console.log(`[EMAIL HELPER] Email sent successfully to ${to} via SMTP: ${info.messageId}`);
     
     // For test ethereal accounts, log preview url
     const previewUrl = nodemailer.getTestMessageUrl(info);
     if (previewUrl) {
-      console.log("Email Preview URL: %s", previewUrl);
+      console.log(`[EMAIL HELPER] Ethereal Sandboxed Mail Preview URL: ${previewUrl}`);
     }
     return previewUrl || null;
   } catch (error) {
-    console.error("Failed to send email via SMTP:", error);
+    console.error("[EMAIL HELPER] Standard SMTP connection delivery failed:", error);
     throw error;
   }
 }
 
 module.exports = { sendEmail };
+
 
