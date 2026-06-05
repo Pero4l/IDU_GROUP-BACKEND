@@ -7,13 +7,14 @@ const http = require('http');
 require('dotenv').config();
 const cors = require("cors");
 const cookieParser = require('cookie-parser');
+const compression = require('compression');
 const socketConfig = require('./config/socket');
 
 const app = express();
 const server = http.createServer(app);
 socketConfig.init(server);
 
-
+app.use(compression());
 app.use(cookieParser());
 app.use(express.json());
 app.use(cors({

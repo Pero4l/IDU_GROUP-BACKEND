@@ -29,8 +29,7 @@ async function createReport(req, res) {
         report_user = await Users.findOne({
             where: {
                 [Op.or]: [
-                    { first_name: { [Op.iLike]: `%${search_name}%` } },
-                    { last_name: { [Op.iLike]: `%${search_name}%` } },
+                    { full_name: { [Op.iLike]: `%${search_name}%` } },
                     { email: { [Op.iLike]: `%${search_name}%` } }
                 ]
             }
@@ -44,7 +43,7 @@ async function createReport(req, res) {
     const report = await Reports.create({
       user_id,
       report_user_id: report_user.id,
-      report_name: `${report_user.first_name} ${report_user.last_name}`,
+      report_name: report_user.full_name,
       report_number: report_user.phone_no || '',
       report_type,
       report_message,
@@ -52,10 +51,10 @@ async function createReport(req, res) {
     });
 
     const reporter = await Users.findByPk(user_id);
-    await logAndEmailUser(user_id, reporter?.email, "Report Submitted", `Your report against ${report_user.first_name} ${report_user.last_name} has been submitted successfully and is being reviewed.`);
+    await logAndEmailUser(user_id, reporter?.email, "Report Submitted", `Your report against ${report_user.full_name} has been submitted successfully and is being reviewed.`);
 
     // Notify Super Admins
-    await notifySuperAdmins(`New system report filed against ${report_user.first_name} ${report_user.last_name}`, 'warning');
+    await notifySuperAdmins(`New system report filed against ${report_user.full_name}`, 'warning');
 
     return res.status(201).json({
       success: true,
