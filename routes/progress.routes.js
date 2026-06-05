@@ -2,10 +2,12 @@ const express = require('express');
 const router = express.Router();
 
 const { authMiddleware } = require('../middleware/authUserMiddleware');
+const { isVerifiedMiddleware } = require('../middleware/verificationMiddleware');
 const {
   likeHouse, getLikedHouses, unlikeHouse, deleteAllLikedHouses,
   initializeLockPayment, verifyLockPayment, verifyLockPaymentCallback, getLockedHouses, deleteLockedHouse, deleteAllLockedHouses,
-  bookHouse, getBookedHouses, deleteBookedHouse, deleteAllBookedHouses
+  bookHouse, getBookedHouses, deleteBookedHouse, deleteAllBookedHouses,
+  initializeRentPayment, verifyRentPayment, verifyRentPaymentCallback
 } = require('../controllers/progreess.controller');
 
 // Liked endpoints
@@ -15,8 +17,8 @@ router.delete('/like/:id', authMiddleware, unlikeHouse);
 router.delete('/like', authMiddleware, deleteAllLikedHouses);
 
 // Locked endpoints
-router.post('/lock/initialize', authMiddleware, initializeLockPayment);
-router.post('/lock/verify', authMiddleware, verifyLockPayment);
+router.post('/lock/initialize', authMiddleware, isVerifiedMiddleware, initializeLockPayment);
+router.post('/lock/verify', authMiddleware, isVerifiedMiddleware, verifyLockPayment);
 router.get('/lock/verify-callback', verifyLockPaymentCallback);
 router.get('/lock', authMiddleware, getLockedHouses);
 router.delete('/lock/:id', authMiddleware, deleteLockedHouse);
@@ -27,5 +29,10 @@ router.post('/book', authMiddleware, bookHouse);
 router.get('/book', authMiddleware, getBookedHouses);
 router.delete('/book/:id', authMiddleware, deleteBookedHouse);
 router.delete('/book', authMiddleware, deleteAllBookedHouses);
+
+// Rent payment endpoints
+router.post('/rent/initialize', authMiddleware, isVerifiedMiddleware, initializeRentPayment);
+router.post('/rent/verify', authMiddleware, isVerifiedMiddleware, verifyRentPayment);
+router.get('/rent/verify-callback', verifyRentPaymentCallback);
 
 module.exports = router;

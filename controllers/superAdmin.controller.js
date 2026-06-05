@@ -62,7 +62,7 @@ async function deleteUser(req, res) {
 async function getAllRentals(req, res) {
   try {
     const rentals = await Rentals.findAll({
-      include: [{ model: Users, attributes: ['first_name', 'last_name', 'email'] }]
+      include: [{ model: Users, attributes: ['full_name', 'email'] }]
     });
     return res.status(200).json({ success: true, count: rentals.length, data: rentals });
   } catch (error) {
@@ -92,7 +92,7 @@ async function getLockedHouses(req, res) {
       where: { locked: true },
       include: [
         { model: Rentals },
-        { model: Users, attributes: ['first_name', 'last_name', 'email'] }
+        { model: Users, attributes: ['full_name', 'email'] }
       ]
     });
     return res.status(200).json({ success: true, count: lockedProgress.length, data: lockedProgress });
@@ -106,8 +106,8 @@ async function getAllReports(req, res) {
   try {
     const reports = await Reports.findAll({
       include: [
-        { model: Users, as: 'user', attributes: ['first_name', 'last_name', 'email'] },
-        { model: Users, as: 'report_user', attributes: ['first_name', 'last_name', 'email'] }
+        { model: Users, as: 'user', attributes: ['full_name', 'email'] },
+        { model: Users, as: 'report_user', attributes: ['full_name', 'email'] }
       ]
     });
     return res.status(200).json({ success: true, count: reports.length, data: reports });
@@ -140,8 +140,8 @@ async function getAllConversations(req, res) {
   try {
     const conversations = await Conversations.findAll({
       include: [
-        { model: Users, as: 'tenant', attributes: ['first_name', 'last_name', 'email'] },
-        { model: Users, as: 'landlord', attributes: ['first_name', 'last_name', 'email'] }
+        { model: Users, as: 'tenant', attributes: ['full_name', 'email'] },
+        { model: Users, as: 'landlord', attributes: ['full_name', 'email'] }
       ],
       order: [['updatedAt', 'DESC']]
     });
@@ -158,7 +158,7 @@ async function getConversationMessages(req, res) {
     const messages = await Messages.findAll({
       where: { conversation_id: id },
       include: [
-        { model: Users, as: 'sender', attributes: ['first_name', 'last_name', 'email'] }
+        { model: Users, as: 'sender', attributes: ['full_name', 'email'] }
       ],
       order: [['createdAt', 'ASC']]
     });

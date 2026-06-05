@@ -181,8 +181,11 @@ async function addRental(req, res) {
 async function seeAllRentals(req, res) {
   try {
     const where = {}; 
+    const page = req.query.page ? parseInt(req.query.page, 10) : null;
+    const limit = req.query.limit ? parseInt(req.query.limit, 10) : null;
+    const offset = (page && limit) ? (page - 1) * limit : null;
 
-    const rentals = await Rentals.findAll({
+    const queryOptions = {
       where,
       attributes: [
         "id", "slug", "title", "description", "propertyType", "location", "price",
@@ -190,11 +193,28 @@ async function seeAllRentals(req, res) {
       ],
       include: [{
         model: Users,
-        attributes: ["id", "first_name", "last_name", "phone_no"],
+        attributes: ["id", "full_name", "phone_no"],
         include: [{ model: Profile, attributes: ['image', 'verified'] }]
       }],
       order: [['createdAt', 'DESC']],
-    });
+    };
+
+    if (limit !== null) {
+      queryOptions.limit = limit;
+    }
+    if (offset !== null) {
+      queryOptions.offset = offset;
+    }
+
+    let result;
+    if (limit !== null) {
+      result = await Rentals.findAndCountAll(queryOptions);
+    } else {
+      const rows = await Rentals.findAll(queryOptions);
+      result = { count: rows.length, rows };
+    }
+
+    const { count, rows: rentals } = result;
 
     if (!rentals || rentals.length === 0) {
       return res.status(404).json({
@@ -223,11 +243,22 @@ async function seeAllRentals(req, res) {
       };
     });
 
-    return res.status(200).json({
+    const response = {
       success: true,
       data: rentalsWithLiked,
       message: "Rentals retrieved successfully",
-    });
+    };
+
+    if (limit !== null) {
+      response.pagination = {
+        totalItems: count,
+        totalPages: Math.ceil(count / limit),
+        currentPage: page || 1,
+        limit
+      };
+    }
+
+    return res.status(200).json(response);
   } catch (error) {
     console.error(error);
     return res.status(500).json({
@@ -266,7 +297,7 @@ async function getRental(req, res) {
       ],
       include: [{
         model: Users,
-        attributes: ["id", "first_name", "last_name", "phone_no"],
+        attributes: ["id", "full_name", "phone_no"],
         include: [{ model: Profile, attributes: ['image', 'verified'] }]
       }]
     };
@@ -311,7 +342,7 @@ async function getRental(req, res) {
         images: rentalData.images || [],
         videos: rentalData.videos || [],
         amenities: rentalData.amenities || [],
-        landlord: rentalData.Users || { first_name: "", last_name: "User" },
+        landlord: rentalData.Users || { full_name: "User" },
       },
       message: "Rental retrieved successfully",
     });
@@ -382,7 +413,7 @@ async function updateRental(req, res) {
     });
 
     const updatedRental = await Rentals.findByPk(id, {
-      include: [{ model: Users, attributes: ["id", "first_name", "last_name", "email"] }]
+      include: [{ model: Users, attributes: ["id", "full_name", "email"] }]
     });
 
     if (updatedRental.User) {
@@ -461,7 +492,7 @@ async function searchRentals(req, res) {
       ],
       include: [{
         model: Users,
-        attributes: ["id", "first_name", "last_name", "phone_no"],
+        attributes: ["id", "full_name", "phone_no"],
         include: [{ model: Profile, attributes: ['image', 'verified'] }]
       }],
       order: [['createdAt', 'DESC']],
@@ -503,7 +534,7 @@ async function seeRecentRentals(req, res) {
       ],
       include: [{
         model: Users,
-        attributes: ["id", "first_name", "last_name", "phone_no"],
+        attributes: ["id", "full_name", "phone_no"],
         include: [{ model: Profile, attributes: ['image', 'verified'] }]
       }],
       order: [['createdAt', 'DESC']],
@@ -595,7 +626,7 @@ async function seeRecommendedRentals(req, res) {
       ],
       include: [{
         model: Users,
-        attributes: ["id", "first_name", "last_name", "phone_no"],
+        attributes: ["id", "full_name", "phone_no"],
         include: [{ model: Profile, attributes: ['image', 'verified'] }]
       }],
       order: [['createdAt', 'DESC']],

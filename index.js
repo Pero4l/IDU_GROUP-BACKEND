@@ -11,7 +11,6 @@ const socketConfig = require("./config/socket");
 const app = express();
 const server = http.createServer(app);
 socketConfig.init(server);
-
 app.use(cookieParser());
 app.use(express.json());
 app.use(
