@@ -190,7 +190,7 @@ async function seeAllRentals(req, res) {
       ],
       include: [{
         model: Users,
-        attributes: ["id", "first_name", "last_name", "phone_no"],
+        attributes: ["id", "full_name", "phone_no"],
         include: [{ model: Profile, attributes: ['image', 'verified'] }]
       }],
       order: [['createdAt', 'DESC']],
@@ -266,7 +266,7 @@ async function getRental(req, res) {
       ],
       include: [{
         model: Users,
-        attributes: ["id", "first_name", "last_name", "phone_no"],
+        attributes: ["id", "full_name", "phone_no"],
         include: [{ model: Profile, attributes: ['image', 'verified'] }]
       }]
     };
@@ -311,7 +311,7 @@ async function getRental(req, res) {
         images: rentalData.images || [],
         videos: rentalData.videos || [],
         amenities: rentalData.amenities || [],
-        landlord: rentalData.Users || { first_name: "", last_name: "User" },
+        landlord: rentalData.Users || { full_name: "User" },
       },
       message: "Rental retrieved successfully",
     });
@@ -382,7 +382,7 @@ async function updateRental(req, res) {
     });
 
     const updatedRental = await Rentals.findByPk(id, {
-      include: [{ model: Users, attributes: ["id", "first_name", "last_name", "email"] }]
+      include: [{ model: Users, attributes: ["id", "full_name", "email"] }]
     });
 
     if (updatedRental.User) {
@@ -461,7 +461,7 @@ async function searchRentals(req, res) {
       ],
       include: [{
         model: Users,
-        attributes: ["id", "first_name", "last_name", "phone_no"],
+        attributes: ["id", "full_name", "phone_no"],
         include: [{ model: Profile, attributes: ['image', 'verified'] }]
       }],
       order: [['createdAt', 'DESC']],
@@ -503,7 +503,7 @@ async function seeRecentRentals(req, res) {
       ],
       include: [{
         model: Users,
-        attributes: ["id", "first_name", "last_name", "phone_no"],
+        attributes: ["id", "full_name", "phone_no"],
         include: [{ model: Profile, attributes: ['image', 'verified'] }]
       }],
       order: [['createdAt', 'DESC']],
@@ -595,7 +595,7 @@ async function seeRecommendedRentals(req, res) {
       ],
       include: [{
         model: Users,
-        attributes: ["id", "first_name", "last_name", "phone_no"],
+        attributes: ["id", "full_name", "phone_no"],
         include: [{ model: Profile, attributes: ['image', 'verified'] }]
       }],
       order: [['createdAt', 'DESC']],

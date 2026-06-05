@@ -16,8 +16,7 @@ async function loginMiddleware(req, res, next) {
     attributes: [
       "id",
       "password",
-      "first_name",
-      "last_name",
+      "full_name",
       "state",
       "country",
       "email",

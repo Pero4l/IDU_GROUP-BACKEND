@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 
 const { authMiddleware } = require('../middleware/authUserMiddleware');
+const { isVerifiedMiddleware } = require('../middleware/verificationMiddleware');
 const {
   likeHouse, getLikedHouses, unlikeHouse, deleteAllLikedHouses,
   initializeLockPayment, verifyLockPayment, verifyLockPaymentCallback, getLockedHouses, deleteLockedHouse, deleteAllLockedHouses,
@@ -15,8 +16,8 @@ router.delete('/like/:id', authMiddleware, unlikeHouse);
 router.delete('/like', authMiddleware, deleteAllLikedHouses);
 
 // Locked endpoints
-router.post('/lock/initialize', authMiddleware, initializeLockPayment);
-router.post('/lock/verify', authMiddleware, verifyLockPayment);
+router.post('/lock/initialize', authMiddleware, isVerifiedMiddleware, initializeLockPayment);
+router.post('/lock/verify', authMiddleware, isVerifiedMiddleware, verifyLockPayment);
 router.get('/lock/verify-callback', verifyLockPaymentCallback);
 router.get('/lock', authMiddleware, getLockedHouses);
 router.delete('/lock/:id', authMiddleware, deleteLockedHouse);

@@ -40,19 +40,33 @@ function uploadBufferToCloudinary(buffer, mimetype, folder) {
 async function updateProfile(req, res) {
   try {
     const userId = req.user.userId;
-    const { bio } = req.body;
+    const { bio, phone_no, state, address } = req.body;
     
     let profile = await Profile.findOne({ where: { user_id: userId } });
-    
     if (!profile) {
       return res.status(404).json({ success: false, message: "Profile not found" });
     }
 
+    let user = await Users.findByPk(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    // Update user details if supplied
+    if (phone_no !== undefined) user.phone_no = phone_no;
+    if (state !== undefined) user.state = state;
+    if (address !== undefined) user.address = address;
+
+    // Check if profile is complete
+    const isCompleted = !!(user.phone_no && user.state && user.address);
+    if (isCompleted) {
+      user.is_verified = true;
+    }
+    await user.save();
+
     let imageUrl = profile.image;
     let coverImageUrl = profile.coverImage;
 
-    // We assume you are passing files through a middleware like multer: req.files
-    // e.g., name fields for the inputs: 'profileImage' and 'coverImage'
     const profileImages = req.files?.profileImage || [];
     const coverImages = req.files?.coverImage || [];
 
@@ -71,12 +85,21 @@ async function updateProfile(req, res) {
     await profile.update({
       bio: bio || profile.bio,
       image: imageUrl,
-      coverImage: coverImageUrl
+      coverImage: coverImageUrl,
+      phone: user.phone_no,
+      address: user.address,
+      location: user.state ? `${user.state}, ${user.country || 'Nigeria'}` : profile.location,
+      verified: isCompleted ? true : profile.verified
     });
 
     return res.status(200).json({
       success: true,
-      message: "Profile updated successfully"
+      message: isCompleted 
+        ? "Profile updated and verified successfully." 
+        : "Profile updated successfully.",
+      user: {
+        is_verified: user.is_verified
+      }
     });
 
   } catch (error) {

@@ -61,8 +61,8 @@ exports.getChats = async (req, res) => {
         [Op.or]: [{ tenant_id: current_user_id }, { landlord_id: current_user_id }]
       },
       include: [
-        { model: Users, as: "tenant", attributes: ["id", "first_name", "last_name", "role", "email"] },
-        { model: Users, as: "landlord", attributes: ["id", "first_name", "last_name", "role", "email"] }
+        { model: Users, as: "tenant", attributes: ["id", "full_name", "role", "email"] },
+        { model: Users, as: "landlord", attributes: ["id", "full_name", "role", "email"] }
       ],
       order: [["updatedAt", "DESC"]]
     });
@@ -138,7 +138,7 @@ exports.getMessages = async (req, res) => {
     const messages = await Messages.findAll({
       where: { conversation_id },
       include: [
-        { model: Users, as: "sender", attributes: ["id", "first_name", "last_name", "role"] }
+        { model: Users, as: "sender", attributes: ["id", "full_name", "role"] }
       ],
       order: [["createdAt", "ASC"]]
     });
