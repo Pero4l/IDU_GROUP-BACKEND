@@ -1,5 +1,5 @@
 const { Testimonials, Users, Profile } = require("../models");
-const { sendEmail } = require('../utils/mailer')
+const { sendEmail } = require("../utils/mailer");
 
 // CREATE testimonials
 async function createTestimonial(req, res) {
@@ -31,7 +31,7 @@ async function createTestimonial(req, res) {
     if (existing) {
       return res.status(400).json({
         success: false,
-        message: "You already have a testimonial. Please udate it instead",
+        message: "You already have a testimonial. Please update it instead",
       });
     }
 
@@ -47,7 +47,7 @@ async function createTestimonial(req, res) {
         .json({ success: false, message: "User not found" });
     }
 
-    const testimonials = await Testimonials.create({
+    const testimonial = await Testimonials.create({
       user_id: userId,
       user_name: `${user.first_name} ${user.last_name}`,
       user_image: user.Profile?.image || null,
@@ -57,8 +57,8 @@ async function createTestimonial(req, res) {
 
     // SEND CONFIRMATION EMAIL
     try {
-       const stars = "⭐".repeat(rating);
-       const emailHtml = `<div style="font-family: Arial, sans-serif; background-color: #f9fafb; padding: 20px;">
+      const stars = "⭐".repeat(rating);
+      const emailHtml = `<div style="font-family: Arial, sans-serif; background-color: #f9fafb; padding: 20px;">
           <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; padding: 30px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
             
             <h2 style="color: #111827;">Thanks for your testimonial, ${user.first_name}! 🎉</h2>
@@ -96,14 +96,19 @@ async function createTestimonial(req, res) {
           </div>
         </div>`;
 
-        const emailText = `Hi ${user.first_name},\n\nThank you for submitting your testimonial on RentULO!\n\nYour rating: ${rating}/5\nYour message: "${message}"\n\nYou can update or delete your testimonial anytime from your dashboard.\n\nBest regards,\nThe RentULO Team`;
+      const emailText = `Hi ${user.first_name},\n\nThank you for submitting your testimonial on RentULO!\n\nYour rating: ${rating}/5\nYour message: "${message}"\n\nYou can update or delete your testimonial anytime from your dashboard.\n\nBest regards,\nThe RentULO Team`;
 
-        await sendEmail(user.email, 'Thanks for your Testimonilas 🌟', emailText, emailHtml)
+      await sendEmail(
+        user.email,
+        "Thanks for your Testimonial 🌟",
+        emailText,
+        emailHtml,
+      );
     } catch (mailError) {
-      console.error('Failed to send testimonial confirmation email', mailError)
+      console.error("Failed to send testimonial confirmation email", mailError);
     }
 
-    return res.status(200).json({
+    return res.status(201).json({
       success: true,
       message: "Testimonial created successfully",
       data: testimonial,
@@ -113,3 +118,134 @@ async function createTestimonial(req, res) {
     return res.status(500).json({ success: false, message: "Server error" });
   }
 }
+
+// UPDATE TESTIMONIALS
+async function updateTestimonial(req, res) {
+  try {
+    const userId = req.user.userId;
+    const { rating, message } = req.body;
+
+    if (!rating && !message) {
+      return res.status(400).json({
+        success: false,
+        message: "Provide at least one field to update",
+      });
+    }
+
+    if (rating && (rating < 1 || rating > 5)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Rating must be between 1 and 5" });
+    }
+
+    if (message && message.length < 10) {
+      return res.status(400).json({
+        success: false,
+        message: "Message must be at least 10 characters",
+      });
+    }
+
+    const testimonial = await Testimonials.findOne({
+      where: { user_id: userId },
+    });
+    if (!testimonial) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Testimonials not found" });
+    }
+
+    if (rating) testimonial.rating = rating;
+    if (message) testimonial.message = message;
+    await testimonial.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Testimonial updated successfully",
+      data: testimonial,
+    });
+  } catch (error) {
+    console.error("updateTestimonial error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+// DELETE TESTIMONIALS
+async function deleteTestimonial(req, res) {
+  try {
+    const userId = req.user.userId;
+
+    const testimonial = await Testimonials.findOne({
+      where: { user_id: userId },
+    });
+
+    if (!testimonial) {
+      return res.status(404).json({
+        success: false,
+        message: "Testimonial not found",
+      });
+    }
+
+    await testimonial.destroy();
+
+    return res.status(200).json({
+      success: true,
+      message: "Testimonial deleted successfully",
+    });
+  } catch (error) {
+    console.error("deleteTestimonial error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+// GET ALL TESTIMONIALS
+async function getAllTestimonials(req, res) {
+  try {
+    const testimonials = await Testimonials.findAll({
+      order: [["createdAt", "DESC"]],
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Testimonial fetched successfully",
+      data: testimonials,
+    });
+  } catch (error) {
+    console.error("getAllTestimonial error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
+}
+
+// GET logged-in user's testimonials
+async function getMyTestimonial(req, res) {
+  try {
+    const userId = req.user.userId;
+
+    const testimonial = await Testimonials.findOne({
+      where: { user_id: userId },
+    });
+    if (!testimonial) {
+      return res.status(404).json({
+        success: false,
+        message: "You have not submitted a testimonial yet",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Testimonial fetched successfully",
+      data: testimonial,
+    });
+  } catch (error) {
+    console.error("getMytestimonial:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
+}
+
+
+module.exports = {createTestimonial, updateTestimonial, deleteTestimonial, getAllTestimonials, getMyTestimonial}
