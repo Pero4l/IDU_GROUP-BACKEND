@@ -6,7 +6,8 @@ const { isVerifiedMiddleware } = require('../middleware/verificationMiddleware')
 const {
   likeHouse, getLikedHouses, unlikeHouse, deleteAllLikedHouses,
   initializeLockPayment, verifyLockPayment, verifyLockPaymentCallback, getLockedHouses, deleteLockedHouse, deleteAllLockedHouses,
-  bookHouse, getBookedHouses, deleteBookedHouse, deleteAllBookedHouses
+  bookHouse, getBookedHouses, deleteBookedHouse, deleteAllBookedHouses,
+  initializeRentPayment, verifyRentPayment, verifyRentPaymentCallback
 } = require('../controllers/progreess.controller');
 
 // Liked endpoints
@@ -28,5 +29,10 @@ router.post('/book', authMiddleware, bookHouse);
 router.get('/book', authMiddleware, getBookedHouses);
 router.delete('/book/:id', authMiddleware, deleteBookedHouse);
 router.delete('/book', authMiddleware, deleteAllBookedHouses);
+
+// Rent payment endpoints
+router.post('/rent/initialize', authMiddleware, isVerifiedMiddleware, initializeRentPayment);
+router.post('/rent/verify', authMiddleware, isVerifiedMiddleware, verifyRentPayment);
+router.get('/rent/verify-callback', verifyRentPaymentCallback);
 
 module.exports = router;
