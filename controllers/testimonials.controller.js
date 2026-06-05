@@ -47,9 +47,13 @@ async function createTestimonial(req, res) {
         .json({ success: false, message: "User not found" });
     }
 
+    const userName =
+      (
+        user.full_name || `${user.first_name || ""} ${user.last_name || ""}`
+      ).trim() || "there";
     const testimonial = await Testimonials.create({
       user_id: userId,
-      user_name: `${user.first_name} ${user.last_name}`,
+      user_name: userName,
       user_image: user.Profile?.image || null,
       rating,
       message,
@@ -61,7 +65,7 @@ async function createTestimonial(req, res) {
       const emailHtml = `<div style="font-family: Arial, sans-serif; background-color: #f9fafb; padding: 20px;">
           <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; padding: 30px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
             
-            <h2 style="color: #111827;">Thanks for your testimonial, ${user.first_name}! 🎉</h2>
+            <h2 style="color: #111827;">Thanks for your testimonial, ${userName}! 🎉</h2>
             
             <p style="color: #4b5563; font-size: 15px; line-height: 1.6;">
               We appreciate you taking the time to share your experience with RentULO. Here's what you submitted:
@@ -96,7 +100,7 @@ async function createTestimonial(req, res) {
           </div>
         </div>`;
 
-      const emailText = `Hi ${user.first_name},\n\nThank you for submitting your testimonial on RentULO!\n\nYour rating: ${rating}/5\nYour message: "${message}"\n\nYou can update or delete your testimonial anytime from your dashboard.\n\nBest regards,\nThe RentULO Team`;
+      const emailText = `Hi ${userName},\n\nThank you for submitting your testimonial on RentULO!\n\nYour rating: ${rating}/5\nYour message: "${message}"\n\nYou can update or delete your testimonial anytime from your dashboard.\n\nBest regards,\nThe RentULO Team`;
 
       await sendEmail(
         user.email,
@@ -151,12 +155,77 @@ async function updateTestimonial(req, res) {
     if (!testimonial) {
       return res
         .status(404)
-        .json({ success: false, message: "Testimonials not found" });
+        .json({ success: false, message: "Testimonial not found" });
     }
+
+    // ✅ user defined here before it's used anywhere
+    const user = await Users.findOne({ where: { id: userId } });
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+    }
+    const userName =
+      (
+        user.full_name || `${user.first_name || ""} ${user.last_name || ""}`
+      ).trim() || "there";
 
     if (rating) testimonial.rating = rating;
     if (message) testimonial.message = message;
+    testimonial.user_name =
+      user.full_name || `${user.first_name} ${user.last_name}`;
     await testimonial.save();
+
+    // SEND UPDATE EMAIL
+    try {
+      const stars = "⭐".repeat(testimonial.rating);
+
+      const emailHtml = `
+        <div style="font-family: Arial, sans-serif; background-color: #f9fafb; padding: 20px;">
+          <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; padding: 30px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
+            
+            <h2 style="color: #111827;">Your testimonial has been updated ✏️</h2>
+            
+            <p style="color: #4b5563; font-size: 15px; line-height: 1.6;">
+              Hi ${userName}, your testimonial on RentULO has been successfully updated. Here's what it looks like now:
+            </p>
+
+            <div style="background-color: #f3f4f6; border-radius: 8px; padding: 20px; margin: 20px 0;">
+              <p style="color: #111827; font-size: 16px; margin: 0 0 10px 0;">${stars}</p>
+              <p style="color: #374151; font-size: 15px; font-style: italic; margin: 0;">"${testimonial.message}"</p>
+            </div>
+
+            <p style="color: #4b5563; font-size: 14px;">
+              If you did not make this change, please contact our support team immediately.
+            </p>
+
+            <div style="text-align: center; margin: 30px 0;">
+              <a href="https://rentulo.com/dashboard" 
+                style="background-color: #111827; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 6px; font-size: 14px;">
+                Go to Dashboard
+              </a>
+            </div>
+
+            <hr style="margin: 30px 0; border: none; border-top: 1px solid #e5e7eb;" />
+
+            <p style="color: #9ca3af; font-size: 12px; text-align: center;">
+              © ${new Date().getFullYear()} RentULO. All rights reserved.
+            </p>
+
+          </div>
+        </div>
+      `;
+
+      const emailText = `Hi ${userName},\n\nYour testimonial has been successfully updated.\n\nYour rating: ${testimonial.rating}/5\nYour message: "${testimonial.message}"\n\nIf you did not make this change, please contact support.\n\nBest regards,\nThe RentULO Team`;
+      await sendEmail(
+        user.email,
+        "Your Testimonial Has Been Updated ✏️",
+        emailText,
+        emailHtml,
+      );
+    } catch (mailError) {
+      console.error("Failed to send testimonial update email:", mailError);
+    }
 
     return res.status(200).json({
       success: true,
@@ -177,7 +246,6 @@ async function deleteTestimonial(req, res) {
     const testimonial = await Testimonials.findOne({
       where: { user_id: userId },
     });
-
     if (!testimonial) {
       return res.status(404).json({
         success: false,
@@ -185,7 +253,63 @@ async function deleteTestimonial(req, res) {
       });
     }
 
+    // GET USER BEFORE DELETING
+    const user = await Users.findOne({ where: { id: userId } });
+    const userName =
+      (
+        user.full_name || `${user.first_name || ""} ${user.last_name || ""}`
+      ).trim() || "there";
+
     await testimonial.destroy();
+
+    // SEND DELETE EMAIL
+    try {
+      const emailHtml = `
+        <div style="font-family: Arial, sans-serif; background-color: #f9fafb; padding: 20px;">
+          <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; padding: 30px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
+            
+            <h2 style="color: #111827;">Your testimonial has been deleted 🗑️</h2>
+            
+            <p style="color: #4b5563; font-size: 15px; line-height: 1.6;">
+              Hi ${userName}, your testimonial on RentULO has been successfully deleted.
+            </p>
+
+            <p style="color: #4b5563; font-size: 14px; line-height: 1.6;">
+              If you change your mind, you can always submit a new testimonial from your dashboard anytime.
+            </p>
+
+            <p style="color: #4b5563; font-size: 14px;">
+              If you did not request this deletion, please contact our support team immediately.
+            </p>
+
+            <div style="text-align: center; margin: 30px 0;">
+              <a href="https://rentulo.com/dashboard" 
+                style="background-color: #111827; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 6px; font-size: 14px;">
+                Go to Dashboard
+              </a>
+            </div>
+
+            <hr style="margin: 30px 0; border: none; border-top: 1px solid #e5e7eb;" />
+
+            <p style="color: #9ca3af; font-size: 12px; text-align: center;">
+              © ${new Date().getFullYear()} RentULO. All rights reserved.
+            </p>
+
+          </div>
+        </div>
+      `;
+
+      const emailText = `Hi ${userName},\n\nYour testimonial on RentULO has been successfully deleted.\n\nIf you did not request this, please contact support immediately.\n\nBest regards,\nThe RentULO Team`;
+
+      await sendEmail(
+        user.email,
+        "Your Testimonial Has Been Deleted 🗑️",
+        emailText,
+        emailHtml,
+      );
+    } catch (mailError) {
+      console.error("Failed to send testimonial delete email:", mailError);
+    }
 
     return res.status(200).json({
       success: true,
@@ -247,5 +371,10 @@ async function getMyTestimonial(req, res) {
   }
 }
 
-
-module.exports = {createTestimonial, updateTestimonial, deleteTestimonial, getAllTestimonials, getMyTestimonial}
+module.exports = {
+  createTestimonial,
+  updateTestimonial,
+  deleteTestimonial,
+  getAllTestimonials,
+  getMyTestimonial,
+};
