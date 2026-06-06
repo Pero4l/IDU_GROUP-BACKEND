@@ -110,6 +110,7 @@ async function deleteAllLikedHouses(req, res) {
   }
 }
 
+
 // ==========================
 // LOCKED HOUSE CONTROLLERS
 // ==========================
