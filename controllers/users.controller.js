@@ -1,53 +1,65 @@
-const {Users, Notifications, Profile, PendingRegistrations} = require('../models');
-const { Op } = require('sequelize');
+const {
+  Users,
+  Notifications,
+  Profile,
+  PendingRegistrations,
+} = require("../models");
+const { Op } = require("sequelize");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 require("dotenv").config();
-const { OAuth2Client } = require('google-auth-library');
+const { OAuth2Client } = require("google-auth-library");
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
-const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
-const { sendEmail } = require('../utils/mailer');
+const {
+  notifySuperAdmins,
+  logAndEmailUser,
+} = require("./notification.controller");
+const { sendEmail } = require("../utils/mailer");
 
 async function register(req, res) {
   try {
-    const {
-      gender,
-      role,
-      email,
-      password,
-    } = req.body;
+    const { gender, role, email, password } = req.body;
 
-    const full_name = (req.body.full_name || `${req.body.first_name || ''} ${req.body.last_name || ''}`).trim();
+    const full_name = (
+      req.body.full_name ||
+      `${req.body.first_name || ""} ${req.body.last_name || ""}`
+    ).trim();
 
-    if (
-      !full_name ||
-      !gender ||
-      !role ||
-      !email ||
-      !password
-    ) {
+    if (!full_name || !gender || !role || !email || !password) {
       return res.status(400).json({ message: "All fields are required" });
     }
 
     if (password.length < 6) {
-      return res.status(400).json({ message: "Password must be at least 6 characters" });
+      return res
+        .status(400)
+        .json({ message: "Password must be at least 6 characters" });
     } else if (!/[A-Z]/.test(password) || !/[a-z]/.test(password)) {
-      return res.status(400).json({ message: "Password must contain both uppercase and lowercase letters" });
+      return res
+        .status(400)
+        .json({
+          message: "Password must contain both uppercase and lowercase letters",
+        });
     } else if (!/[0-9]/.test(password)) {
-      return res.status(400).json({ message: "Password must contain a number" });
+      return res
+        .status(400)
+        .json({ message: "Password must contain a number" });
     } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return res.status(400).json({ message: "Invalid email format" });
     } else if (full_name.length < 5) {
-      return res.status(400).json({ message: "Name must be at least 5 characters" });
+      return res
+        .status(400)
+        .json({ message: "Name must be at least 5 characters" });
     }
 
     const existingUser = await Users.findOne({ where: { email } });
     if (existingUser) {
-      return res.status(400).json({ success: false, message: "User already exists" });
+      return res
+        .status(400)
+        .json({ success: false, message: "User already exists" });
     }
 
     const hashedPassword = await bcrypt.hash(password, 12);
-    
+
     // Generate a 6-digit OTP code and set expiry to 15 minutes from now
     const otpCode = Math.floor(100000 + Math.random() * 900000);
     const otpExpiresAt = new Date(Date.now() + 15 * 60 * 1000);
@@ -63,7 +75,7 @@ async function register(req, res) {
       role,
       password: hashedPassword,
       otpCode,
-      otpExpiresAt
+      otpExpiresAt,
     });
 
     // Send OTP Verification Email
@@ -97,9 +109,9 @@ async function register(req, res) {
 
       previewUrl = await sendEmail(
         email,
-        'RentULO Account Verification OTP 🔑',
+        "RentULO Account Verification OTP 🔑",
         `Hello ${full_name},\n\nYour OTP for registration is ${otpCode}. It is valid for 15 minutes.\n\nBest regards,\nThe RentULO Team`,
-        verifyRegisterHtml
+        verifyRegisterHtml,
       );
     } catch (mailError) {
       console.error("Failed to send verification email:", mailError);
@@ -107,10 +119,10 @@ async function register(req, res) {
 
     return res.status(200).json({
       success: true,
-      message: "Verification OTP code sent to your email. Please verify to complete registration.",
-      testMailUrl: previewUrl
+      message:
+        "Verification OTP code sent to your email. Please verify to complete registration.",
+      testMailUrl: previewUrl,
     });
-
   } catch (error) {
     console.error(error);
     return res.status(500).json({
@@ -124,20 +136,31 @@ async function verifyRegistration(req, res) {
   try {
     const { email, otpCode } = req.body;
     if (!email || !otpCode) {
-      return res.status(400).json({ success: false, message: "Email and OTP code are required" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Email and OTP code are required" });
     }
 
     const pending = await PendingRegistrations.findOne({ where: { email } });
     if (!pending) {
-      return res.status(404).json({ success: false, message: "Registration request not found or already verified" });
+      return res
+        .status(404)
+        .json({
+          success: false,
+          message: "Registration request not found or already verified",
+        });
     }
 
     if (pending.otpCode !== parseInt(otpCode)) {
-      return res.status(400).json({ success: false, message: "Invalid OTP code" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid OTP code" });
     }
 
     if (new Date() > new Date(pending.otpExpiresAt)) {
-      return res.status(400).json({ success: false, message: "OTP code has expired" });
+      return res
+        .status(400)
+        .json({ success: false, message: "OTP code has expired" });
     }
 
     // 1. Create User
@@ -158,7 +181,7 @@ async function verifyRegistration(req, res) {
       phone: null,
       address: null,
       location: null,
-      verified: false
+      verified: false,
     });
 
     // 3. Create Notification
@@ -166,7 +189,7 @@ async function verifyRegistration(req, res) {
       user_id: newUser.id,
       type: "account",
       notification: `Welcome to RentULO ${newUser.full_name}! Your account has been successfully created.`,
-      is_read: false
+      is_read: false,
     });
 
     // 4. Delete Pending Registration
@@ -217,25 +240,37 @@ The RentULO Team
   </div>
   `;
 
-      await sendEmail(newUser.email, 'Welcome to RentULO 🎉', welcomeText, welcomeHtml);
+      await sendEmail(
+        newUser.email,
+        "Welcome to RentULO 🎉",
+        welcomeText,
+        welcomeHtml,
+      );
     } catch (mailError) {
       console.error("Failed to send welcome email:", mailError);
     }
 
     // 6. Broadcast notification to Super Admins
-    await notifySuperAdmins(`New user registered: ${newUser.full_name} (${newUser.role})`, 'system');
+    await notifySuperAdmins(
+      `New user registered: ${newUser.full_name} (${newUser.role})`,
+      "system",
+    );
 
     return res.status(201).json({
       success: true,
-      message: "Account verified and registered successfully. You can now login.",
+      message:
+        "Account verified and registered successfully. You can now login.",
     });
-
   } catch (error) {
     console.error("Verify registration error:", error);
-    return res.status(500).json({ success: false, message: "Server error during registration verification" });
+    return res
+      .status(500)
+      .json({
+        success: false,
+        message: "Server error during registration verification",
+      });
   }
 }
-
 
 async function login(req, res) {
   try {
@@ -245,35 +280,40 @@ async function login(req, res) {
         currentUser: req.data.full_name,
         location: `${req.data.state}, ${req.data.country}`,
         role: `${req.data.role}`,
-        email: `${req.data.email}`
+        email: `${req.data.email}`,
       },
       process.env.JWT_SECRET,
-      { expiresIn: "24h" }
+      { expiresIn: "24h" },
     );
 
     const role = req.data.role;
     const id = req.data.id;
 
     if (req.user) {
-      await logAndEmailUser(req.data.id, req.data.email, "New Login Alert", "A successful login to your RentULO account was just detected.");
-      
+      await logAndEmailUser(
+        req.data.id,
+        req.data.email,
+        "New Login Alert",
+        "A successful login to your RentULO account was just detected.",
+      );
+
       const cookieOptions = {
         httpOnly: true,
         secure: true,
-        sameSite: 'strict',
-        path: '/',
-        maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days in milliseconds
+        sameSite: "strict",
+        path: "/",
+        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days in milliseconds
       };
-      
-      res.cookie('token', token, cookieOptions);
-      res.cookie('userRole', role, cookieOptions);
+
+      res.cookie("token", token, cookieOptions);
+      res.cookie("userRole", role, cookieOptions);
 
       return res.status(200).json({
         success: true,
         message: "Login Successfully",
         token: token,
         role: role,
-        id: id
+        id: id,
       });
     }
   } catch (error) {
@@ -285,24 +325,35 @@ async function login(req, res) {
   }
 }
 
-
 async function searchUsers(req, res) {
   try {
     const { name } = req.query;
-    if (!name) return res.status(400).json({ success: false, message: "Search name query parameter is required." });
-    
+    if (!name)
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Search name query parameter is required.",
+        });
+
     const users = await Users.findAll({
       where: {
         [Op.or]: [
           { full_name: { [Op.iLike]: `%${name}%` } },
-          { email: { [Op.iLike]: `%${name}%` } }
-        ]
+          { email: { [Op.iLike]: `%${name}%` } },
+        ],
       },
-      attributes: ['id', 'full_name', 'email', 'role'],
-      include: [{ model: Profile, attributes: ['image', 'verified'] }]
+      attributes: ["id", "full_name", "email", "role"],
+      include: [{ model: Profile, attributes: ["image", "verified"] }],
     });
 
-    return res.status(200).json({ success: true, message: "Users fetched successfully", data: users });
+    return res
+      .status(200)
+      .json({
+        success: true,
+        message: "Users fetched successfully",
+        data: users,
+      });
   } catch (error) {
     console.error("Search error:", error);
     return res.status(500).json({ success: false, message: "Server error" });
@@ -313,14 +364,17 @@ async function forgotPassword(req, res) {
   try {
     const { email } = req.body;
     if (!email) {
-      return res.status(400).json({ success: false, message: "Email is required" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Email is required" });
     }
 
     const user = await Users.findOne({ where: { email } });
     if (!user) {
-      return res.status(404).json({ success: false, message: "User not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
     }
-
 
     // Generate a 6-digit OTP
     const otpCode = Math.floor(100000 + Math.random() * 900000);
@@ -336,9 +390,9 @@ async function forgotPassword(req, res) {
     try {
       previewUrl = await sendEmail(
         email,
-        'Password Reset OTP',
+        "Password Reset OTP",
         `Your password reset OTP is ${otpCode}. It expires in 15 minutes.`,
-        `<p>Your password reset OTP is <b>${otpCode}</b>. It expires in 15 minutes.</p>`
+        `<p>Your password reset OTP is <b>${otpCode}</b>. It expires in 15 minutes.</p>`,
       );
     } catch (mailError) {
       console.error("Forgot password email error:", mailError);
@@ -347,9 +401,8 @@ async function forgotPassword(req, res) {
     return res.status(200).json({
       success: true,
       message: "OTP sent to email successfully",
-      testMailUrl: previewUrl
+      testMailUrl: previewUrl,
     });
-
   } catch (error) {
     console.error("Forgot password error:", error);
     return res.status(500).json({ success: false, message: "Server error" });
@@ -360,25 +413,33 @@ async function confirmOtp(req, res) {
   try {
     const { email, otpCode } = req.body;
     if (!email || !otpCode) {
-      return res.status(400).json({ success: false, message: "Email and OTP code are required" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Email and OTP code are required" });
     }
 
     const user = await Users.findOne({ where: { email } });
     if (!user) {
-      return res.status(404).json({ success: false, message: "User not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
     }
 
     if (user.otpCode !== parseInt(otpCode)) {
-      return res.status(400).json({ success: false, message: "Invalid OTP code" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid OTP code" });
     }
 
     if (new Date() > new Date(user.otpExpiresAt)) {
-      return res.status(400).json({ success: false, message: "OTP code has expired" });
+      return res
+        .status(400)
+        .json({ success: false, message: "OTP code has expired" });
     }
 
     return res.status(200).json({
       success: true,
-      message: "OTP is correct. You may proceed to change your password."
+      message: "OTP is correct. You may proceed to change your password.",
     });
   } catch (error) {
     console.error("Confirm OTP error:", error);
@@ -390,36 +451,59 @@ async function resetPassword(req, res) {
   try {
     const { email, otpCode, newPassword } = req.body;
     if (!email || !otpCode || !newPassword) {
-      return res.status(400).json({ success: false, message: "Email, OTP code, and new password are required" });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Email, OTP code, and new password are required",
+        });
     }
 
     if (newPassword.length < 6) {
-      return res.status(400).json({ success: false, message: "Password must be at least 6 characters" });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Password must be at least 6 characters",
+        });
     } else if (!/[A-Z]/.test(newPassword) || !/[a-z]/.test(newPassword)) {
-      return res.status(400).json({ success: false, message: "Password must contain both uppercase and lowercase letters" });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Password must contain both uppercase and lowercase letters",
+        });
     } else if (!/[0-9]/.test(newPassword)) {
-      return res.status(400).json({ success: false, message: "Password must contain a number" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Password must contain a number" });
     }
 
     const user = await Users.findOne({ where: { email } });
     if (!user) {
-      return res.status(404).json({ success: false, message: "User not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
     }
 
     // Verify OTP
     if (user.otpCode !== parseInt(otpCode)) {
-      return res.status(400).json({ success: false, message: "Invalid OTP code" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid OTP code" });
     }
 
     // Check expiration
     if (new Date() > new Date(user.otpExpiresAt)) {
-      return res.status(400).json({ success: false, message: "OTP code has expired" });
+      return res
+        .status(400)
+        .json({ success: false, message: "OTP code has expired" });
     }
 
     // Hash the new password
     const hashedPassword = await bcrypt.hash(newPassword, 12);
     user.password = hashedPassword;
-    
+
     // Clear the OTP fields
     user.otpCode = null;
     user.otpExpiresAt = null;
@@ -427,9 +511,8 @@ async function resetPassword(req, res) {
 
     return res.status(200).json({
       success: true,
-      message: "Password reset successful"
+      message: "Password reset successful",
     });
-
   } catch (error) {
     console.error("Reset password error:", error);
     return res.status(500).json({ success: false, message: "Server error" });
@@ -439,22 +522,25 @@ async function resetPassword(req, res) {
 async function googleAuth(req, res) {
   try {
     const { idToken } = req.body;
-    if (!idToken) return res.status(400).json({ success: false, message: "idToken is required" });
+    if (!idToken)
+      return res
+        .status(400)
+        .json({ success: false, message: "idToken is required" });
 
     const ticket = await googleClient.verifyIdToken({
       idToken,
-      audience: process.env.GOOGLE_CLIENT_ID
+      audience: process.env.GOOGLE_CLIENT_ID,
     });
     const payload = ticket.getPayload();
     const { email, given_name, family_name } = payload;
 
     let user = await Users.findOne({ where: { email } });
-    
+
     if (!user) {
       // Create user if they don't exist
       const randomPassword = Math.random().toString(36).slice(-8) + "Aa1@";
       const hashedPassword = await bcrypt.hash(randomPassword, 12);
-      
+
       user = await Users.create({
         full_name: `${given_name || "Google"} ${family_name || "User"}`.trim(),
         email,
@@ -472,57 +558,68 @@ async function googleAuth(req, res) {
         user_id: user.id,
         type: "account",
         notification: `Welcome to RentULO ${user.full_name}! Your account has been successfully created via Google.`,
-        is_read: false
+        is_read: false,
       });
 
       await Profile.create({
         user_id: user.id,
-        bio: 'Hey I am a verified user at RentULO',
+        bio: "Hey I am a verified user at RentULO",
         phone: null,
         address: null,
         location: null,
-        verified: false
+        verified: false,
       });
 
-      await notifySuperAdmins(`New user registered via Google: ${user.full_name} (tenant)`, 'system');
+      await notifySuperAdmins(
+        `New user registered via Google: ${user.full_name} (tenant)`,
+        "system",
+      );
     }
 
     const token = jwt.sign(
       {
         userId: user.id,
         currentUser: user.full_name,
-        location: user.state ? `${user.state}, ${user.country}` : 'Not fully set',
+        location: user.state
+          ? `${user.state}, ${user.country}`
+          : "Not fully set",
         role: `${user.role}`,
-        email: `${user.email}`
+        email: `${user.email}`,
       },
       process.env.JWT_SECRET,
-      { expiresIn: "24h" }
+      { expiresIn: "24h" },
     );
 
     // Return standard 200 OK since the auth was successful.
-    await logAndEmailUser(user.id, user.email, "New Login Alert", "A successful login via Google was just detected on your RentULO account.");
-    
+    await logAndEmailUser(
+      user.id,
+      user.email,
+      "New Login Alert",
+      "A successful login via Google was just detected on your RentULO account.",
+    );
+
     const cookieOptions = {
       httpOnly: true,
       secure: true,
-      sameSite: 'strict',
-      path: '/',
-      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days in milliseconds
+      sameSite: "strict",
+      path: "/",
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days in milliseconds
     };
-    
-    res.cookie('token', token, cookieOptions);
-    res.cookie('userRole', user.role, cookieOptions);
+
+    res.cookie("token", token, cookieOptions);
+    res.cookie("userRole", user.role, cookieOptions);
 
     return res.status(200).json({
       success: true,
       message: "Google Auth Successful",
       token: token,
-      role: user.role
+      role: user.role,
     });
-
   } catch (error) {
     console.error("Google Auth error:", error);
-    return res.status(500).json({ success: false, message: "Server error during Google auth" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Server error during Google auth" });
   }
 }
 
@@ -533,12 +630,12 @@ async function getMe(req, res) {
   if (token && userRole) {
     return res.status(200).json({
       isLoggedIn: true,
-      userRole: userRole
+      userRole: userRole,
     });
   } else {
     return res.status(200).json({
       isLoggedIn: false,
-      userRole: null
+      userRole: null,
     });
   }
 }
@@ -547,17 +644,19 @@ async function logout(req, res) {
   const cookieOptions = {
     httpOnly: true,
     secure: true,
-    sameSite: 'strict',
-    path: '/'
+    sameSite: "strict",
+    path: "/",
   };
-  
-  res.clearCookie('token', cookieOptions);
-  res.cookie('userRole', cookieOptions); // Wait, no, res.clearCookie('userRole', cookieOptions) in original code:
+
+  res.clearCookie("token", cookieOptions);
+  res.cookie("userRole", cookieOptions); // Wait, no, res.clearCookie('userRole', cookieOptions) in original code:
   // let's match exact original:
-  res.clearCookie('token', cookieOptions);
-  res.clearCookie('userRole', cookieOptions);
-  
-  return res.status(200).json({ success: true, message: "Logged out successfully" });
+  res.clearCookie("token", cookieOptions);
+  res.clearCookie("userRole", cookieOptions);
+
+  return res
+    .status(200)
+    .json({ success: true, message: "Logged out successfully" });
 }
 
 async function registerAdmin(req, res) {
@@ -572,12 +671,24 @@ async function registerAdmin(req, res) {
       adminSecretKey,
     } = req.body;
 
-    const full_name = (req.body.full_name || `${req.body.first_name || ''} ${req.body.last_name || ''}`).trim();
+    const full_name = (
+      req.body.full_name ||
+      `${req.body.first_name || ""} ${req.body.last_name || ""}`
+    ).trim();
 
-    const secretKey = (adminSecretKey || req.headers?.['x-admin-secret'])?.trim();
-    const systemSecret = (process.env.ADMIN_SECRET_KEY || 'rentulo_secret_admin_key_2026')?.trim();
+    const secretKey = (
+      adminSecretKey || req.headers?.["x-admin-secret"]
+    )?.trim();
+    const systemSecret = (
+      process.env.ADMIN_SECRET_KEY || "rentulo_secret_admin_key_2026"
+    )?.trim();
     if (secretKey !== systemSecret) {
-      return res.status(403).json({ success: false, message: "Unauthorized. Invalid admin secret key." });
+      return res
+        .status(403)
+        .json({
+          success: false,
+          message: "Unauthorized. Invalid admin secret key.",
+        });
     }
 
     if (
@@ -589,26 +700,49 @@ async function registerAdmin(req, res) {
       !email ||
       !password
     ) {
-      return res.status(400).json({ success: false, message: "All fields are required" });
+      return res
+        .status(400)
+        .json({ success: false, message: "All fields are required" });
     }
 
     if (password.length < 6) {
-      return res.status(400).json({ success: false, message: "Password must be at least 6 characters" });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Password must be at least 6 characters",
+        });
     } else if (!/[A-Z]/.test(password) || !/[a-z]/.test(password)) {
-      return res.status(400).json({ success: false, message: "Password must contain both uppercase and lowercase letters" });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Password must contain both uppercase and lowercase letters",
+        });
     } else if (!/[0-9]/.test(password)) {
-      return res.status(400).json({ success: false, message: "Password must contain a number" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Password must contain a number" });
     } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      return res.status(400).json({ success: false, message: "Invalid email format" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid email format" });
     } else if (full_name.length < 3) {
-      return res.status(400).json({ success: false, message: "Name must be at least 3 characters" });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Name must be at least 3 characters",
+        });
     }
 
     const existingUser = await Users.findOne({ where: { email } });
     if (existingUser && existingUser.is_active) {
-      return res.status(400).json({ success: false, message: "User already exists" });
+      return res
+        .status(400)
+        .json({ success: false, message: "User already exists" });
     }
-    
+
     // Generate a 6-digit OTP
     const otpCode = Math.floor(100000 + Math.random() * 900000);
     // Set expiration to 10 minutes from now
@@ -626,7 +760,7 @@ async function registerAdmin(req, res) {
       existingUser.state = state;
       existingUser.country = country;
       existingUser.password = hashedPassword;
-      existingUser.role = 'admin';
+      existingUser.role = "admin";
       existingUser.is_superadmin = true;
       existingUser.is_verified = true;
       existingUser.otpCode = otpCode;
@@ -637,7 +771,7 @@ async function registerAdmin(req, res) {
       user = await Users.create({
         full_name,
         gender,
-        role: 'admin',
+        role: "admin",
         email,
         phone_no,
         address,
@@ -683,9 +817,9 @@ async function registerAdmin(req, res) {
 
       previewUrl = await sendEmail(
         email,
-        'Admin Account Verification OTP 🔑',
+        "Admin Account Verification OTP 🔑",
         `Hello ${full_name},\n\nYour OTP for admin account registration is ${otpCode}. It is valid for 10 minutes.\n\nBest regards,\nThe RentULO Team`,
-        adminOtpHtml
+        adminOtpHtml,
       );
     } catch (mailError) {
       console.error("Failed to send OTP verification email:", mailError);
@@ -693,10 +827,10 @@ async function registerAdmin(req, res) {
 
     return res.status(201).json({
       success: true,
-      message: "OTP sent to email successfully. Please verify to complete registration.",
-      testMailUrl: previewUrl
+      message:
+        "OTP sent to email successfully. Please verify to complete registration.",
+      testMailUrl: previewUrl,
     });
-
   } catch (error) {
     console.error("registerAdmin error:", error);
     return res.status(500).json({
@@ -710,28 +844,46 @@ async function verifyAdmin(req, res) {
   try {
     const { email, otpCode } = req.body;
     if (!email || !otpCode) {
-      return res.status(400).json({ success: false, message: "Email and OTP code are required" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Email and OTP code are required" });
     }
 
     const user = await Users.findOne({ where: { email } });
     if (!user) {
-      return res.status(404).json({ success: false, message: "User not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
     }
 
-    if (user.role !== 'admin') {
-      return res.status(400).json({ success: false, message: "Invalid request. User is not an admin." });
+    if (user.role !== "admin") {
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Invalid request. User is not an admin.",
+        });
     }
 
     if (user.is_active) {
-      return res.status(400).json({ success: false, message: "Account is already active and verified." });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Account is already active and verified.",
+        });
     }
 
     if (user.otpCode !== parseInt(otpCode)) {
-      return res.status(400).json({ success: false, message: "Invalid OTP code" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid OTP code" });
     }
 
     if (new Date() > new Date(user.otpExpiresAt)) {
-      return res.status(400).json({ success: false, message: "OTP code has expired" });
+      return res
+        .status(400)
+        .json({ success: false, message: "OTP code has expired" });
     }
 
     // Set active and clear OTP code
@@ -745,15 +897,15 @@ async function verifyAdmin(req, res) {
       user_id: user.id,
       type: "account",
       notification: `Welcome to RentULO ${user.full_name}! Your Admin account has been successfully verified and created.`,
-      is_read: false
+      is_read: false,
     });
 
     // HANDLE PROFILE CREATION
     const country = "Nigeria";
     let location = `${user.state}, ${country}`;
     await Profile.create({
-      user_id: user.id, 
-      bio: 'Hey i\'m a verified admin at RentULO',
+      user_id: user.id,
+      bio: "Hey i'm a verified admin at RentULO",
       phone: user.phone_no,
       address: user.address,
       location: location,
@@ -791,26 +943,41 @@ async function verifyAdmin(req, res) {
 
       await sendEmail(
         email,
-        'Welcome to the RentULO Admin Panel 🎉',
+        "Welcome to the RentULO Admin Panel 🎉",
         `Hi ${user.full_name},\n\nYour Admin account has been successfully verified. Welcome to our team!\n\nBest regards,\nThe RentULO Team`,
-        adminWelcomeHtml
+        adminWelcomeHtml,
       );
     } catch (mailError) {
       console.error("Failed to send welcome email:", mailError);
     }
 
     // Broadcast notification to Super Admins
-    await notifySuperAdmins(`New admin registered: ${user.full_name} (${user.email})`, 'system');
+    await notifySuperAdmins(
+      `New admin registered: ${user.full_name} (${user.email})`,
+      "system",
+    );
 
     return res.status(200).json({
       success: true,
-      message: "Admin account verified and profile created successfully."
+      message: "Admin account verified and profile created successfully.",
     });
-
   } catch (error) {
     console.error("verifyAdmin error:", error);
     return res.status(500).json({ success: false, message: "Server error" });
   }
 }
 
-module.exports = {register, verifyRegistration, login, searchUsers, forgotPassword, confirmOtp, resetPassword, googleAuth, getMe, logout, registerAdmin, verifyAdmin}
+module.exports = {
+  register,
+  verifyRegistration,
+  login,
+  searchUsers,
+  forgotPassword,
+  confirmOtp,
+  resetPassword,
+  googleAuth,
+  getMe,
+  logout,
+  registerAdmin,
+  verifyAdmin,
+};
