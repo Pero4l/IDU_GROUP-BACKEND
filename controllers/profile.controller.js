@@ -1,6 +1,8 @@
-const { Profile, Users, Rentals } = require('../models');
+const { Profile, Users, Rentals, Progress, Inspections } = require('../models');
 const cloudinary = require("cloudinary").v2;
 const { v4: uuidv4 } = require("uuid");
+const { Op } = require('sequelize');
+const logger = require('../utils/logger');
 require("dotenv").config();
 
 cloudinary.config({
@@ -24,7 +26,7 @@ function uploadBufferToCloudinary(buffer, mimetype, folder) {
       },
       (error, result) => {
         if (error) {
-          console.error("Cloudinary Upload Error:", error);
+          logger.error('Cloudinary upload error', { error: error.message, folder });
           reject(error);
         } else {
           resolve(result);
@@ -36,7 +38,9 @@ function uploadBufferToCloudinary(buffer, mimetype, folder) {
   });
 }
 
-// 1. Update User Profile
+// ─────────────────────────────────────────────────────────────
+// PUT /profile/update
+// ─────────────────────────────────────────────────────────────
 async function updateProfile(req, res) {
   try {
     const userId = req.user.userId;
@@ -51,8 +55,6 @@ async function updateProfile(req, res) {
     let imageUrl = profile.image;
     let coverImageUrl = profile.coverImage;
 
-    // We assume you are passing files through a middleware like multer: req.files
-    // e.g., name fields for the inputs: 'profileImage' and 'coverImage'
     const profileImages = req.files?.profileImage || [];
     const coverImages = req.files?.coverImage || [];
 
@@ -74,23 +76,32 @@ async function updateProfile(req, res) {
       coverImage: coverImageUrl
     });
 
+    logger.info('Profile updated', { userId });
+
     return res.status(200).json({
       success: true,
       message: "Profile updated successfully"
     });
 
   } catch (error) {
-    console.error("Error updating profile:", error);
+    logger.error('Error updating profile', { error: error.message, userId: req.user?.userId });
     return res.status(500).json({ success: false, message: "Server error", error: error.message });
   }
 }
 
-// 2. Get Single User and Their Rentals (if landlord)
+// ─────────────────────────────────────────────────────────────
+// GET /profile/get1/:id
+// Returns profile data with role-specific sections:
+//
+//  TENANT  → locked houses, upcoming inspections, rental history
+//  LANDLORD → rented-out houses, houses locked by tenants
+//             (with tenant name), upcoming inspections
+// ─────────────────────────────────────────────────────────────
 async function getUserProfile(req, res) {
   try {
-    const { id } = req.params; // Get ID of the user whose profile is being viewed
+    const { id } = req.params;
 
-    // 1. Fetch User (ignoring password and email)
+    // 1. Fetch user (no password / email)
     const user = await Users.findByPk(id, {
       attributes: { exclude: ['password', 'email'] }
     });
@@ -99,25 +110,159 @@ async function getUserProfile(req, res) {
       return res.status(404).json({ success: false, message: "User not found" });
     }
 
-    // 2. Fetch Profile details
+    // 2. Fetch profile details
     const profile = await Profile.findOne({ where: { user_id: id } });
+
+    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
 
     let responseData = {
       ...user.toJSON(),
       profile: profile || null,
-      
     };
 
-  
-    // 3. Optional: If user is a landlord, get all the apartments they posted
-    if (user.role === 'landlord') {
-      const posts = await Rentals.findAll({
-        where: { UserId: id },
-        order: [['createdAt', 'DESC']]
+    // ────────────────────────────────────────
+    // TENANT PROFILE
+    // ────────────────────────────────────────
+    if (user.role === 'tenant') {
+
+      // Houses the tenant has locked (interest/hold)
+      const lockedProgress = await Progress.findAll({
+        where: { user_id: id, locked: true },
+        include: [
+          {
+            model: Rentals,
+            attributes: ['id', 'slug', 'title', 'location', 'price', 'priceType', 'images', 'status'],
+          },
+        ],
       });
-      responseData.rentals = posts;
-      responseData.totalListings = posts.length;
+      responseData.lockedHouses = lockedProgress.map((p) => p.Rentals).filter(Boolean);
+
+      // Upcoming inspections (today or in the future)
+      const upcomingInspections = await Inspections.findAll({
+        where: {
+          user_id: id,
+          date: { [Op.gte]: today },
+        },
+        include: [
+          {
+            model: Rentals,
+            as: 'rental',
+            attributes: ['id', 'slug', 'title', 'location', 'price', 'priceType', 'images', 'status'],
+          },
+        ],
+        order: [
+          ['date', 'ASC'],
+          ['time', 'ASC'],
+        ],
+      });
+      responseData.upcomingInspections = upcomingInspections;
+
+      // Rental history — rentals the tenant has booked (active or past)
+      const rentalHistory = await Progress.findAll({
+        where: { user_id: id, booked: true },
+        include: [
+          {
+            model: Rentals,
+            attributes: ['id', 'slug', 'title', 'location', 'price', 'priceType', 'images', 'status'],
+            include: [
+              {
+                model: Users,
+                attributes: ['id', 'first_name', 'last_name', 'phone_no'],
+                include: [{ model: Profile, attributes: ['image', 'verified'] }],
+              },
+            ],
+          },
+        ],
+        order: [['createdAt', 'DESC']],
+      });
+      responseData.rentalHistory = rentalHistory.map((p) => p.Rentals).filter(Boolean);
     }
+
+    // ────────────────────────────────────────
+    // LANDLORD PROFILE
+    // ────────────────────────────────────────
+    else if (user.role === 'landlord') {
+
+      // All rentals this landlord owns
+      const allListings = await Rentals.findAll({
+        where: { UserId: id },
+        attributes: ['id', 'slug', 'title', 'location', 'price', 'priceType', 'images', 'status', 'createdAt'],
+        order: [['createdAt', 'DESC']],
+      });
+
+      // Rented-out houses (status === 'rented')
+      responseData.rentedOutHouses = allListings.filter((r) => r.status === 'rented');
+      responseData.totalListings = allListings.length;
+      responseData.rentals = allListings;
+
+      // Houses locked by tenants — include the tenant's name
+      const rentalIds = allListings.map((r) => r.id);
+
+      let lockedByTenants = [];
+      if (rentalIds.length > 0) {
+        const lockedProgress = await Progress.findAll({
+          where: {
+            rental_id: { [Op.in]: rentalIds },
+            locked: true,
+          },
+          include: [
+            {
+              model: Rentals,
+              attributes: ['id', 'slug', 'title', 'location', 'price', 'priceType', 'images', 'status'],
+            },
+            {
+              model: Users,
+              attributes: ['id', 'first_name', 'last_name', 'phone_no'],
+              include: [{ model: Profile, attributes: ['image', 'verified'] }],
+            },
+          ],
+        });
+
+        lockedByTenants = lockedProgress.map((p) => ({
+          rental: p.Rentals,
+          tenant: p.Users
+            ? {
+                id: p.Users.id,
+                name: `${p.Users.first_name} ${p.Users.last_name}`.trim(),
+                phone_no: p.Users.phone_no,
+                profile: p.Users.Profile || null,
+              }
+            : null,
+        }));
+      }
+      responseData.lockedByTenants = lockedByTenants;
+
+      // Upcoming inspections on any of the landlord's rentals
+      let upcomingInspections = [];
+      if (rentalIds.length > 0) {
+        upcomingInspections = await Inspections.findAll({
+          where: {
+            rental_id: { [Op.in]: rentalIds },
+            date: { [Op.gte]: today },
+          },
+          include: [
+            {
+              model: Rentals,
+              as: 'rental',
+              attributes: ['id', 'slug', 'title', 'location'],
+            },
+            {
+              model: Users,
+              as: 'tenant',
+              attributes: ['id', 'first_name', 'last_name', 'phone_no'],
+              include: [{ model: Profile, attributes: ['image'] }],
+            },
+          ],
+          order: [
+            ['date', 'ASC'],
+            ['time', 'ASC'],
+          ],
+        });
+      }
+      responseData.upcomingInspections = upcomingInspections;
+    }
+
+    logger.info('Profile retrieved', { targetUserId: id, requestedBy: req.user?.userId });
 
     return res.status(200).json({
       success: true,
@@ -126,7 +271,7 @@ async function getUserProfile(req, res) {
     });
 
   } catch (error) {
-    console.error("Error fetching user profile:", error);
+    logger.error('Error fetching user profile', { error: error.message, userId: req.user?.userId });
     return res.status(500).json({ success: false, message: "Server error", error: error.message });
   }
 }

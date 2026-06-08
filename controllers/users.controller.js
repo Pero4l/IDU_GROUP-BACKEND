@@ -7,6 +7,8 @@ require("dotenv").config();
 const { OAuth2Client } = require('google-auth-library');
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
+const { withTransaction } = require('../utils/rollback');
+const logger = require('../utils/logger');
 
 // To generate a free test account automatically if env vars are missing:
 let testAccount = null;
@@ -41,186 +43,150 @@ async function getTransporter() {
   });
 }
 
-async function register(req, res) {
-  try {
-    
-    const {
-      first_name,
-      last_name,
-      gender,
-      role,
-      phone_no,
-      email,
-      address,
-      state,
-      password,
-    } = req.body;
-
-    if (
-      !first_name ||
-      !last_name ||
-      !gender ||
-      !role ||
-      !phone_no ||
-      !address ||
-      !state ||
-      !email ||
-      !password
-    ) {
-      return res.status(400).json({ message: "All fields are required" });
-    }
-
-    if (password.length < 6) {
-      return res.status(400).json({ message: "Password must be at least 6 characters" });
-    } else if (!/[A-Z]/.test(password) || !/[a-z]/.test(password)) {
-      return res.status(400).json({ message: "Password must contain both uppercase and lowercase letters" });
-    } else if (!/[0-9]/.test(password)) {
-      return res.status(400).json({ message: "Password must contain a number" });
-    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      return res.status(400).json({ message: "Invalid email format" });
-    } else if (first_name.length < 3 || last_name.length < 3) {
-      return res.status(400).json({ message: "Name must be at least 3 characters" });
-    }
-
-    const existingUser = await Users.findOne({ where: { email } });
-    if (existingUser) {
-      return res.status(400).json({ success: false, message: "User already exists" });
-    }
-
-    const hashedPassword = await bcrypt.hash(password, 12);
-
-    const country = "Nigeria";
-    
-
-    await Users.create({
-      first_name,
-      last_name,
-      gender,
-      role,
-      email,
-      phone_no,
-      address,
-      state,
-      country,
-      password: hashedPassword,
-    });
-
-
-    // HANDLE NOTIFICATION
-    const isUser = await Users.findOne({ where: { email } });
-    if (isUser) {
-
-      await Notifications.create({
-        user_id: isUser.id,
-        type: "account",
-        notification: `Welcome to RentUIO ${isUser.first_name} ${isUser.last_name}! Your account has been successfully created.`,
-        is_read: false
-      })
-      
-    }
-
-    // HANDLE PROFILE CREATION
-    let location =  `${state}, ${country}`
-    let share = `main/${phone_no}`
-    const user = await Users.findOne({ where: { email } });
-    if (user) {
-
-      await Profile.create({
-        user_id: user.id, 
-        bio: null || 'Hey i\'m a verified user at RentULO',
-        phone: phone_no,
-        address: address,
-        location: location,
-        verified: false,
-        // share_account: share,
-      });
-    }
-    
-
-    // SEND WELCOME EMAIL
-    try {
-      const mailer = await getTransporter();
-     const mailOptions = {
-  from: '"RentULO Team" <no-reply@rentulo.com>',
-  to: email,
-  subject: 'Welcome to RentULO 🎉',
-
-  text: `Hi ${first_name},
-
-Welcome to RentULO!
-
-Your account has been successfully created. We're excited to have you join our platform.
-
-You can now explore listings, manage your rentals, and enjoy a seamless experience.
-
-If you have any questions, feel free to reach out to our support team anytime.
-
-Best regards,  
-The RentULO Team
-`,
-
-  html: `
-  <div style="font-family: Arial, sans-serif; background-color: #f9fafb; padding: 20px;">
-    <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; padding: 30px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
-      
-      <h2 style="color: #111827;">Welcome to RentULO, ${first_name} ${last_name}👋</h2>
-      
-      <p style="color: #4b5563; font-size: 15px; line-height: 1.6;">
-        Your account has been successfully created. We're excited to have you on board and can't wait for you to start exploring everything RentULO has to offer.
-      </p>
-
-      <p style="color: #4b5563; font-size: 15px; line-height: 1.6;">
-        With RentULO, you can easily browse listings, manage your rentals, and enjoy a smooth, secure experience.
-      </p>
-
-      <div style="text-align: center; margin: 30px 0;">
-        <a href="https://rentulo.com/dashboard" 
-           style="background-color: #111827; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 6px; font-size: 14px;">
-          Go to Dashboard
-        </a>
+// ── Welcome email helper ──────────────────────────────────────────────────────
+// Intentionally fire-and-forget from the register flow so a mail failure never
+// rolls back a successful registration.
+async function sendWelcomeEmail(email, first_name, last_name) {
+  const mailer = await getTransporter();
+  const mailOptions = {
+    from: '"RentULO Team" <no-reply@rentulo.com>',
+    to: email,
+    subject: 'Welcome to RentULO 🎉',
+    text: `Hi ${first_name}, welcome to RentULO! Your account has been successfully created.`,
+    html: `
+    <div style="font-family: Arial, sans-serif; background-color: #f9fafb; padding: 20px;">
+      <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; padding: 30px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
+        <h2 style="color: #111827;">Welcome to RentULO, ${first_name} ${last_name} 👋</h2>
+        <p style="color: #4b5563; font-size: 15px; line-height: 1.6;">
+          Your account has been successfully created. We're excited to have you on board.
+        </p>
+        <div style="text-align: center; margin: 30px 0;">
+          <a href="https://rentulo.com/dashboard"
+             style="background-color: #111827; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 6px; font-size: 14px;">
+            Go to Dashboard
+          </a>
+        </div>
+        <hr style="margin: 30px 0; border: none; border-top: 1px solid #e5e7eb;" />
+        <p style="color: #9ca3af; font-size: 12px; text-align: center;">
+          © ${new Date().getFullYear()} RentULO. All rights reserved.
+        </p>
       </div>
+    </div>`,
+  };
+  const info = await mailer.sendMail(mailOptions);
+  console.log("Welcome email sent: %s", info.messageId);
+  const previewUrl = nodemailer.getTestMessageUrl(info);
+  if (previewUrl) console.log("Welcome email preview: %s", previewUrl);
+}
 
-      <p style="color: #6b7280; font-size: 13px;">
-        If you have any questions, feel free to contact our support team anytime.
-      </p>
+async function register(req, res) {
+  const {
+    first_name,
+    last_name,
+    gender,
+    role,
+    phone_no,
+    email,
+    address,
+    state,
+    password,
+  } = req.body;
 
-      <hr style="margin: 30px 0; border: none; border-top: 1px solid #e5e7eb;" />
+  // ── Validation (happens before any DB write) ──────────────────────────────
+  if (!first_name || !last_name || !gender || !role || !phone_no || !address || !state || !email || !password) {
+    return res.status(400).json({ message: "All fields are required" });
+  }
+  if (password.length < 6) {
+    return res.status(400).json({ message: "Password must be at least 6 characters" });
+  }
+  if (!/[A-Z]/.test(password) || !/[a-z]/.test(password)) {
+    return res.status(400).json({ message: "Password must contain both uppercase and lowercase letters" });
+  }
+  if (!/[0-9]/.test(password)) {
+    return res.status(400).json({ message: "Password must contain a number" });
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({ message: "Invalid email format" });
+  }
+  if (first_name.length < 3 || last_name.length < 3) {
+    return res.status(400).json({ message: "Name must be at least 3 characters" });
+  }
 
-      <p style="color: #9ca3af; font-size: 12px; text-align: center;">
-        © ${new Date().getFullYear()} RentULO. All rights reserved.
-      </p>
+  // ── Duplicate check (outside the transaction — fast read, no write) ───────
+  const existingUser = await Users.findOne({ where: { email } });
+  if (existingUser) {
+    return res.status(400).json({ success: false, message: "User already exists" });
+  }
 
-    </div>
-  </div>
-  `,
-};
+  try {
+    const hashedPassword = await bcrypt.hash(password, 12);
+    const country = "Nigeria";
 
-      const info = await mailer.sendMail(mailOptions);
-      console.log("Welcome email sent: %s", info.messageId);
-      
-      const previewUrl = nodemailer.getTestMessageUrl(info);
-      if (previewUrl) {
-        console.log("Welcome email Preview URL: %s", previewUrl);
-      }
-    } catch (mailError) {
-      // Log the error but don't stop the registration process
-      console.error("Failed to send welcome email:", mailError);
-    }
-    
-    // Broadcast notification to Super Admins
-    await notifySuperAdmins(`New user registered: ${first_name} ${last_name} (${role})`, 'system');
+    // ── All three writes wrapped in ONE transaction ────────────────────────
+    // If any of them fail (DB error, network drop, crash …) the transaction
+    // is automatically rolled back and the DB is left completely clean —
+    // no orphaned user rows, no missing profiles.
+    const newUser = await withTransaction(
+      async (t) => {
+        // 1. Create the user
+        const user = await Users.create(
+          { first_name, last_name, gender, role, email, phone_no, address, state, country, password: hashedPassword },
+          { transaction: t }
+        );
+
+        // 2. Create the welcome notification
+        await Notifications.create(
+          {
+            user_id: user.id,
+            type: 'account',
+            notification: `Welcome to RentULO ${user.first_name} ${user.last_name}! Your account has been successfully created.`,
+            is_read: false,
+          },
+          { transaction: t }
+        );
+
+        // 3. Create the profile — if this fails the user row is rolled back too
+        await Profile.create(
+          {
+            user_id: user.id,
+            bio: "Hey I'm a verified user at RentULO",
+            phone: phone_no,
+            address,
+            location: `${state}, ${country}`,
+            verified: false,
+          },
+          { transaction: t }
+        );
+
+        return user;
+      },
+      { context: 'register', email }
+    );
+
+    // ── Post-commit side-effects (non-critical, never block the response) ──
+    // Welcome email — fire and forget, a mail failure must NOT undo registration
+    sendWelcomeEmail(email, first_name, last_name).catch((err) =>
+      logger.warn('Welcome email failed (non-critical)', { email, error: err.message })
+    );
+
+    // Super-admin broadcast — also non-critical
+    notifySuperAdmins(`New user registered: ${first_name} ${last_name} (${role})`, 'system').catch(
+      (err) => logger.warn('Admin notification failed (non-critical)', { error: err.message })
+    );
+
+    logger.info('User registered successfully', { userId: newUser.id, email, role });
 
     return res.status(201).json({
       success: true,
       message: "Account registered successfully",
     });
 
-
   } catch (error) {
-    console.error(error);
+    // withTransaction already rolled back and logged; just return 500
+    logger.error('Registration failed — all DB changes rolled back', { email, error: error.message });
     return res.status(500).json({
       success: false,
-      message: "Server error",
+      message: "Registration failed. Please try again.",
     });
   }
 }
@@ -453,33 +419,47 @@ async function googleAuth(req, res) {
       const randomPassword = Math.random().toString(36).slice(-8) + "Aa1@";
       const hashedPassword = await bcrypt.hash(randomPassword, 12);
       
-      user = await Users.create({
-        first_name: given_name || "Google",
-        last_name: family_name || "User",
-        email,
-        password: hashedPassword,
-        // Optional fields left empty to enforce profile completion
-        gender: null,
-        phone_no: null,
-        address: null,
-        state: null,
-        country: "Nigeria", // default
-      });
+      user = await withTransaction(async (t) => {
+        const created = await Users.create(
+          {
+            first_name: given_name || "Google",
+            last_name: family_name || "User",
+            email,
+            password: hashedPassword,
+            gender: null,
+            phone_no: null,
+            address: null,
+            state: null,
+            country: "Nigeria",
+          },
+          { transaction: t }
+        );
 
-      await Notifications.create({
-        user_id: user.id,
-        type: "account",
-        notification: `Welcome to RentUIO ${user.first_name} ${user.last_name}! Your account has been successfully created via Google.`,
-        is_read: false
-      });
+        await Notifications.create(
+          {
+            user_id: created.id,
+            type: "account",
+            notification: `Welcome to RentULO ${created.first_name} ${created.last_name}! Your account has been successfully created via Google.`,
+            is_read: false,
+          },
+          { transaction: t }
+        );
 
-      await Profile.create({
-        user_id: user.id,
-        bio: null || 'Hey I am a verified user at RentULO',
-        verified: false
-      });
+        await Profile.create(
+          {
+            user_id: created.id,
+            bio: "Hey I'm a verified user at RentULO",
+            verified: false,
+          },
+          { transaction: t }
+        );
 
-      await notifySuperAdmins(`New user registered via Google: ${user.first_name} ${user.last_name} (tenant)`, 'system');
+        return created;
+      }, { context: 'googleAuth', email });
+
+      notifySuperAdmins(`New user registered via Google: ${user.first_name} ${user.last_name} (tenant)`, 'system').catch(
+        (err) => logger.warn('Admin notification failed (non-critical)', { error: err.message })
+      );
     }
 
     const token = jwt.sign(
