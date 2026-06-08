@@ -1,22 +1,32 @@
-const express = require('express');
-const http = require('http');
-require('dotenv').config();
+const dns = require("dns");
+dns.setDefaultResultOrder("ipv4first");
+
+const express = require("express");
+const http = require("http");
+require("dotenv").config();
 const cors = require("cors");
-const cookieParser = require('cookie-parser');
-const socketConfig = require('./config/socket');
+const cookieParser = require("cookie-parser");
+const socketConfig = require("./config/socket");
 
 const app = express();
 const server = http.createServer(app);
 socketConfig.init(server);
-
 app.use(cookieParser());
 app.use(express.json());
-app.use(cors({
-  origin: true,
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization'],
-}));
+app.use(
+  cors({
+    origin: true,
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allowedHeaders: [
+      "Origin",
+      "X-Requested-With",
+      "Content-Type",
+      "Accept",
+      "Authorization",
+    ],
+  }),
+);
 app.use(express.urlencoded({ extended: true }));
 
 const db = require("./models");
@@ -57,17 +67,16 @@ const PORT = process.env.PORT;
 
 // db.sync({ force: true, alter: false })
 //   .then(async () => {
-    
 
-db.sequelize.authenticate()
+db.sequelize
+  .authenticate()
   .then(() => {
     server.listen(PORT, () => {
       console.log(
-        `Database connected successfully and Server running on PORT:${PORT}`
+        `Database connected successfully and Server running on PORT:${PORT}`,
       );
     });
   })
   .catch((e) => {
     console.log(`Database connection failed:`, e);
   });
-

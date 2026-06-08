@@ -16,15 +16,22 @@ module.exports = (sequelize, DataTypes) => {
     }
   }
   Progress.init({
+    id: {
+      type: DataTypes.UUID,
+      defaultValue: DataTypes.UUIDV4,
+      primaryKey: true,
+      allowNull: false
+    },
     user_id: DataTypes.UUID,
     rental_id: DataTypes.UUID,
     booked: DataTypes.BOOLEAN,
     locked: DataTypes.BOOLEAN,
     liked: DataTypes.BOOLEAN,
+    locked_at: DataTypes.DATE,
   }, {
     sequelize,
     modelName: 'Progress', 
-    tableName: 'progress'
+    tableName: 'progresses'
   });
   return Progress;
 };

@@ -1,10 +1,11 @@
-const { Rentals, Users, Notifications, Profile } = require("../models");
+const { Rentals, Users, Notifications, Profile, Progress } = require("../models");
 const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
 const { withTransaction } = require('../utils/rollback');
 const logger = require('../utils/logger');
 const { Op } = require('sequelize');
 const cloudinary = require("cloudinary").v2;
 const { v4: uuidv4 } = require("uuid");
+const jwt = require("jsonwebtoken");
 require("dotenv").config();
 
 cloudinary.config({
@@ -84,6 +85,7 @@ async function addRental(req, res) {
       title, description, propertyType, location, price, priceType, status,
       images: uploadedImages.map((i) => i.secure_url),
       videos: uploadedVideos.map((v) => v.secure_url),
+      amenities: amenitiesData,
       UserId: req.user.userId,
     });
 
@@ -116,11 +118,28 @@ async function seeAllRentals(req, res) {
       attributes: ["id", "slug", "title", "description", "propertyType", "location", "price", "priceType", "images", "status", "UserId", "createdAt"],
       include: [{
         model: Users,
-        attributes: ["id", "first_name", "last_name", "phone_no"],
+        attributes: ["id", "full_name", "phone_no"],
         include: [{ model: Profile, attributes: ['image', 'verified'] }]
       }],
       order: [['createdAt', 'DESC']],
-    });
+    };
+
+    if (limit !== null) {
+      queryOptions.limit = limit;
+    }
+    if (offset !== null) {
+      queryOptions.offset = offset;
+    }
+
+    let result;
+    if (limit !== null) {
+      result = await Rentals.findAndCountAll(queryOptions);
+    } else {
+      const rows = await Rentals.findAll(queryOptions);
+      result = { count: rows.length, rows };
+    }
+
+    const { count, rows: rentals } = result;
 
     return res.status(200).json({ success: true, data: rentals, message: "Rentals retrieved successfully" });
   } catch (error) {
@@ -139,7 +158,7 @@ async function getRental(req, res) {
       attributes: ["id", "slug", "title", "description", "propertyType", "location", "price", "priceType", "images", "videos", "status", "UserId", "createdAt", "updatedAt"],
       include: [{
         model: Users,
-        attributes: ["id", "first_name", "last_name", "phone_no"],
+        attributes: ["id", "full_name", "phone_no"],
         include: [{ model: Profile, attributes: ['image', 'verified'] }]
       }]
     };
@@ -160,7 +179,8 @@ async function getRental(req, res) {
         ...rentalData,
         images: rentalData.images || [],
         videos: rentalData.videos || [],
-        landlord: rentalData.Users || { first_name: "", last_name: "User" },
+        amenities: rentalData.amenities || [],
+        landlord: rentalData.Users || { full_name: "User" },
       },
       message: "Rental retrieved successfully",
     });
@@ -176,7 +196,7 @@ async function getRental(req, res) {
 async function updateRental(req, res) {
   try {
     const { id } = req.params;
-    const { title, description, propertyType, location, price, priceType, images, videos, status } = req.body;
+    const { title, description, propertyType, location, price, priceType, images, videos, status, amenities, legalFee, cautionFee, brokeFee, mgtServiceCharge } = req.body;
 
     const rental = await Rentals.findByPk(id);
     if (!rental) {
@@ -194,13 +214,18 @@ async function updateRental(req, res) {
       location: location || rental.location,
       price: price || rental.price,
       priceType: priceType || rental.priceType,
+      legalFee: legalFee !== undefined ? legalFee : rental.legalFee,
+      cautionFee: cautionFee !== undefined ? cautionFee : rental.cautionFee,
+      brokeFee: brokeFee !== undefined ? brokeFee : rental.brokeFee,
+      mgtServiceCharge: mgtServiceCharge !== undefined ? mgtServiceCharge : rental.mgtServiceCharge,
       images: images || rental.images,
       videos: videos || rental.videos,
       status: status || rental.status,
+      amenities: amenitiesData !== undefined ? amenitiesData : rental.amenities,
     });
 
     const updatedRental = await Rentals.findByPk(id, {
-      include: [{ model: Users, attributes: ["id", "first_name", "last_name", "email"] }]
+      include: [{ model: Users, attributes: ["id", "full_name", "email"] }]
     });
 
     logger.info('Rental updated', { rentalId: id, userId: req.user.userId });
@@ -270,13 +295,33 @@ async function searchRentals(req, res) {
       attributes: ["id", "slug", "title", "description", "propertyType", "location", "price", "priceType", "images", "status", "UserId", "createdAt"],
       include: [{
         model: Users,
-        attributes: ["id", "first_name", "last_name", "phone_no"],
+        attributes: ["id", "full_name", "phone_no"],
         include: [{ model: Profile, attributes: ['image', 'verified'] }]
       }],
       order: [['createdAt', 'DESC']],
     });
 
-    return res.status(200).json({ success: true, message: "Rentals fetched successfully", data: rentals });
+    let likedRentalIds = new Set();
+    if (req.user && req.user.userId) {
+      const userLikes = await Progress.findAll({
+        where: { user_id: req.user.userId, liked: true },
+        attributes: ['rental_id']
+      });
+      likedRentalIds = new Set(userLikes.map(like => like.rental_id));
+    }
+
+    const rentalsWithLiked = rentals.map(rental => {
+      const rentalData = rental.toJSON();
+      return {
+        ...rentalData,
+        liked: likedRentalIds.has(rental.id),
+        images: rentalData.images || [],
+        videos: rentalData.videos || [],
+        amenities: rentalData.amenities || [],
+      };
+    });
+
+    return res.status(200).json({ success: true, message: "Rentals fetched successfully", data: rentalsWithLiked });
   } catch (error) {
     logger.error('Search rentals error', { error: error.message });
     return res.status(500).json({ success: false, message: "Server error" });

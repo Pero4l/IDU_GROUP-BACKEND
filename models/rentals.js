@@ -28,9 +28,26 @@ module.exports = (sequelize, DataTypes) => {
     location: DataTypes.STRING,
     price: DataTypes.DECIMAL(12, 2),
     priceType: DataTypes.ENUM('monthly', 'yearly', 'one-time'),
+    legalFee: {
+      type: DataTypes.DECIMAL(12, 2),
+      defaultValue: 0.00
+    },
+    cautionFee: {
+      type: DataTypes.DECIMAL(12, 2),
+      defaultValue: 0.00
+    },
+    brokeFee: {
+      type: DataTypes.DECIMAL(12, 2),
+      defaultValue: 0.00
+    },
+    mgtServiceCharge: {
+      type: DataTypes.DECIMAL(12, 2),
+      defaultValue: 0.00
+    },
     images: DataTypes.JSON,
     videos: DataTypes.JSON,
-    status: DataTypes.ENUM('available', 'rented', 'pending'),
+    amenities: DataTypes.JSON,
+    status: DataTypes.ENUM('available', 'rented', 'pending', 'locked'),
     slug: {
       type: DataTypes.STRING,
       unique: true

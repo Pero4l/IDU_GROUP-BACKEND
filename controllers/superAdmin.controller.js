@@ -1,4 +1,4 @@
-const { Users, Rentals, Reports, Progress, Conversations, Messages } = require('../models');
+const { Users, Rentals, Reports, Progress, Conversations, Messages, Transactions, Waitlist } = require('../models');
 
 async function getAllUsers(req, res) {
   try {
@@ -62,7 +62,7 @@ async function deleteUser(req, res) {
 async function getAllRentals(req, res) {
   try {
     const rentals = await Rentals.findAll({
-      include: [{ model: Users, attributes: ['first_name', 'last_name', 'email'] }]
+      include: [{ model: Users, attributes: ['full_name', 'email'] }]
     });
     return res.status(200).json({ success: true, count: rentals.length, data: rentals });
   } catch (error) {
@@ -92,7 +92,7 @@ async function getLockedHouses(req, res) {
       where: { locked: true },
       include: [
         { model: Rentals },
-        { model: Users, attributes: ['first_name', 'last_name', 'email'] }
+        { model: Users, attributes: ['full_name', 'email'] }
       ]
     });
     return res.status(200).json({ success: true, count: lockedProgress.length, data: lockedProgress });
@@ -106,8 +106,8 @@ async function getAllReports(req, res) {
   try {
     const reports = await Reports.findAll({
       include: [
-        { model: Users, as: 'user', attributes: ['first_name', 'last_name', 'email'] },
-        { model: Users, as: 'report_user', attributes: ['first_name', 'last_name', 'email'] }
+        { model: Users, as: 'user', attributes: ['full_name', 'email'] },
+        { model: Users, as: 'report_user', attributes: ['full_name', 'email'] }
       ]
     });
     return res.status(200).json({ success: true, count: reports.length, data: reports });
@@ -136,13 +136,12 @@ async function updateReportStatus(req, res) {
   }
 }
 
-
 async function getAllConversations(req, res) {
   try {
     const conversations = await Conversations.findAll({
       include: [
-        { model: Users, as: 'tenant', attributes: ['first_name', 'last_name', 'email'] },
-        { model: Users, as: 'landlord', attributes: ['first_name', 'last_name', 'email'] }
+        { model: Users, as: 'tenant', attributes: ['full_name', 'email'] },
+        { model: Users, as: 'landlord', attributes: ['full_name', 'email'] }
       ],
       order: [['updatedAt', 'DESC']]
     });
@@ -159,13 +158,158 @@ async function getConversationMessages(req, res) {
     const messages = await Messages.findAll({
       where: { conversation_id: id },
       include: [
-        { model: Users, as: 'sender', attributes: ['first_name', 'last_name', 'email'] }
+        { model: Users, as: 'sender', attributes: ['full_name', 'email'] }
       ],
       order: [['createdAt', 'ASC']]
     });
     return res.status(200).json({ success: true, count: messages.length, data: messages });
   } catch (error) {
     console.error("Super Admin - getConversationMessages error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+async function getAnalytics(req, res) {
+  try {
+    // Run all database calls in parallel to maximize performance
+    const [
+      totalUsers,
+      activeUsers,
+      suspendedUsers,
+      tenantsCount,
+      landlordsCount,
+      adminsCount,
+      totalRentals,
+      totalLikes,
+      totalLocks,
+      totalBookings,
+      totalReports,
+      pendingReports,
+      resolvedReports,
+      rejectedReports,
+      successfulTransactions
+    ] = await Promise.all([
+      Users.count(),
+      Users.count({ where: { is_active: true } }),
+      Users.count({ where: { is_active: false } }),
+      Users.count({ where: { role: 'tenant' } }),
+      Users.count({ where: { role: 'landlord' } }),
+      Users.count({ where: { role: 'admin' } }),
+      Rentals.count(),
+      Progress.count({ where: { liked: true } }),
+      Progress.count({ where: { locked: true } }),
+      Progress.count({ where: { booked: true } }),
+      Reports.count(),
+      Reports.count({ where: { report_status: 'pending' } }),
+      Reports.count({ where: { report_status: 'resolved' } }),
+      Reports.count({ where: { report_status: 'rejected' } }),
+      Transactions.findAll({
+        where: { status: 'success', payment_type: 'lock_fee' },
+        attributes: ['amount']
+      })
+    ]);
+
+    const totalRevenue = successfulTransactions.reduce((acc, t) => acc + (t.amount || 0), 0);
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        users: {
+          total: totalUsers,
+          active: activeUsers,
+          suspended: suspendedUsers,
+          roles: {
+            tenant: tenantsCount,
+            landlord: landlordsCount,
+            admin: adminsCount
+          }
+        },
+        rentals: {
+          total: totalRentals
+        },
+        interactions: {
+          likes: totalLikes,
+          locks: totalLocks,
+          bookings: totalBookings
+        },
+        reports: {
+          total: totalReports,
+          pending: pendingReports,
+          resolved: resolvedReports,
+          rejected: rejectedReports
+        },
+        financials: {
+          totalRevenueNGN: totalRevenue,
+          successfulLockPaymentsCount: successfulTransactions.length
+        }
+      }
+    });
+  } catch (error) {
+    console.error("Super Admin - getAnalytics error:", error);
+    return res.status(500).json({ success: false, message: "Server error getting analytics" });
+  }
+}
+
+async function suspendUser(req, res) {
+  try {
+    const { id } = req.params;
+    const user = await Users.findByPk(id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    if (user.id === req.user.userId) {
+      return res.status(400).json({ success: false, message: "You cannot suspend your own account." });
+    }
+
+    user.is_active = false;
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "User suspended successfully",
+      data: user
+    });
+  } catch (error) {
+    console.error("Super Admin - suspendUser error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+async function unsuspendUser(req, res) {
+  try {
+    const { id } = req.params;
+    const user = await Users.findByPk(id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    if (user.id === req.user.userId) {
+      return res.status(400).json({ success: false, message: "You cannot unsuspend your own account." });
+    }
+
+    user.is_active = true;
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "User unsuspended successfully",
+      data: user
+    });
+  } catch (error) {
+    console.error("Super Admin - unsuspendUser error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+async function getWaitlist(req, res) {
+  try {
+    const list = await Waitlist.findAll({
+      order: [['createdAt', 'DESC']]
+    });
+    return res.status(200).json({ success: true, count: list.length, data: list });
+  } catch (error) {
+    console.error("Super Admin - getWaitlist error:", error);
     return res.status(500).json({ success: false, message: "Server error" });
   }
 }
@@ -180,5 +324,9 @@ module.exports = {
   getAllReports,
   updateReportStatus,
   getAllConversations,
-  getConversationMessages
+  getConversationMessages,
+  getAnalytics,
+  suspendUser,
+  unsuspendUser,
+  getWaitlist
 };

@@ -38,6 +38,11 @@ module.exports = (sequelize, DataTypes) => {
         // as: "reports"
       });
 
+      Users.hasMany(models.Testimonials, {
+        foreignKey: 'user_id',
+        // as: 'testimonials'
+      })
+
       Users.hasMany(models.Conversations, { foreignKey: 'tenant_id' });
       Users.hasMany(models.Conversations, { foreignKey: 'landlord_id' });
       Users.hasMany(models.Messages, { foreignKey: 'sender_id' });
@@ -46,8 +51,10 @@ module.exports = (sequelize, DataTypes) => {
     }
   }
   Users.init({
-    first_name: DataTypes.STRING,
-    last_name: DataTypes.STRING,
+    full_name: {
+      type: DataTypes.STRING,
+      allowNull: false
+    },
     gender: DataTypes.ENUM('male', 'female', 'others'),
     email: DataTypes.STRING,
     role: {
@@ -68,6 +75,10 @@ module.exports = (sequelize, DataTypes) => {
     is_active: {
       type: DataTypes.BOOLEAN,
       defaultValue: true,
+    },
+    is_verified: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
     }
   }, {
     sequelize,
