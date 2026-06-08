@@ -163,16 +163,12 @@ async function register(req, res) {
       { context: 'register', email }
     );
 
-    // ── Post-commit side-effects (non-critical, never block the response) ──
-    // Welcome email — fire and forget, a mail failure must NOT undo registration
+    // Non-critical side-effects
     sendWelcomeEmail(email, first_name, last_name).catch((err) =>
       logger.warn('Welcome email failed (non-critical)', { email, error: err.message })
     );
 
-    // Super-admin broadcast — also non-critical
-    notifySuperAdmins(`New user registered: ${first_name} ${last_name} (${role})`, 'system').catch(
-      (err) => logger.warn('Admin notification failed (non-critical)', { error: err.message })
-    );
+    await notifySuperAdmins(`New user registered: ${first_name} ${last_name} (${role})`, 'system');
 
     logger.info('User registered successfully', { userId: newUser.id, email, role });
 
@@ -457,9 +453,7 @@ async function googleAuth(req, res) {
         return created;
       }, { context: 'googleAuth', email });
 
-      notifySuperAdmins(`New user registered via Google: ${user.first_name} ${user.last_name} (tenant)`, 'system').catch(
-        (err) => logger.warn('Admin notification failed (non-critical)', { error: err.message })
-      );
+      await notifySuperAdmins(`New user registered via Google: ${user.first_name} ${user.last_name} (tenant)`, 'system');
     }
 
     const token = jwt.sign(
