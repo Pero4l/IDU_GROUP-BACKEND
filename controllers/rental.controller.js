@@ -1,5 +1,7 @@
 const { Rentals, Users, Notifications, Profile, Progress } = require("../models");
 const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
+const { withTransaction } = require('../utils/rollback');
+const logger = require('../utils/logger');
 const { Op } = require('sequelize');
 const cloudinary = require("cloudinary").v2;
 const { v4: uuidv4 } = require("uuid");
@@ -17,180 +19,103 @@ cloudinary.config({
 function uploadBufferToCloudinary(buffer, mimetype, folder) {
   return new Promise((resolve, reject) => {
     const type = mimetype.startsWith("video") ? "video" : "image";
-
     const stream = cloudinary.uploader.upload_stream(
-      {
-        folder,
-        resource_type: type,
-        public_id: uuidv4(),
-      },
+      { folder, resource_type: type, public_id: uuidv4() },
       (error, result) => {
         if (error) {
-          console.error("Cloudinary Upload Error:", error);
+          logger.error('Cloudinary upload error', { error: error.message, folder });
           reject(error);
         } else {
           resolve(result);
         }
       }
     );
-
     stream.end(buffer);
   });
 }
 
-
-// only agnet/landlord can be able to add an apartment to the plartform
+// ─────────────────────────────────────────────
+// POST /rental/post  — landlord adds a rental
+// ─────────────────────────────────────────────
 async function addRental(req, res) {
   try {
-    const { title, description, propertyType, location, price, priceType, status, amenities, legalFee, cautionFee, brokeFee, mgtServiceCharge } = req.body;
-
-
-
+    const { title, description, propertyType, location, price, priceType, status } = req.body;
     const images = req.files?.images || [];
     const videos = req.files?.videos || [];
 
-    console.log("Files received:", req.files);
-
-    if (!title || !description || !propertyType || !location || !price || !priceType || !status || !images ) {
-      return res.status(400).json({
-        success: false,
-        message: "All fields are required, including images or videos",
-      });
+    if (!title || !description || !propertyType || !location || !price || !priceType || !status || !images) {
+      return res.status(400).json({ success: false, message: "All fields are required, including images or videos" });
     }
 
     if (req.user.role !== 'landlord') {
-      return res.status(403).json({
-        success: false,
-        message: "Only landlords can add rentals"
-      });
+      return res.status(403).json({ success: false, message: "Only landlords can add rentals" });
     }
 
-    // VALIDATION
     if (images.length && !videos.length && images.length > 10)
       return res.status(400).json({ success: false, message: "Max 10 images allowed" });
-
     if (videos.length && !images.length && videos.length > 4)
       return res.status(400).json({ success: false, message: "Max 4 videos allowed" });
-
     if (images.length && videos.length && (images.length > 4 || videos.length > 2))
-      return res.status(400).json({
-        success: false,
-        message: "When uploading both, max is 4 images + 2 videos",
-      });
+      return res.status(400).json({ success: false, message: "When uploading both, max is 4 images + 2 videos" });
 
-    // UPLOAD IMAGES
+    // Upload to Cloudinary BEFORE the transaction — Cloudinary is external,
+    // not transactional. If the upload fails we never touch the DB.
     const uploadedImages = await Promise.all(
-      images.map((img) =>
-        uploadBufferToCloudinary(img.buffer, img.mimetype, "posts/images")
-      )
+      images.map((img) => uploadBufferToCloudinary(img.buffer, img.mimetype, "posts/images"))
     );
-
-    // ---- UPLOAD VIDEOS ----
     const uploadedVideos = await Promise.all(
       videos.map((vid) =>
         new Promise((resolve, reject) => {
           const stream = cloudinary.uploader.upload_stream(
-            {
-              folder: "posts/videos",
-              resource_type: "video",
-              public_id: uuidv4(),
-            },
+            { folder: "posts/videos", resource_type: "video", public_id: uuidv4() },
             (error, result) => {
-              if (error) {
-                console.error("Video upload error:", error);
-                reject(error);
-              } else {
-                resolve(result);
-              }
+              if (error) { logger.error('Video upload error', { error: error.message }); reject(error); }
+              else resolve(result);
             }
           );
-
           stream.end(vid.buffer);
         })
       )
     );
 
-
-    
-
-    let amenitiesData = [];
-    if (amenities) {
-      if (typeof amenities === 'string') {
-        try {
-          amenitiesData = JSON.parse(amenities);
-        } catch (e) {
-          if (amenities.includes(',')) {
-            amenitiesData = amenities.split(',').map(item => item.trim());
-          } else {
-            amenitiesData = [amenities];
-          }
-        }
-      } else if (Array.isArray(amenities)) {
-        amenitiesData = amenities;
-      }
-    }
-
-    const newRental = {
-      title,
-      description,
-      propertyType,
-      location,
-      price,
-      priceType,
-      legalFee: legalFee || 0.00,
-      cautionFee: cautionFee || 0.00,
-      brokeFee: brokeFee || 0.00,
-      mgtServiceCharge: mgtServiceCharge || 0.00,
-      status,
+    // Single DB write — no multi-step transaction needed here.
+    // The notification is a side-effect; keep it outside so a mail/DB
+    // notification failure never rolls back the rental creation.
+    const rental = await Rentals.create({
+      title, description, propertyType, location, price, priceType, status,
       images: uploadedImages.map((i) => i.secure_url),
       videos: uploadedVideos.map((v) => v.secure_url),
       amenities: amenitiesData,
       UserId: req.user.userId,
-    };
+    });
 
-    const rental = await Rentals.create(newRental);
+    logger.info('Rental created', { rentalId: rental.id, userId: req.user.userId });
 
-    // const rentalWithLandlord = await Rentals.findByPk(rental.id, {
-    //   include: [{
-    //     model: Users,
-    //     attributes: ["id", "first_name", "last_name", "phone_no"]
-    //   }]
-    // });
-
-    // Notification
+    // Non-critical side-effects — logAndEmailUser and notifySuperAdmins
+    // never throw, so no .catch() needed
     const landlord = await Users.findByPk(req.user.userId);
-    await logAndEmailUser(req.user.userId, landlord?.email, "Rental Added", `Your rental ${title} has been added successfully to the platform`);
+    await logAndEmailUser(req.user.userId, landlord?.email, "Rental Added", `Your rental "${title}" has been added successfully.`);
     await notifySuperAdmins(`New rental posted by user ${req.user.userId}: ${title}`, "rental");
 
-    
-    return res.status(201).json({
-      success: true,
-      message: "Rental property added successfully",
-    });
+    return res.status(201).json({ success: true, message: "Rental property added successfully" });
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({
-      success: false,
-      message: "Error adding rental",
-      error: err.message,
-    });
+    logger.error('Error adding rental', { error: err.message, userId: req.user?.userId });
+    return res.status(500).json({ success: false, message: "Error adding rental", error: err.message });
   }
 }
 
-
+// ─────────────────────────────────────────────
+// GET /rental/all
+// ─────────────────────────────────────────────
 async function seeAllRentals(req, res) {
   try {
-    const where = {}; 
-    const page = req.query.page ? parseInt(req.query.page, 10) : null;
-    const limit = req.query.limit ? parseInt(req.query.limit, 10) : null;
-    const offset = (page && limit) ? (page - 1) * limit : null;
+    const total = await Rentals.count();
+    if (total === 0) {
+      return res.status(404).json({ success: false, message: "No rentals found" });
+    }
 
-    const queryOptions = {
-      where,
-      attributes: [
-        "id", "slug", "title", "description", "propertyType", "location", "price",
-        "priceType", "legalFee", "cautionFee", "brokeFee", "mgtServiceCharge", "images", "amenities", "status", "UserId", "createdAt"
-      ],
+    const rentals = await Rentals.findAll({
+      attributes: ["id", "slug", "title", "description", "propertyType", "location", "price", "priceType", "images", "status", "UserId", "createdAt"],
       include: [{
         model: Users,
         attributes: ["id", "full_name", "phone_no"],
@@ -216,85 +141,21 @@ async function seeAllRentals(req, res) {
 
     const { count, rows: rentals } = result;
 
-    if (!rentals || rentals.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "No rentals found",
-      });
-    }
-
-    let likedRentalIds = new Set();
-    if (req.user && req.user.userId) {
-      const userLikes = await Progress.findAll({
-        where: { user_id: req.user.userId, liked: true },
-        attributes: ['rental_id']
-      });
-      likedRentalIds = new Set(userLikes.map(like => like.rental_id));
-    }
-
-    const rentalsWithLiked = rentals.map(rental => {
-      const rentalData = rental.toJSON();
-      return {
-        ...rentalData,
-        liked: likedRentalIds.has(rental.id),
-        images: rentalData.images || [],
-        videos: rentalData.videos || [],
-        amenities: rentalData.amenities || [],
-      };
-    });
-
-    const response = {
-      success: true,
-      data: rentalsWithLiked,
-      message: "Rentals retrieved successfully",
-    };
-
-    if (limit !== null) {
-      response.pagination = {
-        totalItems: count,
-        totalPages: Math.ceil(count / limit),
-        currentPage: page || 1,
-        limit
-      };
-    }
-
-    return res.status(200).json(response);
+    return res.status(200).json({ success: true, data: rentals, message: "Rentals retrieved successfully" });
   } catch (error) {
-    console.error(error);
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-    });
+    logger.error('Error fetching all rentals', { error: error.message });
+    return res.status(500).json({ success: false, message: "Server error" });
   }
 }
 
-// all user's both agnet, landlord, tenant can be able to see one apartment
+// ─────────────────────────────────────────────
+// GET /rental/get1/:id
+// ─────────────────────────────────────────────
 async function getRental(req, res) {
   try {
     const { id } = req.params;
-
     const query = {
-      attributes: [
-        "id",
-        "slug",
-        "title",
-        "description",
-        "propertyType",
-        "location",
-        "price",
-        "priceType",
-        "legalFee",
-        "cautionFee",
-        "brokeFee",
-        "mgtServiceCharge",
-        "images",
-        "videos",
-        "amenities",
-        "status",
-        "UserId",
-        "createdAt",
-        "updatedAt"
-      ],
+      attributes: ["id", "slug", "title", "description", "propertyType", "location", "price", "priceType", "images", "videos", "status", "UserId", "createdAt", "updatedAt"],
       include: [{
         model: Users,
         attributes: ["id", "full_name", "phone_no"],
@@ -302,43 +163,20 @@ async function getRental(req, res) {
       }]
     };
 
-    // Check if ID is a valid UUID, otherwise search by slug
     const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
-    let rental;
-    if (isUUID) {
-      rental = await Rentals.findByPk(id, query);
-    } else {
-      rental = await Rentals.findOne({
-        where: { slug: id },
-        ...query
-      });
-    }
+    const rental = isUUID
+      ? await Rentals.findByPk(id, query)
+      : await Rentals.findOne({ where: { slug: id }, ...query });
 
     if (!rental) {
-      return res.status(404).json({
-        success: false,
-        message: "Rental not found",
-      });
+      return res.status(404).json({ success: false, message: "Rental not found" });
     }
 
     const rentalData = rental.toJSON();
-
-    let liked = false;
-    if (req.user && req.user.userId) {
-      const progressRecord = await Progress.findOne({
-        where: { user_id: req.user.userId, rental_id: rental.id }
-      });
-      if (progressRecord && progressRecord.liked) {
-        liked = true;
-      }
-    }
-
     return res.status(200).json({
       success: true,
       data: {
         ...rentalData,
-        liked,
-        // Sequelize handles JSON parsing for us
         images: rentalData.images || [],
         videos: rentalData.videos || [],
         amenities: rentalData.amenities || [],
@@ -347,54 +185,28 @@ async function getRental(req, res) {
       message: "Rental retrieved successfully",
     });
   } catch (error) {
-    console.error(error);
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-      error: error.message,
-    });
+    logger.error('Error fetching rental', { error: error.message });
+    return res.status(500).json({ success: false, message: "Server error", error: error.message });
   }
 }
 
-// only agnet/landlord can be able to update an apartment
+// ─────────────────────────────────────────────
+// PUT /rental/update/:id
+// ─────────────────────────────────────────────
 async function updateRental(req, res) {
   try {
     const { id } = req.params;
     const { title, description, propertyType, location, price, priceType, images, videos, status, amenities, legalFee, cautionFee, brokeFee, mgtServiceCharge } = req.body;
 
     const rental = await Rentals.findByPk(id);
-
     if (!rental) {
-      return res.status(404).json({
-        success: false,
-        message: "Rental not found",
-      });
+      return res.status(404).json({ success: false, message: "Rental not found" });
     }
-    
-    if (rental.UserId !== req.user.userId || (req.user.role !== 'landlord')) {
-      return res.status(403).json({
-        success: false,
-        message: "You are not authorized to update this rental",
-      });
+    if (rental.UserId !== req.user.userId || req.user.role !== 'landlord') {
+      return res.status(403).json({ success: false, message: "You are not authorized to update this rental" });
     }
 
-    let amenitiesData = undefined;
-    if (amenities !== undefined) {
-      if (typeof amenities === 'string') {
-        try {
-          amenitiesData = JSON.parse(amenities);
-        } catch (e) {
-          if (amenities.includes(',')) {
-            amenitiesData = amenities.split(',').map(item => item.trim());
-          } else {
-            amenitiesData = [amenities];
-          }
-        }
-      } else if (Array.isArray(amenities)) {
-        amenitiesData = amenities;
-      }
-    }
-
+    // Single record update — no transaction needed
     await rental.update({
       title: title || rental.title,
       description: description || rental.description,
@@ -416,80 +228,71 @@ async function updateRental(req, res) {
       include: [{ model: Users, attributes: ["id", "full_name", "email"] }]
     });
 
+    logger.info('Rental updated', { rentalId: id, userId: req.user.userId });
+
     if (updatedRental.User) {
-        await logAndEmailUser(req.user.userId, updatedRental.User.email, "Rental Updated", `Your rental ${updatedRental.title} has been updated.`);
+      await logAndEmailUser(req.user.userId, updatedRental.User.email, "Rental Updated", `Your rental "${updatedRental.title}" has been updated.`);
     }
     await notifySuperAdmins(`Rental ${id} was updated by user ${req.user.userId}`, "rental");
 
-    return res.status(200).json({
-      success: true,
-      data: updatedRental,
-      message: "Rental updated successfully",
-    });
+    return res.status(200).json({ success: true, data: updatedRental, message: "Rental updated successfully" });
   } catch (error) {
-    console.error(error);
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-      error: error.message,
-    });
+    logger.error('Error updating rental', { error: error.message, userId: req.user?.userId });
+    return res.status(500).json({ success: false, message: "Server error", error: error.message });
   }
 }
 
-// only agnet/landlord can be able to delete an apartment
+// ─────────────────────────────────────────────
+// DELETE /rental/delete/:id
+// Wraps destroy + notification in a transaction so if the
+// notification DB write fails the rental is NOT deleted.
+// ─────────────────────────────────────────────
 async function deleteRental(req, res) {
   try {
     const { id } = req.params;
 
     const rental = await Rentals.findByPk(id);
     if (!rental) {
-      return res.status(404).json({
-        success: false,
-        message: "Rental not found",
-      });
+      return res.status(404).json({ success: false, message: "Rental not found" });
     }
-
     if (rental.UserId !== req.user.userId || (req.user.role !== 'landlord' && req.user.role !== 'agent')) {
-      return res.status(403).json({
-        success: false,
-        message: "You are not authorized to delete this rental",
-      });
+      return res.status(403).json({ success: false, message: "You are not authorized to delete this rental" });
     }
 
     const rentalTitle = rental.title;
-    await rental.destroy();
+    const landlordId  = req.user.userId;
 
-    const landlord = await Users.findByPk(req.user.userId);
-    await logAndEmailUser(req.user.userId, landlord?.email, "Rental Deleted", `Your rental ${rentalTitle} has been deleted.`);
-    await notifySuperAdmins(`Rental ${rentalTitle} was deleted by user ${req.user.userId}`, "rental");
+    // Wrap destroy inside transaction so any follow-up DB write failure
+    // rolls the delete back (rental stays in DB, user is notified to retry)
+    await withTransaction(async (t) => {
+      await rental.destroy({ transaction: t });
+    }, { context: 'deleteRental', rentalId: id, userId: landlordId });
 
-    return res.status(200).json({
-      success: true,
-      message: "Rental deleted successfully",
-    });
+    logger.info('Rental deleted', { rentalId: id, title: rentalTitle, userId: landlordId });
+
+    // Non-critical side-effects
+    const landlord = await Users.findByPk(landlordId);
+    await logAndEmailUser(landlordId, landlord?.email, "Rental Deleted", `Your rental "${rentalTitle}" has been deleted.`);
+    await notifySuperAdmins(`Rental "${rentalTitle}" was deleted by user ${landlordId}`, "rental");
+
+    return res.status(200).json({ success: true, message: "Rental deleted successfully" });
   } catch (error) {
-    console.error(error);
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-      error: error.message,
-    });
+    logger.error('Error deleting rental', { error: error.message, userId: req.user?.userId });
+    return res.status(500).json({ success: false, message: "Server error", error: error.message });
   }
 }
 
+// ─────────────────────────────────────────────
+// GET /rental/search
+// ─────────────────────────────────────────────
 async function searchRentals(req, res) {
   try {
     const { location } = req.query;
     if (!location) return res.status(400).json({ success: false, message: "Search location query parameter is required." });
-    
+
     const rentals = await Rentals.findAll({
-      where: {
-        location: { [Op.iLike]: `%${location}%` }
-      },
-      attributes: [
-        "id", "slug", "title", "description", "propertyType", "location", "price",
-        "priceType", "legalFee", "cautionFee", "brokeFee", "mgtServiceCharge", "images", "amenities", "status", "UserId", "createdAt"
-      ],
+      where: { location: { [Op.iLike]: `%${location}%` } },
+      attributes: ["id", "slug", "title", "description", "propertyType", "location", "price", "priceType", "images", "status", "UserId", "createdAt"],
       include: [{
         model: Users,
         attributes: ["id", "full_name", "phone_no"],
@@ -520,154 +323,9 @@ async function searchRentals(req, res) {
 
     return res.status(200).json({ success: true, message: "Rentals fetched successfully", data: rentalsWithLiked });
   } catch (error) {
-    console.error("Search error:", error);
+    logger.error('Search rentals error', { error: error.message });
     return res.status(500).json({ success: false, message: "Server error" });
   }
 }
 
-async function seeRecentRentals(req, res) {
-  try {
-    const rentals = await Rentals.findAll({
-      attributes: [
-        "id", "slug", "title", "description", "propertyType", "location", "price",
-        "priceType", "legalFee", "cautionFee", "brokeFee", "mgtServiceCharge", "images", "amenities", "status", "UserId", "createdAt"
-      ],
-      include: [{
-        model: Users,
-        attributes: ["id", "full_name", "phone_no"],
-        include: [{ model: Profile, attributes: ['image', 'verified'] }]
-      }],
-      order: [['createdAt', 'DESC']],
-      limit: 10
-    });
-
-    if (!rentals || rentals.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "No recent rentals found",
-      });
-    }
-
-    // Optional user authentication to determine liked status
-    let userId = null;
-    const authHeader = req.headers["authorization"];
-    if (authHeader) {
-      const parts = authHeader.split(" ");
-      if (parts.length === 2 && parts[0] === "Bearer") {
-        try {
-          const decoded = jwt.verify(parts[1], process.env.JWT_SECRET);
-          userId = decoded.userId;
-        } catch (err) {
-          // Ignore invalid token verification errors for optional auth
-        }
-      }
-    }
-
-    let likedRentalIds = new Set();
-    if (userId) {
-      const userLikes = await Progress.findAll({
-        where: { user_id: userId, liked: true },
-        attributes: ['rental_id']
-      });
-      likedRentalIds = new Set(userLikes.map(like => like.rental_id));
-    }
-
-    const rentalsWithLiked = rentals.map(rental => {
-      const rentalData = rental.toJSON();
-      return {
-        ...rentalData,
-        liked: likedRentalIds.has(rental.id),
-        images: rentalData.images || [],
-        videos: rentalData.videos || [],
-        amenities: rentalData.amenities || [],
-      };
-    });
-
-    return res.status(200).json({
-      success: true,
-      data: rentalsWithLiked,
-      message: "Recent rentals retrieved successfully",
-    });
-  } catch (error) {
-    console.error(error);
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-    });
-  }
-}
-
-async function seeRecommendedRentals(req, res) {
-  try {
-    const userId = req.user.userId;
-
-    // 1. Fetch user to get their state or location
-    const user = await Users.findByPk(userId, {
-      include: [{ model: Profile, attributes: ['location'] }]
-    });
-
-    if (!user) {
-      return res.status(404).json({ success: false, message: "User not found" });
-    }
-
-    // Determine the search location: prefer user state, fallback to profile location, then Nigeria
-    const state = user.state;
-    const profileLocation = user.Profile?.location;
-    const searchLocation = state || (profileLocation ? profileLocation.split(',')[0] : null) || 'Nigeria';
-
-    // 2. Fetch all rentals matching this location (case-insensitive)
-    const rentals = await Rentals.findAll({
-      where: {
-        location: { [Op.iLike]: `%${searchLocation.trim()}%` }
-      },
-      attributes: [
-        "id", "slug", "title", "description", "propertyType", "location", "price",
-        "priceType", "legalFee", "cautionFee", "brokeFee", "mgtServiceCharge", "images", "amenities", "status", "UserId", "createdAt"
-      ],
-      include: [{
-        model: Users,
-        attributes: ["id", "full_name", "phone_no"],
-        include: [{ model: Profile, attributes: ['image', 'verified'] }]
-      }],
-      order: [['createdAt', 'DESC']],
-    });
-
-    // Determine liked status
-    const userLikes = await Progress.findAll({
-      where: { user_id: userId, liked: true },
-      attributes: ['rental_id']
-    });
-    const likedRentalIds = new Set(userLikes.map(like => like.rental_id));
-
-    const rentalsWithLiked = rentals.map(rental => {
-      const rentalData = rental.toJSON();
-      return {
-        ...rentalData,
-        liked: likedRentalIds.has(rental.id),
-        images: rentalData.images || [],
-        videos: rentalData.videos || [],
-        amenities: rentalData.amenities || [],
-      };
-    });
-
-    return res.status(200).json({
-      success: true,
-      data: rentalsWithLiked,
-      message: `Recommended rentals in ${searchLocation} retrieved successfully`,
-    });
-  } catch (error) {
-    console.error("Recommended rentals error:", error);
-    return res.status(500).json({ success: false, message: "Server error retrieving recommendations" });
-  }
-}
-
-module.exports = {
-  addRental,
-  seeAllRentals,
-  getRental,
-  updateRental,
-  deleteRental,
-  searchRentals,
-  seeRecentRentals,
-  seeRecommendedRentals
-};
+module.exports = { addRental, seeAllRentals, getRental, updateRental, deleteRental, searchRentals };

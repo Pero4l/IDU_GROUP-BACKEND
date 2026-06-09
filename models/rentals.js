@@ -13,6 +13,8 @@ module.exports = (sequelize, DataTypes) => {
         foreignKey: "UserId",
         // as: 'agent'
       });
+
+      Rentals.hasMany(models.Inspections, { foreignKey: 'rental_id', as: 'inspections' });
     }
   }
 

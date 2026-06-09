@@ -1,78 +1,74 @@
 const { Progress, Users, Rentals, Transactions } = require('../models');
 const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
-const { Op } = require('sequelize');
-require('dotenv').config();
-const axios = require('axios');
+const { withTransaction } = require('../utils/rollback');
+const logger = require('../utils/logger');
 
+// ═══════════════════════════════════════
+// LIKED HOUSE CONTROLLERS
+// ═══════════════════════════════════════
+
+// POST — like a house
 async function likeHouse(req, res) {
-    try {
-        const { rental_id } = req.body;
-        const user_id = req.user.userId;
-
-        if (!rental_id) {
-            return res.status(400).json({ success: false, message: "rental_id is required" });
-        }
-
-        // Find if a progress record exists for this user and rental
-        let progressRecord = await Progress.findOne({ where: { user_id, rental_id } });
-
-        if (progressRecord) {
-            progressRecord.liked = true;
-            await progressRecord.save();
-        } else {
-            progressRecord = await Progress.create({
-                user_id,
-                rental_id,
-                liked: true,
-                locked: false,
-                booked: false,
-            });
-        }
-
-        const userObj = await Users.findByPk(user_id);
-        await logAndEmailUser(user_id, userObj?.email, "Property Liked", "You have successfully liked a property on RentULO.");
-        await notifySuperAdmins(`A property has been liked by user ${user_id}.`, 'system');
-
-        return res.status(200).json({
-            success: true,
-            message: "House liked successfully",
-            data: progressRecord
-        });
-    } catch (error) {
-        console.error("Error liking house:", error);
-        return res.status(500).json({ success: false, message: "Server error" });
-    }
-}
-
-// 2. Get Liked houses from database ====> GET
-async function getLikedHouses(req, res) {
   try {
+    const { rental_id } = req.body;
     const user_id = req.user.userId;
 
-    const likedHouses = await Progress.findAll({
-      where: { user_id, liked: true },
-      include: [{ model: Rentals }]
-    });
+    if (!rental_id) {
+      return res.status(400).json({ success: false, message: "rental_id is required" });
+    }
 
-    return res.status(200).json({
-      success: true,
-      message: "Liked houses retrieved successfully",
-      data: likedHouses
-    });
+    // Wrap the progress write in a transaction so a partial save never
+    // leaves the record in an inconsistent state
+    const progressRecord = await withTransaction(async (t) => {
+      let record = await Progress.findOne({ where: { user_id, rental_id }, transaction: t });
+      if (record) {
+        record.liked = true;
+        await record.save({ transaction: t });
+      } else {
+        record = await Progress.create(
+          { user_id, rental_id, liked: true, locked: false, booked: false },
+          { transaction: t }
+        );
+      }
+      return record;
+    }, { context: 'likeHouse', user_id, rental_id });
+
+    logger.info('House liked', { user_id, rental_id });
+
+    // Non-critical side-effects
+    const userObj = await Users.findByPk(user_id);
+    await logAndEmailUser(user_id, userObj?.email, "Property Liked", "You have successfully liked a property on RentULO.");
+    await notifySuperAdmins(`A property has been liked by user ${user_id}.`, 'system');
+
+    return res.status(200).json({ success: true, message: "House liked successfully", data: progressRecord });
   } catch (error) {
-    console.error("Error getting liked houses:", error);
+    logger.error('Error liking house', { error: error.message, userId: req.user?.userId });
     return res.status(500).json({ success: false, message: "Server error" });
   }
 }
 
-// 3. Unlike a particular house in the database ====> DELETE
+// GET — get liked houses
+async function getLikedHouses(req, res) {
+  try {
+    const user_id = req.user.userId;
+    const likedHouses = await Progress.findAll({
+      where: { user_id, liked: true },
+      include: [{ model: Rentals }]
+    });
+    return res.status(200).json({ success: true, message: "Liked houses retrieved successfully", data: likedHouses });
+  } catch (error) {
+    logger.error('Error getting liked houses', { error: error.message, userId: req.user?.userId });
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+// DELETE — unlike a house
 async function unlikeHouse(req, res) {
   try {
-    const { id } = req.params; // This is the rental_id
+    const { id } = req.params;
     const user_id = req.user.userId;
 
     const progressRecord = await Progress.findOne({ where: { rental_id: id, user_id } });
-
     if (!progressRecord) {
       return res.status(404).json({ success: false, message: "Liked house not found" });
     }
@@ -80,43 +76,31 @@ async function unlikeHouse(req, res) {
     progressRecord.liked = false;
     await progressRecord.save();
 
-    return res.status(200).json({
-      success: true,
-      message: "House removed from liked list"
-    });
+    return res.status(200).json({ success: true, message: "House removed from liked list" });
   } catch (error) {
-    console.error("Error unliking house:", error);
+    logger.error('Error unliking house', { error: error.message, userId: req.user?.userId });
     return res.status(500).json({ success: false, message: "Server error" });
   }
 }
 
-// 4. Delete all liked houses ====> DELETE
+// DELETE — unlike all houses
 async function deleteAllLikedHouses(req, res) {
   try {
     const user_id = req.user.userId;
-
-    await Progress.update(
-      { liked: false },
-      { where: { user_id, liked: true } }
-    );
-
-    return res.status(200).json({
-      success: true,
-      message: "All liked houses cleared successfully"
-    });
+    await Progress.update({ liked: false }, { where: { user_id, liked: true } });
+    return res.status(200).json({ success: true, message: "All liked houses cleared successfully" });
   } catch (error) {
-    console.error("Error deleting all liked houses:", error);
+    logger.error('Error clearing liked houses', { error: error.message, userId: req.user?.userId });
     return res.status(500).json({ success: false, message: "Server error" });
   }
 }
 
-
-// ==========================
+// ═══════════════════════════════════════
 // LOCKED HOUSE CONTROLLERS
-// ==========================
+// ═══════════════════════════════════════
 
-// 1. Initialize lock payment via Paystack ===> POST
-async function initializeLockPayment(req, res) {
+// POST — lock a house
+async function lockHouse(req, res) {
   try {
     const { rental_id } = req.body;
     const user_id = req.user.userId;
@@ -126,90 +110,22 @@ async function initializeLockPayment(req, res) {
       return res.status(400).json({ success: false, message: "rental_id is required" });
     }
 
-    // Auto-release expired locks (older than 24 hours)
-    const expiryTime = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    await Progress.update(
-      { locked: false },
-      {
-        where: {
-          locked: true,
-          locked_at: { [Op.lt]: expiryTime }
-        }
+    const progressRecord = await withTransaction(async (t) => {
+      const record = await Progress.findOne({ where: { user_id, rental_id }, transaction: t });
+
+      if (!record || !record.liked) {
+        // Throw so the transaction rolls back and returns the error below
+        const err = new Error("MUST_LIKE_FIRST");
+        err.statusCode = 400;
+        throw err;
       }
-    );
 
-    // Check concurrent active locks in parallel
-    const [userActiveLock, alreadyLocked] = await Promise.all([
-      Progress.findOne({
-        where: {
-          user_id,
-          locked: true
-        }
-      }),
-      Progress.findOne({
-        where: {
-          rental_id,
-          locked: true
-        }
-      })
-    ]);
+      record.locked = true;
+      await record.save({ transaction: t });
+      return record;
+    }, { context: 'lockHouse', user_id, rental_id });
 
-    if (userActiveLock) {
-      return res.status(400).json({
-        success: false,
-        message: "You can only lock one house at a time. You already have an active locked property."
-      });
-    }
-
-    if (alreadyLocked) {
-      return res.status(400).json({
-        success: false,
-        message: "This property is already locked by another user"
-      });
-    }
-
-    // Find if a progress record exists for this user and rental
-    let progressRecord = await Progress.findOne({ where: { user_id, rental_id } });
-
-    if (!progressRecord) {
-      progressRecord = await Progress.create({
-        user_id,
-        rental_id,
-        liked: false,
-        locked: false,
-        booked: false,
-      });
-    }
-
-    // Amount to lock house in kobo (e.g., 10000 NGN = 1000000 kobo)
-    const amountInKobo = 5000; 
-
-    // Dynamically build default callback url pointing back to our server
-    const host = req.get('host');
-    const protocol = req.protocol;
-    const defaultCallback = `${protocol}://${host}/progress/lock/verify-callback`;
-    const callbackUrl = process.env.PAYSTACK_CALLBACK_URL || defaultCallback;
-
-    // Generate Paystack initialization request
-    const response = await axios.post(
-      'https://api.paystack.co/transaction/initialize',
-      {
-        email: userEmail,
-        amount: amountInKobo,
-        callback_url: callbackUrl,
-        metadata: {
-          user_id,
-          rental_id,
-          payment_type: 'lock_fee'
-        }
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
+    logger.info('House locked', { user_id, rental_id });
 
     const { authorization_url, reference } = response.data.data;
 
@@ -223,236 +139,70 @@ async function initializeLockPayment(req, res) {
       payment_type: 'lock_fee'
     });
 
-    return res.status(200).json({
-      success: true,
-      message: "Payment initialization successful",
-      authorization_url,
-      reference
-    });
-
+    return res.status(200).json({ success: true, message: "House locked successfully", data: progressRecord });
   } catch (error) {
-    console.error("Error initializing lock payment:", error.response ? error.response.data : error.message);
-    return res.status(500).json({ success: false, message: "Server error during payment initialization" });
-  }
-}
-
-// 1.5. Verify lock payment and successfully lock the house ===> POST
-async function verifyLockPayment(req, res) {
-  try {
-    const { reference } = req.body;
-    const user_id = req.user.userId;
-
-    if (!reference) {
-      return res.status(400).json({ success: false, message: "Transaction reference is required" });
+    if (error.message === "MUST_LIKE_FIRST") {
+      return res.status(400).json({ success: false, message: "You must like the house first before locking it" });
     }
-
-    // Find the pending transaction
-    const transaction = await Transactions.findOne({ where: { reference, user_id } });
-    if (!transaction) {
-      return res.status(404).json({ success: false, message: "Transaction not found" });
-    }
-
-    if (transaction.status === 'success') {
-      return res.status(400).json({ success: false, message: "Transaction already processed" });
-    }
-
-    // Verify with Paystack
-    const response = await axios.get(`https://api.paystack.co/transaction/verify/${reference}`, {
-      headers: {
-        Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`
-      }
-
-      
-    });
-
-    const paymentStatus = response.data.data.status;
-
-    if (paymentStatus === 'success') {
-      // Update transaction
-      transaction.status = 'success';
-      await transaction.save();
-
-      // Update progress record
-      let progressRecord = await Progress.findOne({ where: { user_id, rental_id: transaction.rental_id } });
-      if (progressRecord) {
-        progressRecord.locked = true;
-        progressRecord.locked_at = new Date();
-        await progressRecord.save();
-      }
-
-      const userObj = await Users.findByPk(user_id);
-      await logAndEmailUser(user_id, userObj?.email, "Property Locked", "You have successfully paid the lock fee and locked a property. It is now reserved for you.");
-      await notifySuperAdmins(`A property has been successfully locked by user ${user_id} after successful payment.`, 'system');
-
-      return res.status(200).json({
-        success: true,
-        message: "Payment verified and house locked successfully",
-        data: progressRecord,
-        redirectUrl: process.env.PAYSTACK_REDIRECT_URL || "https://idu-group-backend.onrender.com/progress/lock"
-        // If you prefer direct server-side HTTP redirection, uncomment the line below and comment out the res.status(...).json(...) above:
-        // return res.redirect(process.env.PAYSTACK_REDIRECT_URL || "https://idu-group-backend.onrender.com/progress/lock");
-      });
-    } else {
-      transaction.status = 'failed';
-      await transaction.save();
-      return res.status(400).json({
-        success: false,
-        message: `Payment verification failed. Status: ${paymentStatus}`,
-        redirectUrl: process.env.PAYSTACK_FAILURE_URL || "https://idu-group-backend.onrender.com/progress/lock"
-        // If you prefer direct server-side HTTP redirection, uncomment the line below and comment out the res.status(...).json(...) above:
-        // return res.redirect(process.env.PAYSTACK_FAILURE_URL || "https://idu-group-backend.onrender.com/progress/lock");
-      });
-    }
-
-  } catch (error) {
-    console.error("Error verifying payment:", error.response ? error.response.data : error.message);
-    return res.status(500).json({ success: false, message: "Server error during payment verification" });
-  }
-}
-
-async function verifyLockPaymentCallback(req, res) {
-  try {
-    const { reference } = req.query;
-
-    if (!reference) {
-      return res.redirect(process.env.PAYSTACK_FAILURE_URL || "https://rentulo.com/payment-failed");
-    }
-
-    // Find the pending transaction
-    const transaction = await Transactions.findOne({ where: { reference } });
-    if (!transaction) {
-      return res.redirect(process.env.PAYSTACK_FAILURE_URL || "https://rentulo.com/payment-failed");
-    }
-
-    if (transaction.status === 'success') {
-      return res.redirect(process.env.PAYSTACK_REDIRECT_URL || "https://rentulo.com/payment-success");
-    }
-
-    // Verify with Paystack
-    const response = await axios.get(`https://api.paystack.co/transaction/verify/${reference}`, {
-      headers: {
-        Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`
-      }
-    });
-
-    const paymentStatus = response.data.data.status;
-
-    if (paymentStatus === 'success') {
-      // Update transaction
-      transaction.status = 'success';
-      await transaction.save();
-
-      // Update progress record
-      let progressRecord = await Progress.findOne({ where: { user_id: transaction.user_id, rental_id: transaction.rental_id } });
-      if (progressRecord) {
-        progressRecord.locked = true;
-        progressRecord.locked_at = new Date();
-        await progressRecord.save();
-      }
-
-      const userObj = await Users.findByPk(transaction.user_id);
-      await logAndEmailUser(transaction.user_id, userObj?.email, "Property Locked", "You have successfully paid the lock fee and locked a property. It is now reserved for you.");
-      await notifySuperAdmins(`A property has been successfully locked by user ${transaction.user_id} after successful payment.`, 'system');
-
-      return res.redirect(process.env.PAYSTACK_REDIRECT_URL || "https://rentulo.com/payment-success");
-    } else {
-      transaction.status = 'failed';
-      await transaction.save();
-      return res.redirect(process.env.PAYSTACK_FAILURE_URL || "https://rentulo.com/payment-failed");
-    }
-
-  } catch (error) {
-    console.error("Error in verifyLockPaymentCallback:", error.response ? error.response.data : error.message);
-    return res.redirect(process.env.PAYSTACK_FAILURE_URL || "https://rentulo.com/payment-failed");
-  }
-}
-
-// 2. Get locked houses from database ====> GET
-async function getLockedHouses(req, res) {
-  try {
-    const user_id = req.user.userId;
-
-    // Auto-release expired locks (older than 24 hours)
-    const expiryTime = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    await Progress.update(
-      { locked: false },
-      {
-        where: {
-          locked: true,
-          locked_at: { [Op.lt]: expiryTime }
-        }
-      }
-    );
-
-    const lockedHouses = await Progress.findAll({
-      where: { user_id, locked: true },
-      include: [{ model: Rentals }] // Include rental details automatically
-    });
-
-    return res.status(200).json({
-      success: true,
-      message: "Locked houses retrieved successfully",
-      data: lockedHouses
-    });
-  } catch (error) {
-    console.error("Error getting locked houses:", error);
+    logger.error('Error locking house', { error: error.message, userId: req.user?.userId });
     return res.status(500).json({ success: false, message: "Server error" });
   }
 }
 
-// 3. Delete a particular house in the locked house database ====> DELETE
+// GET — get locked houses
+async function getLockedHouses(req, res) {
+  try {
+    const user_id = req.user.userId;
+    const lockedHouses = await Progress.findAll({
+      where: { user_id, locked: true },
+      include: [{ model: Rentals }]
+    });
+    return res.status(200).json({ success: true, message: "Locked houses retrieved successfully", data: lockedHouses });
+  } catch (error) {
+    logger.error('Error getting locked houses', { error: error.message, userId: req.user?.userId });
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+// DELETE — unlock a house
 async function deleteLockedHouse(req, res) {
   try {
-    const { id } = req.params; // This is the rental_id
+    const { id } = req.params;
     const user_id = req.user.userId;
 
     const progressRecord = await Progress.findOne({ where: { rental_id: id, user_id } });
-
     if (!progressRecord) {
       return res.status(404).json({ success: false, message: "Locked house not found" });
     }
 
-    // Update flag to false instead of deleting the whole row to keep other progress states intact
     progressRecord.locked = false;
     progressRecord.locked_at = null;
     await progressRecord.save();
 
-    return res.status(200).json({
-      success: true,
-      message: "House removed from locked list"
-    });
+    return res.status(200).json({ success: true, message: "House removed from locked list" });
   } catch (error) {
-    console.error("Error deleting locked house:", error);
+    logger.error('Error unlocking house', { error: error.message, userId: req.user?.userId });
     return res.status(500).json({ success: false, message: "Server error" });
   }
 }
 
-// 4. Delete all house that are in locked house database ====> DELETE 
+// DELETE — unlock all houses
 async function deleteAllLockedHouses(req, res) {
   try {
     const user_id = req.user.userId;
-
-    await Progress.update(
-      { locked: false },
-      { where: { user_id, locked: true } }
-    );
-
-    return res.status(200).json({
-      success: true,
-      message: "All locked houses cleared successfully"
-    });
+    await Progress.update({ locked: false }, { where: { user_id, locked: true } });
+    return res.status(200).json({ success: true, message: "All locked houses cleared successfully" });
   } catch (error) {
-    console.error("Error deleting all locked houses:", error);
+    logger.error('Error clearing locked houses', { error: error.message, userId: req.user?.userId });
     return res.status(500).json({ success: false, message: "Server error" });
   }
 }
 
-
-// ==========================
+// ═══════════════════════════════════════
 // BOOKED HOUSE CONTROLLERS
-// ==========================
+// ═══════════════════════════════════════
 
-// 1. Add house to Booked house database ===> POST
+// POST — book a house
 async function bookHouse(req, res) {
   try {
     const { rental_id } = req.body;
@@ -462,59 +212,58 @@ async function bookHouse(req, res) {
       return res.status(400).json({ success: false, message: "rental_id is required" });
     }
 
-    let progressRecord = await Progress.findOne({ where: { user_id, rental_id } });
+    const progressRecord = await withTransaction(async (t) => {
+      const record = await Progress.findOne({ where: { user_id, rental_id }, transaction: t });
 
-    if (!progressRecord || !progressRecord.liked) {
-      return res.status(400).json({ success: false, message: "You must like the house first before booking it" });
-    }
+      if (!record || !record.liked) {
+        const err = new Error("MUST_LIKE_FIRST");
+        err.statusCode = 400;
+        throw err;
+      }
 
-    progressRecord.booked = true;
-    await progressRecord.save();
+      record.booked = true;
+      await record.save({ transaction: t });
+      return record;
+    }, { context: 'bookHouse', user_id, rental_id });
+
+    logger.info('House booked', { user_id, rental_id });
 
     const userObj = await Users.findByPk(user_id);
     await logAndEmailUser(user_id, userObj?.email, "Property Booked", "You have successfully booked a property on RentULO.");
     await notifySuperAdmins(`A property has been successfully booked by user ${user_id}.`, 'system');
 
-    return res.status(200).json({
-      success: true,
-      message: "House booked successfully",
-      data: progressRecord
-    });
+    return res.status(200).json({ success: true, message: "House booked successfully", data: progressRecord });
   } catch (error) {
-    console.error("Error booking house:", error);
+    if (error.message === "MUST_LIKE_FIRST") {
+      return res.status(400).json({ success: false, message: "You must like the house first before booking it" });
+    }
+    logger.error('Error booking house', { error: error.message, userId: req.user?.userId });
     return res.status(500).json({ success: false, message: "Server error" });
   }
 }
 
-// 2. Get Booked houses from database ====> GET
+// GET — get booked houses
 async function getBookedHouses(req, res) {
   try {
     const user_id = req.user.userId;
-
     const bookedHouses = await Progress.findAll({
       where: { user_id, booked: true },
       include: [{ model: Rentals }]
     });
-
-    return res.status(200).json({
-      success: true,
-      message: "Booked houses retrieved successfully",
-      data: bookedHouses
-    });
+    return res.status(200).json({ success: true, message: "Booked houses retrieved successfully", data: bookedHouses });
   } catch (error) {
-    console.error("Error getting booked houses:", error);
+    logger.error('Error getting booked houses', { error: error.message, userId: req.user?.userId });
     return res.status(500).json({ success: false, message: "Server error" });
   }
 }
 
-// 3. Delete a particular house in the Booked house database ====> DELETE 
+// DELETE — unbook a house
 async function deleteBookedHouse(req, res) {
   try {
-    const { id } = req.params; // This is the rental_id
+    const { id } = req.params;
     const user_id = req.user.userId;
 
     const progressRecord = await Progress.findOne({ where: { rental_id: id, user_id } });
-
     if (!progressRecord) {
       return res.status(404).json({ success: false, message: "Booked house not found" });
     }
@@ -522,32 +271,21 @@ async function deleteBookedHouse(req, res) {
     progressRecord.booked = false;
     await progressRecord.save();
 
-    return res.status(200).json({
-      success: true,
-      message: "House removed from booked list"
-    });
+    return res.status(200).json({ success: true, message: "House removed from booked list" });
   } catch (error) {
-    console.error("Error deleting booked house:", error);
+    logger.error('Error unbooking house', { error: error.message, userId: req.user?.userId });
     return res.status(500).json({ success: false, message: "Server error" });
   }
 }
 
-// 4. Delete all house that are in Booked house database ====> DELETE
+// DELETE — unbook all houses
 async function deleteAllBookedHouses(req, res) {
   try {
     const user_id = req.user.userId;
-
-    await Progress.update(
-      { booked: false },
-      { where: { user_id, booked: true } }
-    );
-
-    return res.status(200).json({
-      success: true,
-      message: "All booked houses cleared successfully"
-    });
+    await Progress.update({ booked: false }, { where: { user_id, booked: true } });
+    return res.status(200).json({ success: true, message: "All booked houses cleared successfully" });
   } catch (error) {
-    console.error("Error deleting all booked houses:", error);
+    logger.error('Error clearing booked houses', { error: error.message, userId: req.user?.userId });
     return res.status(500).json({ success: false, message: "Server error" });
   }
 }
@@ -824,28 +562,7 @@ async function verifyRentPaymentCallback(req, res) {
 }
 
 module.exports = {
-  // Liked
-  likeHouse,
-  getLikedHouses,
-  unlikeHouse,
-  deleteAllLikedHouses,
-
-  // Locked
-  initializeLockPayment,
-  verifyLockPayment,
-  verifyLockPaymentCallback,
-  getLockedHouses,
-  deleteLockedHouse,
-  deleteAllLockedHouses,
-
-  // Booked
-  bookHouse,
-  getBookedHouses,
-  deleteBookedHouse,
-  deleteAllBookedHouses,
-
-  // Rent Payment
-  initializeRentPayment,
-  verifyRentPayment,
-  verifyRentPaymentCallback
+  likeHouse, getLikedHouses, unlikeHouse, deleteAllLikedHouses,
+  lockHouse, getLockedHouses, deleteLockedHouse, deleteAllLockedHouses,
+  bookHouse, getBookedHouses, deleteBookedHouse, deleteAllBookedHouses
 };

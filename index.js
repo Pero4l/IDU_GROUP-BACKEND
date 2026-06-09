@@ -31,18 +31,17 @@ app.use(express.urlencoded({ extended: true }));
 
 const db = require("./models");
 
-const userAuth = require("./routes/user.routes");
-const rentalsRoute = require("./routes/rental.routes");
-const notificationRoute = require("./routes/notification.routes");
-const counts = require("./routes/allCount.routes");
-const progressRoute = require("./routes/progress.routes");
-const profileRoute = require("./routes/profile.routes");
-const reportRoute = require("./routes/report.routes");
-const searchRoute = require("./routes/search.routes");
-const superAdminRoute = require("./routes/superAdmin.routes");
-const chatRoute = require("./routes/chat.routes");
-const waitlistRoute = require("./routes/waitlist.routes");
-const testimonials = require("./routes/testimonials.routes");
+const userAuth = require('./routes/user.routes');
+const rentalsRoute = require('./routes/rental.routes');
+const notificationRoute = require('./routes/notification.routes');
+const counts = require('./routes/allCount.routes');
+const progressRoute = require('./routes/progress.routes');
+const profileRoute = require('./routes/profile.routes');
+const reportRoute = require('./routes/report.routes');
+const searchRoute = require('./routes/search.routes');
+const superAdminRoute = require('./routes/superAdmin.routes');
+const chatRoute = require('./routes/chat.routes');
+const inspectionRoute = require('./routes/inspection.routes');
 
 app.get("/", (req, res) => {
   res.status(200).json({
@@ -53,15 +52,15 @@ app.get("/", (req, res) => {
 app.use("/auth", userAuth);
 app.use("/rental", rentalsRoute);
 app.use("/notification", notificationRoute);
-app.use("/counts", counts);
-app.use("/progress", progressRoute);
-app.use("/profile", profileRoute);
-app.use("/report", reportRoute);
-app.use("/search", searchRoute);
-app.use("/admin", superAdminRoute);
-app.use("/chat", chatRoute);
-app.use("/waitlist", waitlistRoute);
-app.use('/testimonials', testimonials)
+app.use('/counts', counts);
+app.use('/progress', progressRoute);
+app.use('/profile', profileRoute);
+app.use('/report', reportRoute);
+app.use('/search', searchRoute);
+app.use('/admin', superAdminRoute);
+app.use('/chat', chatRoute);
+app.use('/inspection', inspectionRoute);
+
 
 // DB CONNECTION
 const PORT = process.env.PORT;

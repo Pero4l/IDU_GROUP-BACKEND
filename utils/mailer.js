@@ -1,6 +1,5 @@
 const nodemailer = require("nodemailer");
-const axios = require("axios");
-const dnsPromises = require("dns").promises;
+const logger = require("./logger");
 require("dotenv").config();
 
 let testAccount = null;
@@ -30,20 +29,17 @@ async function getTransporter() {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS,
       },
-      tls: {
-        servername: originalHost // CRITICAL: Ensures SSL/TLS validation matches the original hostname
-      },
-      family: 4, // Force IPv4 to avoid ENETUNREACH on Render
+      family: 4,             // Force IPv4 — avoids ENETUNREACH on Render
       connectionTimeout: 10000,
       greetingTimeout: 10000,
       socketTimeout: 10000,
     });
   }
-  
+
+  // Fall back to a free Ethereal test account in dev/staging
   if (!testAccount) {
     testAccount = await nodemailer.createTestAccount();
   }
-  
   return nodemailer.createTransport({
     host: "smtp.ethereal.email",
     port: 587,
@@ -56,6 +52,15 @@ async function getTransporter() {
   });
 }
 
+/**
+ * Sends an email. Never throws — a mail failure must never crash or roll back
+ * the caller's business logic. Errors are logged for visibility.
+ *
+ * @param {string} to
+ * @param {string} subject
+ * @param {string} text      - Plain-text fallback
+ * @param {string} [html]    - HTML body (optional)
+ */
 async function sendEmail(to, subject, text, html) {
   // 1. BREVO HTTP API (Uses Port 443 HTTPS - 100% immune to Render's SMTP port blocks)
   if (process.env.BREVO_API_KEY) {
