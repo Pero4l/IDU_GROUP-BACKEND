@@ -1,5 +1,7 @@
 const nodemailer = require("nodemailer");
 const logger = require("./logger");
+const axios = require("axios");
+const dnsPromises = require("dns").promises;
 require("dotenv").config();
 
 let testAccount = null;
@@ -122,7 +124,7 @@ async function sendEmail(to, subject, text, html) {
     return previewUrl || null;
   } catch (error) {
     console.error("[EMAIL HELPER] Standard SMTP connection delivery failed:", error);
-    throw error;
+    return null;
   }
 }
 
