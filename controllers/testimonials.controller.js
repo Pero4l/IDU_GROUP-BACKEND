@@ -47,10 +47,7 @@ async function createTestimonial(req, res) {
         .json({ success: false, message: "User not found" });
     }
 
-    const userName =
-      (
-        user.full_name || `${user.first_name || ""} ${user.last_name || ""}`
-      ).trim() || "there";
+    const userName = (user.full_name || "").trim() || "there";
     const testimonial = await Testimonials.create({
       user_id: userId,
       user_name: userName,
@@ -165,15 +162,11 @@ async function updateTestimonial(req, res) {
         .status(404)
         .json({ success: false, message: "User not found" });
     }
-    const userName =
-      (
-        user.full_name || `${user.first_name || ""} ${user.last_name || ""}`
-      ).trim() || "there";
+    const userName = (user.full_name || "").trim() || "there";
 
     if (rating) testimonial.rating = rating;
     if (message) testimonial.message = message;
-    testimonial.user_name =
-      user.full_name || `${user.first_name} ${user.last_name}`;
+    testimonial.user_name = user.full_name || '';
     await testimonial.save();
 
     // SEND UPDATE EMAIL
@@ -255,10 +248,7 @@ async function deleteTestimonial(req, res) {
 
     // GET USER BEFORE DELETING
     const user = await Users.findOne({ where: { id: userId } });
-    const userName =
-      (
-        user.full_name || `${user.first_name || ""} ${user.last_name || ""}`
-      ).trim() || "there";
+    const userName = (user.full_name || "").trim() || "there";
 
     await testimonial.destroy();
 

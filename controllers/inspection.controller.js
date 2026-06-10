@@ -43,7 +43,7 @@ async function createInspection(req, res) {
       const landlord = await Users.findByPk(rental.UserId);
       if (landlord) {
         await logAndEmailUser(landlord.id, landlord.email, 'New Inspection Request',
-          `${user?.first_name ?? 'A tenant'} has scheduled an inspection for your property "${rental.title}" on ${date} at ${time}.`
+          `${user?.full_name ?? 'A tenant'} has scheduled an inspection for your property "${rental.title}" on ${date} at ${time}.`
         );
       }
     }
@@ -93,7 +93,7 @@ async function getInspection(req, res) {
         attributes: ['id', 'slug', 'title', 'location', 'price', 'priceType', 'images', 'status'],
         include: [{
           model: Users,
-          attributes: ['id', 'first_name', 'last_name', 'phone_no'],
+          attributes: ['id', 'full_name', 'phone_no'],
           include: [{ model: Profile, attributes: ['image', 'verified'] }],
         }],
       }],
@@ -103,7 +103,14 @@ async function getInspection(req, res) {
       return res.status(404).json({ success: false, message: 'Inspection not found' });
     }
 
-    return res.status(200).json({ success: true, message: 'Inspection retrieved successfully', data: inspection });
+    const dataJson = inspection.toJSON();
+    if (dataJson.rental && dataJson.rental.User) {
+      const parts = (dataJson.rental.User.full_name || '').split(' ');
+      dataJson.rental.User.first_name = parts[0] || '';
+      dataJson.rental.User.last_name = parts.slice(1).join(' ') || '';
+    }
+
+    return res.status(200).json({ success: true, message: 'Inspection retrieved successfully', data: dataJson });
   } catch (error) {
     logger.error('Error fetching inspection', { error: error.message, userId: req.user?.userId });
     return res.status(500).json({ success: false, message: 'Server error', error: error.message });
@@ -166,13 +173,23 @@ async function getInspectionsForRental(req, res) {
       where: { rental_id },
       include: [{
         model: Users, as: 'tenant',
-        attributes: ['id', 'first_name', 'last_name', 'phone_no', 'email'],
+        attributes: ['id', 'full_name', 'phone_no', 'email'],
         include: [{ model: Profile, attributes: ['image', 'verified'] }],
       }],
       order: [['date', 'ASC'], ['time', 'ASC']],
     });
 
-    return res.status(200).json({ success: true, message: 'Inspections for rental retrieved successfully', data: inspections });
+    const dataJson = inspections.map(insp => {
+      const item = insp.toJSON();
+      if (item.tenant) {
+        const parts = (item.tenant.full_name || '').split(' ');
+        item.tenant.first_name = parts[0] || '';
+        item.tenant.last_name = parts.slice(1).join(' ') || '';
+      }
+      return item;
+    });
+
+    return res.status(200).json({ success: true, message: 'Inspections for rental retrieved successfully', data: dataJson });
   } catch (error) {
     logger.error('Error fetching inspections for rental', { error: error.message, userId: req.user?.userId });
     return res.status(500).json({ success: false, message: 'Server error', error: error.message });
