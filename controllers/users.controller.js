@@ -215,37 +215,38 @@ async function verifyRegistration(req, res) {
       return res.status(400).json({ success: false, message: "OTP code has expired" });
     }
 
-    // 1. Create User
-    const newUser = await Users.create({
-      full_name: pending.full_name,
-      email: pending.email,
-      gender: pending.gender,
-      role: pending.role,
-      password: pending.password, // already hashed
-      is_active: true,
-      is_verified: false,
-    });
+    // 1. Create User, Profile, Notification and Delete Pending Registration Transactionally
+    const newUser = await withTransaction(async (t) => {
+      const createdUser = await Users.create({
+        full_name: pending.full_name,
+        email: pending.email,
+        gender: pending.gender,
+        role: pending.role,
+        password: pending.password, // already hashed
+        is_active: true,
+        is_verified: false,
+      }, { transaction: t });
 
-    // 2. Create Profile
-    await Profile.create({
-      user_id: newUser.id,
-      bio: "Hey i'm a verified user at RentULO",
-      phone: null,
-      address: null,
-      location: null,
-      verified: false
-    });
+      await Profile.create({
+        user_id: createdUser.id,
+        bio: "Hey i'm a verified user at RentULO",
+        phone: null,
+        address: null,
+        location: null,
+        verified: false
+      }, { transaction: t });
 
-    // 3. Create Notification
-    await Notifications.create({
-      user_id: newUser.id,
-      type: "account",
-      notification: `Welcome to RentULO ${newUser.full_name}! Your account has been successfully created.`,
-      is_read: false
-    });
+      await Notifications.create({
+        user_id: createdUser.id,
+        type: "account",
+        notification: `Welcome to RentULO ${createdUser.full_name}! Your account has been successfully created.`,
+        is_read: false
+      }, { transaction: t });
 
-    // 4. Delete Pending Registration
-    await pending.destroy();
+      await pending.destroy({ transaction: t });
+
+      return createdUser;
+    }, { context: 'verifyRegistration', email });
 
     // 5. Send Welcome Email
     try {
@@ -583,8 +584,7 @@ async function googleAuth(req, res) {
       user = await withTransaction(async (t) => {
         const created = await Users.create(
           {
-            first_name: given_name || "Google",
-            last_name: family_name || "User",
+            full_name: `${given_name || "Google"} ${family_name || "User"}`.trim(),
             email,
             password: hashedPassword,
             gender: null,
@@ -592,6 +592,7 @@ async function googleAuth(req, res) {
             address: null,
             state: null,
             country: "Nigeria",
+            is_verified: false,
           },
           { transaction: t }
         );
@@ -600,7 +601,7 @@ async function googleAuth(req, res) {
           {
             user_id: created.id,
             type: "account",
-            notification: `Welcome to RentULO ${created.first_name} ${created.last_name}! Your account has been successfully created via Google.`,
+            notification: `Welcome to RentULO ${created.full_name}! Your account has been successfully created via Google.`,
             is_read: false,
           },
           { transaction: t }
@@ -610,6 +611,9 @@ async function googleAuth(req, res) {
           {
             user_id: created.id,
             bio: "Hey I'm a verified user at RentULO",
+            phone: null,
+            address: null,
+            location: null,
             verified: false,
           },
           { transaction: t }
@@ -934,31 +938,33 @@ async function verifyAdmin(req, res) {
         .json({ success: false, message: "OTP code has expired" });
     }
 
-    // Set active and clear OTP code
-    user.is_active = true;
-    user.otpCode = null;
-    user.otpExpiresAt = null;
-    await user.save();
+    // Set active, clear OTP code, create notification, and profile transactionally
+    await withTransaction(async (t) => {
+      user.is_active = true;
+      user.otpCode = null;
+      user.otpExpiresAt = null;
+      await user.save({ transaction: t });
 
-    // HANDLE NOTIFICATION
-    await Notifications.create({
-      user_id: user.id,
-      type: "account",
-      notification: `Welcome to RentULO ${user.full_name}! Your Admin account has been successfully verified and created.`,
-      is_read: false,
-    });
+      // HANDLE NOTIFICATION
+      await Notifications.create({
+        user_id: user.id,
+        type: "account",
+        notification: `Welcome to RentULO ${user.full_name}! Your Admin account has been successfully verified and created.`,
+        is_read: false,
+      }, { transaction: t });
 
-    // HANDLE PROFILE CREATION
-    const country = "Nigeria";
-    let location = `${user.state}, ${country}`;
-    await Profile.create({
-      user_id: user.id,
-      bio: "Hey i'm a verified admin at RentULO",
-      phone: user.phone_no,
-      address: user.address,
-      location: location,
-      verified: true,
-    });
+      // HANDLE PROFILE CREATION
+      const country = "Nigeria";
+      let location = `${user.state}, ${country}`;
+      await Profile.create({
+        user_id: user.id,
+        bio: "Hey i'm a verified admin at RentULO",
+        phone: user.phone_no,
+        address: user.address,
+        location: location,
+        verified: true,
+      }, { transaction: t });
+    }, { context: 'verifyAdmin', email });
 
     // SEND WELCOME EMAIL
     try {
