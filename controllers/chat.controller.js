@@ -62,12 +62,26 @@ exports.getChats = async (req, res) => {
     const conversations = await Conversations.findAll({
       where: { [Op.or]: [{ tenant_id: current_user_id }, { landlord_id: current_user_id }] },
       include: [
-        { model: Users, as: "tenant",   attributes: ["id", "first_name", "last_name", "role", "email"] },
-        { model: Users, as: "landlord", attributes: ["id", "first_name", "last_name", "role", "email"] }
+        { model: Users, as: "tenant",   attributes: ["id", "full_name", "role", "email"] },
+        { model: Users, as: "landlord", attributes: ["id", "full_name", "role", "email"] }
       ],
       order: [["updatedAt", "DESC"]]
     });
-    return res.status(200).json({ success: true, conversations });
+    const dataJson = conversations.map(c => {
+      const item = c.toJSON();
+      if (item.tenant) {
+        const parts = (item.tenant.full_name || '').split(' ');
+        item.tenant.first_name = parts[0] || '';
+        item.tenant.last_name = parts.slice(1).join(' ') || '';
+      }
+      if (item.landlord) {
+        const parts = (item.landlord.full_name || '').split(' ');
+        item.landlord.first_name = parts[0] || '';
+        item.landlord.last_name = parts.slice(1).join(' ') || '';
+      }
+      return item;
+    });
+    return res.status(200).json({ success: true, conversations: dataJson });
   } catch (err) {
     logger.error('Error getting chats', { error: err.message, userId: req.user?.userId });
     return res.status(500).json({ success: false, message: "Server Error" });
@@ -153,11 +167,21 @@ exports.getMessages = async (req, res) => {
 
     const messages = await Messages.findAll({
       where: { conversation_id },
-      include: [{ model: Users, as: "sender", attributes: ["id", "first_name", "last_name", "role"] }],
+      include: [{ model: Users, as: "sender", attributes: ["id", "full_name", "role"] }],
       order: [["createdAt", "ASC"]]
     });
 
-    return res.status(200).json({ success: true, messages });
+    const dataJson = messages.map(m => {
+      const item = m.toJSON();
+      if (item.sender) {
+        const parts = (item.sender.full_name || '').split(' ');
+        item.sender.first_name = parts[0] || '';
+        item.sender.last_name = parts.slice(1).join(' ') || '';
+      }
+      return item;
+    });
+
+    return res.status(200).json({ success: true, messages: dataJson });
   } catch (err) {
     logger.error('Error getting messages', { error: err.message, userId: req.user?.userId });
     return res.status(500).json({ success: false, message: "Server Error" });

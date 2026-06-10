@@ -92,6 +92,7 @@ async function register(req, res) {
       password,
     } = req.body;
 
+    
     const full_name = (req.body.full_name || `${req.body.first_name || ''} ${req.body.last_name || ''}`).trim();
 
     if (
