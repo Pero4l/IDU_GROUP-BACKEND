@@ -33,11 +33,11 @@ async function addToWaitlist(req, res) {
     const html = `
       <div style="font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 40px 20px; background-color: #ffffff; border: 1px solid #f0f0f0; border-radius: 12px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);">
         <div style="text-align: center; margin-bottom: 30px;">
-          <h1 style="color: #4F46E5; margin: 0; font-size: 28px; font-weight: 800; letter-spacing: -0.5px;">RentULO</h1>
+          <h1 style="color: #41e728ff; margin: 0; font-size: 28px; font-weight: 800; letter-spacing: -0.5px;">RentULO</h1>
           <p style="color: #6B7280; margin: 5px 0 0 0; font-size: 14px;">Smart & Seamless Property Rentals</p>
         </div>
         
-        <div style="border-top: 3px solid #4F46E5; padding-top: 30px;">
+        <div style="border-top: 3px solid #41e728ff; padding-top: 30px;">
           <h2 style="color: #1F2937; margin-top: 0; font-size: 20px; font-weight: 700;">Welcome to the Waitlist! 🎉</h2>
           <p style="color: #4B5563; font-size: 16px; line-height: 1.6;">Hello,</p>
           <p style="color: #4B5563; font-size: 16px; line-height: 1.6;">Thank you for signing up for the RentULO waitlist! We are absolutely thrilled to have you on board with us.</p>
@@ -50,7 +50,7 @@ async function addToWaitlist(req, res) {
           </ul>
 
           <div style="text-align: center; margin: 35px 0;">
-            <span style="background-color: #4F46E5; color: #ffffff; padding: 12px 30px; border-radius: 8px; font-weight: 600; font-size: 16px; display: inline-block; box-shadow: 0 4px 6px rgba(79, 70, 229, 0.15);">Spot Secured Successfully</span>
+            <span style="background-color: #41e728ff; color: #ffffff; padding: 12px 30px; border-radius: 8px; font-weight: 600; font-size: 16px; display: inline-block; box-shadow: 0 4px 6px rgba(79, 70, 229, 0.15);">Spot Secured Successfully</span>
           </div>
 
           <p style="color: #4B5563; font-size: 15px; line-height: 1.6; margin-bottom: 30px;">We're working hard to prepare RentULO for launch, and we'll keep you updated along the way. In the meantime, if you have any questions, feedback, or suggestions, feel free to reply directly to this email.</p>
