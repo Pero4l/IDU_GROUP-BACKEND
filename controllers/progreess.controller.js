@@ -2,6 +2,8 @@ const { Progress, Users, Rentals, Transactions } = require('../models');
 const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
 const { withTransaction } = require('../utils/rollback');
 const logger = require('../utils/logger');
+const axios = require('axios');
+const { Op } = require('sequelize');
 
 // ═══════════════════════════════════════
 // LIKED HOUSE CONTROLLERS
@@ -100,7 +102,8 @@ async function deleteAllLikedHouses(req, res) {
 // ═══════════════════════════════════════
 
 // POST — lock a house
-async function lockHouse(req, res) {
+// 1. Initialize lock payment via Paystack ===> POST
+async function initializeLockPayment(req, res) {
   try {
     const { rental_id } = req.body;
     const user_id = req.user.userId;
@@ -110,22 +113,87 @@ async function lockHouse(req, res) {
       return res.status(400).json({ success: false, message: "rental_id is required" });
     }
 
-    const progressRecord = await withTransaction(async (t) => {
-      const record = await Progress.findOne({ where: { user_id, rental_id }, transaction: t });
-
-      if (!record || !record.liked) {
-        // Throw so the transaction rolls back and returns the error below
-        const err = new Error("MUST_LIKE_FIRST");
-        err.statusCode = 400;
-        throw err;
+    // Auto-release expired locks (older than 24 hours)
+    const expiryTime = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    await Progress.update(
+      { locked: false, locked_at: null },
+      {
+        where: {
+          locked: true,
+          locked_at: { [Op.lt]: expiryTime }
+        }
       }
+    );
 
-      record.locked = true;
-      await record.save({ transaction: t });
-      return record;
-    }, { context: 'lockHouse', user_id, rental_id });
+    // Check concurrent active locks in parallel
+    const [userActiveLock, alreadyLocked] = await Promise.all([
+      Progress.findOne({
+        where: {
+          user_id,
+          locked: true
+        }
+      }),
+      Progress.findOne({
+        where: {
+          rental_id,
+          locked: true
+        }
+      })
+    ]);
 
-    logger.info('House locked', { user_id, rental_id });
+    if (userActiveLock) {
+      return res.status(400).json({
+        success: false,
+        message: "You can only lock one house at a time. You already have an active locked property."
+      });
+    }
+
+    if (alreadyLocked) {
+      return res.status(400).json({
+        success: false,
+        message: "This property is already locked by another user"
+      });
+    }
+
+    // Find if a progress record exists for this user and rental
+    let progressRecord = await Progress.findOne({ where: { user_id, rental_id } });
+
+    if (!progressRecord || !progressRecord.liked) {
+      return res.status(400).json({
+        success: false,
+        message: "You must like the house first before locking it"
+      });
+    }
+
+    // Amount to lock house in kobo (e.g., 50 NGN = 5000 kobo)
+    const amountInKobo = 5000; 
+
+    // Dynamically build default callback url pointing back to our server
+    const host = req.get('host');
+    const protocol = req.protocol;
+    const defaultCallback = `${protocol}://${host}/progress/lock/verify-callback`;
+    const callbackUrl = process.env.PAYSTACK_CALLBACK_URL || defaultCallback;
+
+    // Generate Paystack initialization request
+    const response = await axios.post(
+      'https://api.paystack.co/transaction/initialize',
+      {
+        email: userEmail,
+        amount: amountInKobo,
+        callback_url: callbackUrl,
+        metadata: {
+          user_id,
+          rental_id,
+          payment_type: 'lock_fee'
+        }
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
 
     const { authorization_url, reference } = response.data.data;
 
@@ -139,13 +207,158 @@ async function lockHouse(req, res) {
       payment_type: 'lock_fee'
     });
 
-    return res.status(200).json({ success: true, message: "House locked successfully", data: progressRecord });
+    return res.status(200).json({
+      success: true,
+      message: "Payment initialization successful",
+      authorization_url,
+      reference
+    });
+
   } catch (error) {
-    if (error.message === "MUST_LIKE_FIRST") {
-      return res.status(400).json({ success: false, message: "You must like the house first before locking it" });
+    console.error("Error initializing lock payment:", error.response ? error.response.data : error.message);
+    return res.status(500).json({ success: false, message: "Server error during payment initialization" });
+  }
+}
+
+// 2. Verify lock payment and successfully lock the house ===> POST
+async function verifyLockPayment(req, res) {
+  try {
+    const { reference } = req.body;
+    const user_id = req.user.userId;
+
+    if (!reference) {
+      return res.status(400).json({ success: false, message: "Transaction reference is required" });
     }
-    logger.error('Error locking house', { error: error.message, userId: req.user?.userId });
-    return res.status(500).json({ success: false, message: "Server error" });
+
+    // Find the pending transaction
+    const transaction = await Transactions.findOne({ where: { reference, user_id } });
+    if (!transaction) {
+      return res.status(404).json({ success: false, message: "Transaction not found" });
+    }
+
+    if (transaction.status === 'success') {
+      return res.status(400).json({ success: false, message: "Transaction already processed" });
+    }
+
+    // Verify with Paystack
+    const response = await axios.get(`https://api.paystack.co/transaction/verify/${reference}`, {
+      headers: {
+        Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`
+      }
+    });
+
+    const paymentStatus = response.data.data.status;
+
+    if (paymentStatus === 'success') {
+      // Update transaction
+      transaction.status = 'success';
+      await transaction.save();
+
+      // Update progress record
+      let progressRecord = await Progress.findOne({ where: { user_id, rental_id: transaction.rental_id } });
+      if (progressRecord) {
+        progressRecord.locked = true;
+        progressRecord.locked_at = new Date();
+        await progressRecord.save();
+      } else {
+        progressRecord = await Progress.create({
+          user_id,
+          rental_id: transaction.rental_id,
+          liked: false,
+          locked: true,
+          locked_at: new Date()
+        });
+      }
+
+      const userObj = await Users.findByPk(user_id);
+      await logAndEmailUser(user_id, userObj?.email, "Property Locked", "You have successfully paid the lock fee and locked a property. It is now reserved for you.");
+      await notifySuperAdmins(`A property has been successfully locked by user ${user_id} after successful payment.`, 'system');
+
+      return res.status(200).json({
+        success: true,
+        message: "Payment verified and house locked successfully",
+        data: progressRecord,
+        redirectUrl: process.env.PAYSTACK_REDIRECT_URL || "https://rentulo.ng/tenant/locked-house"
+      });
+    } else {
+      transaction.status = 'failed';
+      await transaction.save();
+      return res.status(400).json({
+        success: false,
+        message: `Payment verification failed. Status: ${paymentStatus}`,
+        redirectUrl: process.env.PAYSTACK_FAILURE_URL || "https://rentulo.ng/tenant/locked-house"
+      });
+    }
+
+  } catch (error) {
+    console.error("Error verifying payment:", error.response ? error.response.data : error.message);
+    return res.status(500).json({ success: false, message: "Server error during payment verification" });
+  }
+}
+
+// 3. Callback verification for browser redirects ===> GET
+async function verifyLockPaymentCallback(req, res) {
+  try {
+    const { reference } = req.query;
+
+    if (!reference) {
+      return res.redirect(process.env.PAYSTACK_FAILURE_URL || "https://rentulo.com/payment-failed");
+    }
+
+    // Find the pending transaction
+    const transaction = await Transactions.findOne({ where: { reference } });
+    if (!transaction) {
+      return res.redirect(process.env.PAYSTACK_FAILURE_URL || "https://rentulo.com/payment-failed");
+    }
+
+    if (transaction.status === 'success') {
+      return res.redirect(process.env.PAYSTACK_REDIRECT_URL || "https://rentulo.com/payment-success");
+    }
+
+    // Verify with Paystack
+    const response = await axios.get(`https://api.paystack.co/transaction/verify/${reference}`, {
+      headers: {
+        Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`
+      }
+    });
+
+    const paymentStatus = response.data.data.status;
+
+    if (paymentStatus === 'success') {
+      // Update transaction
+      transaction.status = 'success';
+      await transaction.save();
+
+      // Update progress record
+      let progressRecord = await Progress.findOne({ where: { user_id: transaction.user_id, rental_id: transaction.rental_id } });
+      if (progressRecord) {
+        progressRecord.locked = true;
+        progressRecord.locked_at = new Date();
+        await progressRecord.save();
+      } else {
+        await Progress.create({
+          user_id: transaction.user_id,
+          rental_id: transaction.rental_id,
+          liked: false,
+          locked: true,
+          locked_at: new Date()
+        });
+      }
+
+      const userObj = await Users.findByPk(transaction.user_id);
+      await logAndEmailUser(transaction.user_id, userObj?.email, "Property Locked", "You have successfully paid the lock fee and locked a property. It is now reserved for you.");
+      await notifySuperAdmins(`A property has been successfully locked by user ${transaction.user_id} after successful payment.`, 'system');
+
+      return res.redirect(process.env.PAYSTACK_REDIRECT_URL || "https://rentulo.com/payment-success");
+    } else {
+      transaction.status = 'failed';
+      await transaction.save();
+      return res.redirect(process.env.PAYSTACK_FAILURE_URL || "https://rentulo.com/payment-failed");
+    }
+
+  } catch (error) {
+    console.error("Error in verifyLockPaymentCallback:", error.response ? error.response.data : error.message);
+    return res.redirect(process.env.PAYSTACK_FAILURE_URL || "https://rentulo.com/payment-failed");
   }
 }
 
@@ -153,6 +366,19 @@ async function lockHouse(req, res) {
 async function getLockedHouses(req, res) {
   try {
     const user_id = req.user.userId;
+
+    // Auto-release expired locks (older than 24 hours)
+    const expiryTime = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    await Progress.update(
+      { locked: false, locked_at: null },
+      {
+        where: {
+          locked: true,
+          locked_at: { [Op.lt]: expiryTime }
+        }
+      }
+    );
+
     const lockedHouses = await Progress.findAll({
       where: { user_id, locked: true },
       include: [{ model: Rentals }]
@@ -562,7 +788,12 @@ async function verifyRentPaymentCallback(req, res) {
 }
 
 module.exports = {
+  // Liked
   likeHouse, getLikedHouses, unlikeHouse, deleteAllLikedHouses,
-  lockHouse, getLockedHouses, deleteLockedHouse, deleteAllLockedHouses,
-  bookHouse, getBookedHouses, deleteBookedHouse, deleteAllBookedHouses
+  // Locked
+  initializeLockPayment, verifyLockPayment, verifyLockPaymentCallback, getLockedHouses, deleteLockedHouse, deleteAllLockedHouses,
+  // Booked
+  bookHouse, getBookedHouses, deleteBookedHouse, deleteAllBookedHouses,
+  // Rent Payment
+  initializeRentPayment, verifyRentPayment, verifyRentPaymentCallback
 };
