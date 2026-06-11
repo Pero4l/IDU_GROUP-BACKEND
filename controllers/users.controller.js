@@ -196,35 +196,43 @@ The RentULO Team
 `;
 
       const welcomeHtml = `
-  <div style="font-family: Arial, sans-serif; background-color: #f9fafb; padding: 20px;">
-    <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; padding: 30px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
-      
-      <h2 style="color: #111827;">Welcome to RentULO, ${newUser.full_name}👋</h2>
-      
-      <p style="color: #4b5563; font-size: 15px; line-height: 1.6;">
-        Your account has been successfully created. We're excited to have you on board!
-      </p>
+      <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f7f6; padding: 30px 15px;">
+        <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border-top: 4px solid #10b981;">
+          <div style="padding: 30px; text-align: center; background-color: #f0fdf4;">
+            <div style="background-color: #d1fae5; width: 60px; height: 60px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; margin-bottom: 15px; margin-left: auto; margin-right: auto;">
+              <span style="font-size: 28px;">🎉</span>
+            </div>
+            <h2 style="margin: 0; color: #064e3b; font-size: 24px; font-weight: 700;">Welcome to RentULO, ${newUser.full_name}!</h2>
+            <p style="margin: 5px 0 0 0; color: #047857; font-size: 15px;">Your housing journey starts here 🏡</p>
+          </div>
 
-      <p style="color: #4b5563; font-size: 15px; line-height: 1.6;">
-        With RentULO, you can browse listings and search houses. To unlock features like booking/locking houses, chatting with landlords, and reporting, please complete your profile details.
-      </p>
+          <div style="padding: 35px 30px; color: #374151; font-size: 16px; line-height: 1.7;">
+            <p>We're thrilled to have you join the RentULO family!</p>
+            <p>RentULO makes finding, booking, and managing rental properties in Nigeria simpler, faster, and completely secure.</p>
+            
+            <div style="background-color: #f0fdf4; border-left: 4px solid #10b981; padding: 15px; margin: 25px 0; border-radius: 0 8px 8px 0;">
+              <strong style="color: #064e3b;">Unlock all features:</strong>
+              <p style="margin: 5px 0 0 0; font-size: 14px; color: #047857;">
+                Please complete your profile details (phone number, state, and address) on your dashboard to unlock features like booking/locking houses, chatting with landlords, and initiating inspection requests.
+              </p>
+            </div>
 
-      <div style="text-align: center; margin: 30px 0;">
-        <a href="https://rentulo.com/dashboard" 
-           style="background-color: #111827; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 6px; font-size: 14px;">
-          Go to Dashboard
-        </a>
+            <div style="text-align: center; margin: 35px 0;">
+              <a href="https://rentulo.ng/dashboard" 
+                 style="background-color: #10b981; color: #ffffff; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-size: 15px; font-weight: 600; display: inline-block; box-shadow: 0 4px 6px rgba(16, 185, 129, 0.2);">
+                Go to Your Dashboard
+              </a>
+            </div>
+          </div>
+
+          <div style="background-color: #f9fafb; padding: 25px 30px; text-align: center; border-top: 1px solid #e5e7eb;">
+            <p style="margin: 0; color: #9ca3af; font-size: 12px;">
+              © ${new Date().getFullYear()} RentULO. All rights reserved.
+            </p>
+          </div>
+        </div>
       </div>
-
-      <hr style="margin: 30px 0; border: none; border-top: 1px solid #e5e7eb;" />
-
-      <p style="color: #9ca3af; font-size: 12px; text-align: center;">
-        © ${new Date().getFullYear()} RentULO. All rights reserved.
-      </p>
-
-    </div>
-  </div>
-  `;
+      `;
 
       await sendEmail(newUser.email, 'Welcome to RentULO 🎉', welcomeText, welcomeHtml);
     } catch (mailError) {
@@ -263,11 +271,66 @@ async function login(req, res) {
     const id = req.data.id;
 
     if (req.user) {
+      const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || req.ip || 'Unknown';
+      const userAgent = req.headers['user-agent'] || 'Unknown';
+      const loginTime = new Date().toLocaleString('en-US', { timeZone: 'Africa/Lagos', hour12: true }) + ' (Lagos Time)';
+      const location = req.data.state && req.data.country ? `${req.data.state}, ${req.data.country}` : 'Nigeria';
+
+      const loginHtml = `
+      <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f7f6; padding: 30px 15px;">
+        <div style="max-width: 550px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border-top: 4px solid #10b981;">
+          <div style="padding: 30px; text-align: center; background-color: #f0fdf4;">
+            <div style="background-color: #d1fae5; width: 60px; height: 60px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; margin-bottom: 15px; margin-left: auto; margin-right: auto;">
+              <span style="font-size: 28px;">🔒</span>
+            </div>
+            <h2 style="margin: 0; color: #064e3b; font-size: 22px; font-weight: 700;">New Login Detected</h2>
+            <p style="margin: 5px 0 0 0; color: #047857; font-size: 14px;">Security Alert</p>
+          </div>
+          
+          <div style="padding: 30px; color: #374151; font-size: 15px; line-height: 1.6;">
+            <p>Hello <strong>${req.data.full_name || 'User'}</strong>,</p>
+            <p>A successful login to your RentULO account was just detected. Please review the details below to verify it was you:</p>
+            
+            <div style="background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin: 20px 0;">
+              <table style="width: 100%; border-collapse: collapse;">
+                <tr>
+                  <td style="padding: 6px 0; font-weight: 600; color: #4b5563; width: 100px;">Date & Time:</td>
+                  <td style="padding: 6px 0; color: #1f2937;">${loginTime}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 6px 0; font-weight: 600; color: #4b5563;">IP Address:</td>
+                  <td style="padding: 6px 0; color: #1f2937; font-family: monospace;">${ip}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 6px 0; font-weight: 600; color: #4b5563;">Device:</td>
+                  <td style="padding: 6px 0; color: #1f2937; font-size: 13px;">${userAgent}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 6px 0; font-weight: 600; color: #4b5563;">Location:</td>
+                  <td style="padding: 6px 0; color: #1f2937;">${location}</td>
+                </tr>
+              </table>
+            </div>
+            
+            <p style="font-size: 14px; color: #6b7280; margin-top: 25px;">
+              If this was you, no action is needed. If you do not recognize this login attempt, please reset your password immediately to secure your account.
+            </p>
+          </div>
+          
+          <div style="background-color: #f9fafb; padding: 20px 30px; text-align: center; border-top: 1px solid #e5e7eb;">
+            <p style="margin: 0; color: #9ca3af; font-size: 12px;">
+              © ${new Date().getFullYear()} RentULO. All rights reserved.
+            </p>
+          </div>
+        </div>
+      </div>
+      `;
+
       await logAndEmailUser(
         req.data.id,
         req.data.email,
         "New Login Alert",
-        "A successful login to your RentULO account was just detected.",
+        loginHtml,
       );
 
       const cookieOptions = {
@@ -902,30 +965,40 @@ async function verifyAdmin(req, res) {
     // SEND WELCOME EMAIL
     try {
       const adminWelcomeHtml = `
-        <div style="font-family: Arial, sans-serif; background-color: #f9fafb; padding: 20px;">
-          <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; padding: 30px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
-            <h2 style="color: #111827;">Welcome to RentULO, ${user.full_name}👋</h2>
-            <p style="color: #4b5563; font-size: 15px; line-height: 1.6;">
-              Your admin account has been successfully verified and your profile created. We're excited to have you join our administration team!
-            </p>
-            <p style="color: #4b5563; font-size: 15px; line-height: 1.6;">
-              You can now access the admin panel, manage listings, user profiles, reports, and oversee platform activity.
-            </p>
-            <div style="text-align: center; margin: 30px 0;">
-              <a href="https://rentulo.com/admin/dashboard" 
-                 style="background-color: #111827; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 6px; font-size: 14px;">
+      <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f7f6; padding: 30px 15px;">
+        <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border-top: 4px solid #10b981;">
+          <div style="padding: 30px; text-align: center; background-color: #f0fdf4;">
+            <div style="background-color: #d1fae5; width: 60px; height: 60px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; margin-bottom: 15px; margin-left: auto; margin-right: auto;">
+              <span style="font-size: 28px;">👑</span>
+            </div>
+            <h2 style="margin: 0; color: #064e3b; font-size: 24px; font-weight: 700;">Welcome to RentULO Admin Panel</h2>
+            <p style="margin: 5px 0 0 0; color: #047857; font-size: 15px;">Your admin account has been verified 🎉</p>
+          </div>
+
+          <div style="padding: 35px 30px; color: #374151; font-size: 16px; line-height: 1.7;">
+            <p>Hello <strong>${user.full_name}</strong>,</p>
+            <p>Your Admin account has been successfully verified. Welcome to our administration team!</p>
+            <p>You can now access the admin panel, manage listings, user profiles, reports, and oversee platform activity.</p>
+            
+            <div style="text-align: center; margin: 35px 0;">
+              <a href="https://rentulo.ng/admin/dashboard" 
+                 style="background-color: #10b981; color: #ffffff; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-size: 15px; font-weight: 600; display: inline-block; box-shadow: 0 4px 6px rgba(16, 185, 129, 0.2);">
                 Go to Admin Dashboard
               </a>
             </div>
-            <p style="color: #6b7280; font-size: 13px;">
+            
+            <p style="font-size: 14px; color: #6b7280;">
               If you have any questions, feel free to contact the super admin or our internal support team.
             </p>
-            <hr style="margin: 30px 0; border: none; border-top: 1px solid #e5e7eb;" />
-            <p style="color: #9ca3af; font-size: 12px; text-align: center;">
+          </div>
+
+          <div style="background-color: #f9fafb; padding: 25px 30px; text-align: center; border-top: 1px solid #e5e7eb;">
+            <p style="margin: 0; color: #9ca3af; font-size: 12px;">
               © ${new Date().getFullYear()} RentULO. All rights reserved.
             </p>
           </div>
         </div>
+      </div>
       `;
 
       await sendEmail(
