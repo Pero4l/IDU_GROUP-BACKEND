@@ -35,6 +35,9 @@ async function getTransporter() {
       connectionTimeout: 10000,
       greetingTimeout: 10000,
       socketTimeout: 10000,
+      tls: {
+        servername: originalHost
+      }
     });
   }
 
