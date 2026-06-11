@@ -41,6 +41,7 @@ async function getTransporter() {
     });
   }
 
+  
   // Fall back to a free Ethereal test account in dev/staging
   if (!testAccount) {
     testAccount = await nodemailer.createTestAccount();
