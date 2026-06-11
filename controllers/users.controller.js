@@ -13,75 +13,8 @@ const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
 const { withTransaction } = require('../utils/rollback');
 const logger = require('../utils/logger');
+const { sendEmail } = require('../utils/mailer');
 
-// To generate a free test account automatically if env vars are missing:
-let testAccount = null;
-
-async function getTransporter() {
-  if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
-    // If user provided a real email, configure it dynamically properly
-    return nodemailer.createTransport({
-      service: process.env.EMAIL_HOST && process.env.EMAIL_HOST.includes('gmail') ? 'gmail' : undefined,
-      host: process.env.EMAIL_HOST || 'smtp.ethereal.email',
-      port: process.env.EMAIL_PORT ? parseInt(process.env.EMAIL_PORT) : 587,
-      secure: process.env.EMAIL_PORT == '465' ? true : false,
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS,
-      }
-    });
-  }
-  
-  if (!testAccount) {
-    testAccount = await nodemailer.createTestAccount();
-  }
-  
-  return nodemailer.createTransport({
-    host: "smtp.ethereal.email",
-    port: 587,
-    secure: false,
-    auth: {
-      user: testAccount.user,
-      pass: testAccount.pass,
-    },
-  });
-}
-
-// ── Welcome email helper ──────────────────────────────────────────────────────
-// Intentionally fire-and-forget from the register flow so a mail failure never
-// rolls back a successful registration.
-async function sendWelcomeEmail(email, first_name, last_name) {
-  const mailer = await getTransporter();
-  const mailOptions = {
-    from: '"RentULO Team" <no-reply@rentulo.com>',
-    to: email,
-    subject: 'Welcome to RentULO 🎉',
-    text: `Hi ${first_name}, welcome to RentULO! Your account has been successfully created.`,
-    html: `
-    <div style="font-family: Arial, sans-serif; background-color: #f9fafb; padding: 20px;">
-      <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; padding: 30px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
-        <h2 style="color: #111827;">Welcome to RentULO, ${first_name} ${last_name} 👋</h2>
-        <p style="color: #4b5563; font-size: 15px; line-height: 1.6;">
-          Your account has been successfully created. We're excited to have you on board.
-        </p>
-        <div style="text-align: center; margin: 30px 0;">
-          <a href="https://rentulo.com/dashboard"
-             style="background-color: #111827; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 6px; font-size: 14px;">
-            Go to Dashboard
-          </a>
-        </div>
-        <hr style="margin: 30px 0; border: none; border-top: 1px solid #e5e7eb;" />
-        <p style="color: #9ca3af; font-size: 12px; text-align: center;">
-          © ${new Date().getFullYear()} RentULO. All rights reserved.
-        </p>
-      </div>
-    </div>`,
-  };
-  const info = await mailer.sendMail(mailOptions);
-  console.log("Welcome email sent: %s", info.messageId);
-  const previewUrl = nodemailer.getTestMessageUrl(info);
-  if (previewUrl) console.log("Welcome email preview: %s", previewUrl);
-}
 
 async function register(req, res) {
   try {
