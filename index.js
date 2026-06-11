@@ -15,16 +15,17 @@ app.use(cookieParser());
 app.use(express.json());
 app.use(
   cors({
-    origin: true,
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allowedHeaders: [
-      "Origin",
-      "X-Requested-With",
-      "Content-Type",
-      "Accept",
-      "Authorization",
+    origin: [
+      "https://rentulo.ng",
+      "https://www.rentulo.ng",
+      // "https://rentulo.com",
+      // "https://www.rentulo.com",
+      "http://localhost:3000",
+      // "http://localhost:5173",
+      // "http://localhost:5174"
     ],
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
   }),
 );
 app.use(express.urlencoded({ extended: true }));
