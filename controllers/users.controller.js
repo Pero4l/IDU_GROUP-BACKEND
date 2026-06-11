@@ -218,7 +218,7 @@ The RentULO Team
             </div>
 
             <div style="text-align: center; margin: 35px 0;">
-              <a href="https://rentulo.ng/dashboard" 
+              <a href="https://rentulo.ng/login" 
                  style="background-color: #10b981; color: #ffffff; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-size: 15px; font-weight: 600; display: inline-block; box-shadow: 0 4px 6px rgba(16, 185, 129, 0.2);">
                 Go to Your Dashboard
               </a>
