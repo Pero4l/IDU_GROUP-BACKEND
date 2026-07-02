@@ -697,9 +697,6 @@ async function logout(req, res) {
   };
 
   res.clearCookie("token", cookieOptions);
-  res.cookie("userRole", cookieOptions); // Wait, no, res.clearCookie('userRole', cookieOptions) in original code:
-  // let's match exact original:
-  res.clearCookie("token", cookieOptions);
   res.clearCookie("userRole", cookieOptions);
 
   return res
