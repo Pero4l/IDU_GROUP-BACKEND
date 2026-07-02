@@ -29,9 +29,9 @@ async function loginMiddleware(req, res, next) {
 
   
   if (!existingUser) {
-    return res.status(404).json({
+    return res.status(401).json({
       success: false,
-      message: "User does not exist",
+      message: "Invalid email/number or password",
     });
   }
 
@@ -46,7 +46,7 @@ async function loginMiddleware(req, res, next) {
   if (!passMatch) {
     return res.status(401).json({
       success: false,
-      message: "Wrong email/number or password",
+      message: "Invalid email/number or password",
     });
   }
 

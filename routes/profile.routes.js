@@ -1,10 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const multer = require('multer');
 
-// Configure multer to store uploaded files in memory as buffer objects
-const upload = multer({ storage: multer.memoryStorage() });
-
+const { imageUpload: upload } = require('../middleware/uploadConfig');
 const { authMiddleware } = require('../middleware/authUserMiddleware');
 const { updateProfile, getUserProfile } = require('../controllers/profile.controller');
 
