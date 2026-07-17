@@ -5,17 +5,43 @@ const express = require("express");
 const http = require("http");
 require("dotenv").config();
 const cors = require("cors");
+const helmet = require("helmet");
 const cookieParser = require("cookie-parser");
+const xss = require("xss");
 const socketConfig = require("./config/socket");
 
 const app = express();
 const server = http.createServer(app);
 socketConfig.init(server);
+
+// HTTPS enforcement (for platforms like Render/Heroku behind a proxy)
+app.use((req, res, next) => {
+  if (req.header("x-forwarded-proto") !== "https" && process.env.NODE_ENV === "production") {
+    return res.redirect(301, `https://${req.header("host")}${req.url}`);
+  }
+  next();
+});
+
+// Security headers
+app.use(helmet());
+
 app.use(cookieParser());
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: false, limit: "1mb" }));
+
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || "https://rentulo.ng,http://localhost:3000")
+  .split(",")
+  .map((o) => o.trim());
+
 app.use(
   cors({
-    origin: true,
+    origin: function (origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allowedHeaders: [
@@ -27,7 +53,25 @@ app.use(
     ],
   }),
 );
-app.use(express.urlencoded({ extended: true }));
+
+// Basic XSS sanitization middleware for string values in request body
+app.use((req, res, next) => {
+  if (req.body && typeof req.body === "object") {
+    for (const key of Object.keys(req.body)) {
+      if (typeof req.body[key] === "string") {
+        req.body[key] = xss(req.body[key]);
+      }
+    }
+  }
+  if (req.query && typeof req.query === "object") {
+    for (const key of Object.keys(req.query)) {
+      if (typeof req.query[key] === "string") {
+        req.query[key] = xss(req.query[key]);
+      }
+    }
+  }
+  next();
+});
 
 const db = require("./models");
 
