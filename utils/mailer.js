@@ -1,4 +1,7 @@
 const nodemailer = require("nodemailer");
+const dns = require("dns");
+const dnsPromises = dns.promises;
+const axios = require("axios");
 const logger = require("./logger");
 require("dotenv").config();
 

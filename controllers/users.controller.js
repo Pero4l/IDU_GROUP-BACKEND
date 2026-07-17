@@ -7,10 +7,13 @@ const {
 const { Op } = require("sequelize");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
+const nodemailer = require("nodemailer");
 require("dotenv").config();
 const { OAuth2Client } = require("google-auth-library");
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
+const { sendEmail } = require('../utils/mailer');
 const { withTransaction } = require('../utils/rollback');
 const logger = require('../utils/logger');
 
@@ -100,8 +103,8 @@ async function register(req, res) {
   if (!first_name || !last_name || !gender || !role || !phone_no || !address || !state || !email || !password) {
     return res.status(400).json({ message: "All fields are required" });
   }
-  if (password.length < 6) {
-    return res.status(400).json({ message: "Password must be at least 6 characters" });
+  if (password.length < 8) {
+    return res.status(400).json({ message: "Password must be at least 8 characters" });
   }
   if (!/[A-Z]/.test(password) || !/[a-z]/.test(password)) {
     return res.status(400).json({ message: "Password must contain both uppercase and lowercase letters" });
@@ -119,11 +122,11 @@ async function register(req, res) {
   // ── Duplicate check (outside the transaction — fast read, no write) ───────
   const existingUser = await Users.findOne({ where: { email } });
   if (existingUser) {
-    return res.status(400).json({ success: false, message: "User already exists" });
+    return res.status(400).json({ success: false, message: "An account with this email already exists" });
   }
 
   try {
-    const hashedPassword = await bcrypt.hash(password, 12);
+    const hashedPassword = await bcrypt.hash(password, 14);
     const country = "Nigeria";
 
     // ── All three writes wrapped in ONE transaction ────────────────────────
@@ -231,7 +234,6 @@ async function login(req, res) {
       return res.status(200).json({
         success: true,
         message: "Login Successfully",
-        token: token,
         role: role,
         id: id,
       });
@@ -291,13 +293,14 @@ async function forgotPassword(req, res) {
 
     const user = await Users.findOne({ where: { email } });
     if (!user) {
+      // Return success even if user not found to prevent email enumeration
       return res
-        .status(404)
-        .json({ success: false, message: "User not found" });
+        .status(200)
+        .json({ success: true, message: "If an account exists with this email, an OTP has been sent." });
     }
 
-    // Generate a 6-digit OTP
-    const otpCode = Math.floor(100000 + Math.random() * 900000);
+    // Generate a 6-digit OTP using cryptographically secure random
+    const otpCode = crypto.randomInt(100000, 999999);
     // Set expiration to 15 minutes from now
     const otpExpiresAt = new Date(Date.now() + 15 * 60 * 1000);
 
@@ -340,15 +343,20 @@ async function confirmOtp(req, res) {
 
     const user = await Users.findOne({ where: { email } });
     if (!user) {
-      return res
-        .status(404)
-        .json({ success: false, message: "User not found" });
-    }
-
-    if (user.otpCode !== parseInt(otpCode)) {
+      // Return generic message to prevent email enumeration
       return res
         .status(400)
-        .json({ success: false, message: "Invalid OTP code" });
+        .json({ success: false, message: "Invalid or expired OTP code" });
+    }
+
+    // Timing-safe OTP comparison
+    const otpString = String(otpCode);
+    const storedOtpString = String(user.otpCode);
+    if (otpString.length !== storedOtpString.length ||
+        !crypto.timingSafeEqual(Buffer.from(otpString), Buffer.from(storedOtpString))) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid or expired OTP code" });
     }
 
     if (new Date() > new Date(user.otpExpiresAt)) {
@@ -379,12 +387,12 @@ async function resetPassword(req, res) {
         });
     }
 
-    if (newPassword.length < 6) {
+    if (newPassword.length < 8) {
       return res
         .status(400)
         .json({
           success: false,
-          message: "Password must be at least 6 characters",
+          message: "Password must be at least 8 characters",
         });
     } else if (!/[A-Z]/.test(newPassword) || !/[a-z]/.test(newPassword)) {
       return res
@@ -401,13 +409,17 @@ async function resetPassword(req, res) {
 
     const user = await Users.findOne({ where: { email } });
     if (!user) {
+      // Return generic message to prevent email enumeration
       return res
-        .status(404)
-        .json({ success: false, message: "User not found" });
+        .status(400)
+        .json({ success: false, message: "Invalid or expired OTP code" });
     }
 
-    // Verify OTP
-    if (user.otpCode !== parseInt(otpCode)) {
+    // Timing-safe OTP comparison
+    const otpString = String(otpCode);
+    const storedOtpString = String(user.otpCode);
+    if (otpString.length !== storedOtpString.length ||
+        !crypto.timingSafeEqual(Buffer.from(otpString), Buffer.from(storedOtpString))) {
       return res
         .status(400)
         .json({ success: false, message: "Invalid OTP code" });
@@ -421,7 +433,7 @@ async function resetPassword(req, res) {
     }
 
     // Hash the new password
-    const hashedPassword = await bcrypt.hash(newPassword, 12);
+    const hashedPassword = await bcrypt.hash(newPassword, 14);
     user.password = hashedPassword;
 
     // Clear the OTP fields
@@ -459,7 +471,7 @@ async function googleAuth(req, res) {
     if (!user) {
       // Create user if they don't exist
       const randomPassword = Math.random().toString(36).slice(-8) + "Aa1@";
-      const hashedPassword = await bcrypt.hash(randomPassword, 12);
+      const hashedPassword = await bcrypt.hash(randomPassword, 14);
       
       user = await withTransaction(async (t) => {
         const created = await Users.create(
@@ -597,28 +609,12 @@ async function registerAdmin(req, res) {
       address,
       state,
       password,
-      adminSecretKey,
     } = req.body;
 
     const full_name = (
       req.body.full_name ||
       `${req.body.first_name || ""} ${req.body.last_name || ""}`
     ).trim();
-
-    const secretKey = (
-      adminSecretKey || req.headers?.["x-admin-secret"]
-    )?.trim();
-    const systemSecret = (
-      process.env.ADMIN_SECRET_KEY || "rentulo_secret_admin_key_2026"
-    )?.trim();
-    if (secretKey !== systemSecret) {
-      return res
-        .status(403)
-        .json({
-          success: false,
-          message: "Unauthorized. Invalid admin secret key.",
-        });
-    }
 
     if (
       !full_name ||
@@ -634,12 +630,12 @@ async function registerAdmin(req, res) {
         .json({ success: false, message: "All fields are required" });
     }
 
-    if (password.length < 6) {
+    if (password.length < 8) {
       return res
         .status(400)
         .json({
           success: false,
-          message: "Password must be at least 6 characters",
+          message: "Password must be at least 8 characters",
         });
     } else if (!/[A-Z]/.test(password) || !/[a-z]/.test(password)) {
       return res
@@ -672,11 +668,11 @@ async function registerAdmin(req, res) {
         .json({ success: false, message: "User already exists" });
     }
 
-    // Generate a 6-digit OTP
-    const otpCode = Math.floor(100000 + Math.random() * 900000);
+    // Generate a 6-digit OTP using cryptographically secure random
+    const otpCode = crypto.randomInt(100000, 999999);
     // Set expiration to 10 minutes from now
     const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
-    const hashedPassword = await bcrypt.hash(password, 12);
+    const hashedPassword = await bcrypt.hash(password, 14);
     const country = "Nigeria";
 
     let user;
@@ -803,7 +799,11 @@ async function verifyAdmin(req, res) {
         });
     }
 
-    if (user.otpCode !== parseInt(otpCode)) {
+    // Timing-safe OTP comparison
+    const otpString = String(otpCode);
+    const storedOtpString = String(user.otpCode);
+    if (otpString.length !== storedOtpString.length ||
+        !crypto.timingSafeEqual(Buffer.from(otpString), Buffer.from(storedOtpString))) {
       return res
         .status(400)
         .json({ success: false, message: "Invalid OTP code" });
@@ -893,6 +893,99 @@ async function verifyAdmin(req, res) {
   } catch (error) {
     console.error("verifyAdmin error:", error);
     return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+async function verifyRegistration(req, res) {
+  try {
+    const { email, otpCode } = req.body;
+    if (!email || !otpCode) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Email and OTP code are required" });
+    }
+
+    const pending = await PendingRegistrations.findOne({ where: { email } });
+    if (!pending) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid or expired OTP code" });
+    }
+
+    // Timing-safe OTP comparison
+    const otpString = String(otpCode);
+    const storedOtpString = String(pending.otpCode);
+    if (otpString.length !== storedOtpString.length ||
+        !crypto.timingSafeEqual(Buffer.from(otpString), Buffer.from(storedOtpString))) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid or expired OTP code" });
+    }
+
+    if (new Date() > new Date(pending.otpExpiresAt)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "OTP code has expired" });
+    }
+
+    // Move from pending to actual users
+    const country = "Nigeria";
+    const newUser = await withTransaction(async (t) => {
+      const user = await Users.create(
+        {
+          full_name: pending.full_name,
+          gender: pending.gender,
+          role: pending.role,
+          email: pending.email,
+          password: pending.password,
+          country,
+          is_verified: true,
+        },
+        { transaction: t }
+      );
+
+      await Notifications.create(
+        {
+          user_id: user.id,
+          type: "account",
+          notification: `Welcome to RentULO ${user.full_name}! Your account has been successfully created.`,
+          is_read: false,
+        },
+        { transaction: t }
+      );
+
+      await Profile.create(
+        {
+          user_id: user.id,
+          bio: "Hey I'm a verified user at RentULO",
+          verified: false,
+        },
+        { transaction: t }
+      );
+
+      // Remove the pending registration
+      await pending.destroy({ transaction: t });
+
+      return user;
+    }, { context: 'verifyRegistration', email });
+
+    await notifySuperAdmins(
+      `New user registered: ${newUser.full_name} (${newUser.role})`,
+      "system"
+    );
+
+    logger.info("User registered via OTP verification", { userId: newUser.id, email });
+
+    return res.status(201).json({
+      success: true,
+      message: "Account verified and registered successfully. You can now login.",
+    });
+  } catch (error) {
+    logger.error("verifyRegistration failed", { email: req.body?.email, error: error.message });
+    return res.status(500).json({
+      success: false,
+      message: "Registration verification failed. Please try again.",
+    });
   }
 }
 

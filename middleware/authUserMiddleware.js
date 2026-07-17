@@ -1,4 +1,5 @@
 const jwt = require("jsonwebtoken");
+const db = require("../models");
 
 function authMiddleware(req, res, next) {
     const authHeader = req.headers["authorization"];
@@ -23,7 +24,26 @@ function authMiddleware(req, res, next) {
     try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
         req.user = decoded;
-        next();
+
+        // Set PostgreSQL session variables for Row-Level Security (RLS)
+        const userId = String(decoded.userId || '');
+        const role = String(decoded.role || 'tenant');
+        db.sequelize.query(
+            `SET LOCAL app.current_user_id = ${db.sequelize.escape(userId)};`
+        ).then(() =>
+            db.sequelize.query(
+                `SET LOCAL app.current_user_role = ${db.sequelize.escape(role)};`
+            )
+        ).then(() => {
+            next();
+        }).catch((err) => {
+            // RLS session variable failure — deny access as a safety fallback
+            console.error("Failed to set RLS session variables:", err);
+            return res.status(500).json({
+                success: false,
+                message: "Server security configuration error",
+            });
+        });
     } catch (err) {
         return res.status(401).json({
             success: false,
