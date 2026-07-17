@@ -66,6 +66,7 @@ async function loginMiddleware(req, res, next) {
     return res.status(401).json({
       success: false,
       message: "Invalid credentials",
+      message: "Invalid email/number or password",
     });
   }
 
@@ -83,6 +84,7 @@ async function loginMiddleware(req, res, next) {
     return res.status(401).json({
       success: false,
       message: "Invalid credentials",
+      message: "Invalid email/number or password",
     });
   }
 

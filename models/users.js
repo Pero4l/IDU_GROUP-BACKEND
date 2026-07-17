@@ -1,7 +1,5 @@
-'use strict';
-const {
-  Model
-} = require('sequelize');
+"use strict";
+const { Model } = require("sequelize");
 module.exports = (sequelize, DataTypes) => {
   class Users extends Model {
     /**
@@ -26,7 +24,7 @@ module.exports = (sequelize, DataTypes) => {
         // as: "progress"
       });
 
-      Users.hasOne(models.Profile, { foreignKey: 'user_id' });
+      Users.hasOne(models.Profile, { foreignKey: "user_id" });
 
       Users.hasMany(models.Reports, {
         foreignKey: "user_id",
@@ -39,51 +37,58 @@ module.exports = (sequelize, DataTypes) => {
       });
 
       Users.hasMany(models.Testimonials, {
-        foreignKey: 'user_id',
+        foreignKey: "user_id",
         // as: 'testimonials'
-      })
+      });
+      Users.hasOne(models.Subscriptions, { foreignKey: "user_id" });
 
-      Users.hasMany(models.Conversations, { foreignKey: 'tenant_id' });
-      Users.hasMany(models.Conversations, { foreignKey: 'landlord_id' });
-      Users.hasMany(models.Messages, { foreignKey: 'sender_id' });
+      Users.hasMany(models.Conversations, { foreignKey: "tenant_id" });
+      Users.hasMany(models.Conversations, { foreignKey: "landlord_id" });
+      Users.hasMany(models.Messages, { foreignKey: "sender_id" });
 
-      Users.hasMany(models.Inspections, { foreignKey: 'user_id', as: 'inspections' });
+      Users.hasMany(models.Inspections, {
+        foreignKey: "user_id",
+        as: "inspections",
+      });
     }
   }
-  Users.init({
-    full_name: {
-      type: DataTypes.STRING,
-      allowNull: false
+  Users.init(
+    {
+      full_name: {
+        type: DataTypes.STRING,
+        allowNull: false,
+      },
+      gender: DataTypes.ENUM("male", "female", "others"),
+      email: DataTypes.STRING,
+      role: {
+        type: DataTypes.ENUM("tenant", "landlord", "admin"),
+        defaultValue: "tenant",
+      },
+      phone_no: DataTypes.STRING,
+      address: DataTypes.STRING,
+      state: DataTypes.STRING,
+      country: DataTypes.STRING,
+      password: DataTypes.STRING,
+      otpCode: DataTypes.INTEGER,
+      otpExpiresAt: DataTypes.DATE,
+      is_superadmin: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: false,
+      },
+      is_active: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: true,
+      },
+      is_verified: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: false,
+      },
     },
-    gender: DataTypes.ENUM('male', 'female', 'others'),
-    email: DataTypes.STRING,
-    role: {
-      type: DataTypes.ENUM('tenant', 'landlord', 'admin'),
-      defaultValue: 'tenant',
+    {
+      sequelize,
+      modelName: "Users",
+      tableName: "users",
     },
-    phone_no: DataTypes.STRING,
-    address: DataTypes.STRING,
-    state: DataTypes.STRING,
-    country: DataTypes.STRING,
-    password: DataTypes.STRING,
-    otpCode: DataTypes.INTEGER,
-    otpExpiresAt: DataTypes.DATE,
-    is_superadmin: {
-      type: DataTypes.BOOLEAN,
-      defaultValue: false,
-    },
-    is_active: {
-      type: DataTypes.BOOLEAN,
-      defaultValue: true,
-    },
-    is_verified: {
-      type: DataTypes.BOOLEAN,
-      defaultValue: false,
-    }
-  }, {
-    sequelize,
-    modelName: 'Users',
-    tableName: "users"
-  });
+  );
   return Users;
-}; 
+};

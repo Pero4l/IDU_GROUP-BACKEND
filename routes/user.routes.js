@@ -26,6 +26,20 @@ router.post("/login", authLimiter, loginMiddleware, login);
 router.post("/google-auth", authLimiter, googleAuth);
 router.get("/", authMiddleware, searchUsers);
 router.post("/forgot-password", otpLimiter, forgotPassword);
+const {
+  loginLimiter,
+  otpLimiter,
+  otpRequestLimiter,
+} = require("../middleware/rateLimiter");
+
+router.post("/register", otpRequestLimiter, register);
+router.post("/verify-registration", otpLimiter, verifyRegistration);
+router.post("/register-admin", otpRequestLimiter, registerAdmin);
+router.post("/verify-admin", otpLimiter, verifyAdmin);
+router.post("/login", loginLimiter, loginMiddleware, login);
+router.post("/google-auth", googleAuth);
+router.get("/", authMiddleware, searchUsers);
+router.post("/forgot-password", otpRequestLimiter, forgotPassword);
 router.post("/confirm-otp", otpLimiter, confirmOtp);
 router.post("/reset-password", otpLimiter, resetPassword);
 

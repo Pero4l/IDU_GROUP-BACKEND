@@ -24,7 +24,7 @@ module.exports = (sequelize, DataTypes) => {
     description: DataTypes.TEXT,
     UserId: DataTypes.UUID,
     likesCount: DataTypes.INTEGER,
-    propertyType: DataTypes.ENUM('apartment', 'house', 'office', 'commercial', 'land'),
+    propertyType: DataTypes.ENUM('apartment', 'house', 'office', 'commercial', 'land', 'lodge', 'shortlet'),
     location: DataTypes.STRING,
     price: DataTypes.DECIMAL(12, 2),
     priceType: DataTypes.ENUM('monthly', 'yearly', 'one-time'),

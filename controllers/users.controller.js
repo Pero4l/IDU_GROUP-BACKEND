@@ -16,75 +16,95 @@ const { notifySuperAdmins, logAndEmailUser } = require('./notification.controlle
 const { sendEmail } = require('../utils/mailer');
 const { withTransaction } = require('../utils/rollback');
 const logger = require('../utils/logger');
+const { sendEmail } = require('../utils/mailer');
 
-// To generate a free test account automatically if env vars are missing:
-let testAccount = null;
 
-async function getTransporter() {
-  if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
-    // If user provided a real email, configure it dynamically properly
-    return nodemailer.createTransport({
-      service: process.env.EMAIL_HOST && process.env.EMAIL_HOST.includes('gmail') ? 'gmail' : undefined,
-      host: process.env.EMAIL_HOST || 'smtp.ethereal.email',
-      port: process.env.EMAIL_PORT ? parseInt(process.env.EMAIL_PORT) : 587,
-      secure: process.env.EMAIL_PORT == '465' ? true : false,
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS,
-      }
+async function register(req, res) {
+  try {
+    const {
+      gender,
+      role,
+      email,
+      password,
+    } = req.body;
+
+    const full_name = (req.body.full_name || `${req.body.first_name || ''} ${req.body.last_name || ''}`).trim();
+
+    if (
+      !full_name ||
+      !gender ||
+      !role ||
+      !email ||
+      !password
+    ) {
+      return res.status(400).json({ message: "All fields are required" });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ message: "Password must be at least 6 characters" });
+    } else if (!/[A-Z]/.test(password) || !/[a-z]/.test(password)) {
+      return res.status(400).json({ message: "Password must contain both uppercase and lowercase letters" });
+    } else if (!/[0-9]/.test(password)) {
+      return res.status(400).json({ message: "Password must contain a number" });
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ message: "Invalid email format" });
+    } else if (full_name.length < 5) {
+      return res.status(400).json({ message: "Name must be at least 5 characters" });
+    }
+
+    const existingUser = await Users.findOne({ where: { email } });
+    if (existingUser) {
+      return res.status(400).json({ success: false, message: "User already exists" });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 12);
+    
+    // Generate a 6-digit OTP code and set expiry to 15 minutes from now
+    const otpCode = Math.floor(100000 + Math.random() * 900000);
+    const otpExpiresAt = new Date(Date.now() + 15 * 60 * 1000);
+
+    // Delete any stale pending signup for the same email
+    await PendingRegistrations.destroy({ where: { email } });
+
+    // Store details temporarily
+    await PendingRegistrations.create({
+      full_name,
+      email,
+      gender,
+      role,
+      password: hashedPassword,
+      otpCode,
+      otpExpiresAt
     });
-  }
-  
-  if (!testAccount) {
-    testAccount = await nodemailer.createTestAccount();
-  }
-  
-  return nodemailer.createTransport({
-    host: "smtp.ethereal.email",
-    port: 587,
-    secure: false,
-    auth: {
-      user: testAccount.user,
-      pass: testAccount.pass,
-    },
-  });
-}
 
-// ── Welcome email helper ──────────────────────────────────────────────────────
-// Intentionally fire-and-forget from the register flow so a mail failure never
-// rolls back a successful registration.
-async function sendWelcomeEmail(email, first_name, last_name) {
-  const mailer = await getTransporter();
-  const mailOptions = {
-    from: '"RentULO Team" <no-reply@rentulo.com>',
-    to: email,
-    subject: 'Welcome to RentULO 🎉',
-    text: `Hi ${first_name}, welcome to RentULO! Your account has been successfully created.`,
-    html: `
-    <div style="font-family: Arial, sans-serif; background-color: #f9fafb; padding: 20px;">
-      <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; padding: 30px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
-        <h2 style="color: #111827;">Welcome to RentULO, ${first_name} ${last_name} 👋</h2>
-        <p style="color: #4b5563; font-size: 15px; line-height: 1.6;">
-          Your account has been successfully created. We're excited to have you on board.
-        </p>
-        <div style="text-align: center; margin: 30px 0;">
-          <a href="https://rentulo.com/dashboard"
-             style="background-color: #111827; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 6px; font-size: 14px;">
-            Go to Dashboard
-          </a>
+    // Send OTP Verification Email
+    let previewUrl = null;
+    try {
+      const verifyRegisterHtml = `
+        <div style="font-family: Arial, sans-serif; background-color: #f9fafb; padding: 20px;">
+          <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; padding: 30px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
+            <h2 style="color: #111827;">Verify Your Email Address 🔑</h2>
+            <p style="color: #4b5563; font-size: 15px; line-height: 1.6;">
+              Thank you for starting your registration on RentULO. To complete your sign-up, please verify your email using the 6-digit OTP code below:
+            </p>
+            <div style="text-align: center; margin: 30px 0;">
+              <span style="font-size: 32px; font-weight: bold; letter-spacing: 5px; color: #111827; background-color: #f3f4f6; padding: 15px 30px; border-radius: 8px; display: inline-block;">
+                ${otpCode}
+              </span>
+            </div>
+            <p style="color: #ef4444; font-size: 14px; font-weight: 500;">
+              Note: This verification code is valid for exactly 15 minutes.
+            </p>
+            <p style="color: #6b7280; font-size: 13px;">
+              If you did not initiate this registration, please ignore this email.
+            </p>
+            <hr style="margin: 30px 0; border: none; border-top: 1px solid #e5e7eb;" />
+            <p style="color: #9ca3af; font-size: 12px; text-align: center;">
+              © ${new Date().getFullYear()} RentULO. All rights reserved.
+            </p>
+          </div>
         </div>
-        <hr style="margin: 30px 0; border: none; border-top: 1px solid #e5e7eb;" />
-        <p style="color: #9ca3af; font-size: 12px; text-align: center;">
-          © ${new Date().getFullYear()} RentULO. All rights reserved.
-        </p>
-      </div>
-    </div>`,
-  };
-  const info = await mailer.sendMail(mailOptions);
-  console.log("Welcome email sent: %s", info.messageId);
-  const previewUrl = nodemailer.getTestMessageUrl(info);
-  if (previewUrl) console.log("Welcome email preview: %s", previewUrl);
-}
+      `;
 
 async function register(req, res) {
   const {
@@ -123,75 +143,155 @@ async function register(req, res) {
   const existingUser = await Users.findOne({ where: { email } });
   if (existingUser) {
     return res.status(400).json({ success: false, message: "An account with this email already exists" });
-  }
+      previewUrl = await sendEmail(
+        email,
+        'RentULO Account Verification OTP 🔑',
+        `Hello ${full_name},\n\nYour OTP for registration is ${otpCode}. It is valid for 15 minutes.\n\nBest regards,\nThe RentULO Team`,
+        verifyRegisterHtml
+      );
+    } catch (mailError) {
+      console.error("Failed to send verification email:", mailError);
+    }
 
-  try {
-    const hashedPassword = await bcrypt.hash(password, 14);
-    const country = "Nigeria";
-
-    // ── All three writes wrapped in ONE transaction ────────────────────────
-    // If any of them fail (DB error, network drop, crash …) the transaction
-    // is automatically rolled back and the DB is left completely clean —
-    // no orphaned user rows, no missing profiles.
-    const newUser = await withTransaction(
-      async (t) => {
-        // 1. Create the user
-        const user = await Users.create(
-          { first_name, last_name, gender, role, email, phone_no, address, state, country, password: hashedPassword },
-          { transaction: t }
-        );
-
-        // 2. Create the welcome notification
-        await Notifications.create(
-          {
-            user_id: user.id,
-            type: 'account',
-            notification: `Welcome to RentULO ${user.first_name} ${user.last_name}! Your account has been successfully created.`,
-            is_read: false,
-          },
-          { transaction: t }
-        );
-
-        // 3. Create the profile — if this fails the user row is rolled back too
-        await Profile.create(
-          {
-            user_id: user.id,
-            bio: "Hey I'm a verified user at RentULO",
-            phone: phone_no,
-            address,
-            location: `${state}, ${country}`,
-            verified: false,
-          },
-          { transaction: t }
-        );
-
-        return user;
-      },
-      { context: 'register', email }
-    );
-
-    // Non-critical side-effects
-    sendWelcomeEmail(email, first_name, last_name).catch((err) =>
-      logger.warn('Welcome email failed (non-critical)', { email, error: err.message })
-    );
-
-    await notifySuperAdmins(`New user registered: ${first_name} ${last_name} (${role})`, 'system');
-
-    logger.info('User registered successfully', { userId: newUser.id, email, role });
-
-    return res.status(201).json({
+    return res.status(200).json({
       success: true,
-      message:
-        "Account verified and registered successfully. You can now login.",
+      message: "Verification OTP code sent to your email. Please verify to complete registration.",
+      testMailUrl: previewUrl
     });
 
   } catch (error) {
-    // withTransaction already rolled back and logged; just return 500
-    logger.error('Registration failed — all DB changes rolled back', { email, error: error.message });
+    console.error(error);
     return res.status(500).json({
       success: false,
-      message: "Registration failed. Please try again.",
+      message: "Server error",
     });
+  }
+}
+
+async function verifyRegistration(req, res) {
+  try {
+    const hashedPassword = await bcrypt.hash(password, 14);
+    const country = "Nigeria";
+    const { email, otpCode } = req.body;
+    if (!email || !otpCode) {
+      return res.status(400).json({ success: false, message: "Email and OTP code are required" });
+    }
+
+    const pending = await PendingRegistrations.findOne({ where: { email } });
+    if (!pending) {
+      return res.status(404).json({ success: false, message: "Registration request not found or already verified" });
+    }
+
+    if (pending.otpCode !== parseInt(otpCode)) {
+      return res.status(400).json({ success: false, message: "Invalid OTP code" });
+    }
+
+    if (new Date() > new Date(pending.otpExpiresAt)) {
+      return res.status(400).json({ success: false, message: "OTP code has expired" });
+    }
+
+    // 1. Create User, Profile, Notification and Delete Pending Registration Transactionally
+    const newUser = await withTransaction(async (t) => {
+      const createdUser = await Users.create({
+        full_name: pending.full_name,
+        email: pending.email,
+        gender: pending.gender,
+        role: pending.role,
+        password: pending.password, // already hashed
+        is_active: true,
+        is_verified: false,
+      }, { transaction: t });
+
+      await Profile.create({
+        user_id: createdUser.id,
+        bio: "Hey i'm a verified user at RentULO",
+        phone: null,
+        address: null,
+        location: null,
+        verified: false
+      }, { transaction: t });
+
+      await Notifications.create({
+        user_id: createdUser.id,
+        type: "account",
+        notification: `Welcome to RentULO ${createdUser.full_name}! Your account has been successfully created.`,
+        is_read: false
+      }, { transaction: t });
+
+      await pending.destroy({ transaction: t });
+
+      return createdUser;
+    }, { context: 'verifyRegistration', email });
+
+    // 5. Send Welcome Email
+    try {
+      const welcomeText = `Hi ${newUser.full_name},
+
+Welcome to RentULO!
+
+Your account has been successfully created. We're excited to have you join our platform.
+
+You can now explore listings, manage your rentals, and enjoy a seamless experience. Please complete your profile details (phone number, state, and address) to unlock features like locking houses, chatting, and reporting.
+
+Best regards,  
+The RentULO Team
+`;
+
+      const welcomeHtml = `
+      <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f7f6; padding: 30px 15px;">
+        <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border-top: 4px solid #10b981;">
+          <div style="padding: 30px; text-align: center; background-color: #f0fdf4;">
+            <div style="background-color: #d1fae5; width: 60px; height: 60px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; margin-bottom: 15px; margin-left: auto; margin-right: auto;">
+              <span style="font-size: 28px;">🎉</span>
+            </div>
+            <h2 style="margin: 0; color: #064e3b; font-size: 24px; font-weight: 700;">Welcome to RentULO, ${newUser.full_name}!</h2>
+            <p style="margin: 5px 0 0 0; color: #047857; font-size: 15px;">Your housing journey starts here 🏡</p>
+          </div>
+
+          <div style="padding: 35px 30px; color: #374151; font-size: 16px; line-height: 1.7;">
+            <p>We're thrilled to have you join the RentULO family!</p>
+            <p>RentULO makes finding, booking, and managing rental properties in Nigeria simpler, faster, and completely secure.</p>
+            
+            <div style="background-color: #f0fdf4; border-left: 4px solid #10b981; padding: 15px; margin: 25px 0; border-radius: 0 8px 8px 0;">
+              <strong style="color: #064e3b;">Unlock all features:</strong>
+              <p style="margin: 5px 0 0 0; font-size: 14px; color: #047857;">
+                Please complete your profile details (phone number, state, and address) on your dashboard to unlock features like booking/locking houses, chatting with landlords, and initiating inspection requests.
+              </p>
+            </div>
+
+            <div style="text-align: center; margin: 35px 0;">
+              <a href="https://rentulo.ng/login" 
+                 style="background-color: #10b981; color: #ffffff; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-size: 15px; font-weight: 600; display: inline-block; box-shadow: 0 4px 6px rgba(16, 185, 129, 0.2);">
+                Go to Your Dashboard
+              </a>
+            </div>
+          </div>
+
+          <div style="background-color: #f9fafb; padding: 25px 30px; text-align: center; border-top: 1px solid #e5e7eb;">
+            <p style="margin: 0; color: #9ca3af; font-size: 12px;">
+              © ${new Date().getFullYear()} RentULO. All rights reserved.
+            </p>
+          </div>
+        </div>
+      </div>
+      `;
+
+      await sendEmail(newUser.email, 'Welcome to RentULO 🎉', welcomeText, welcomeHtml);
+    } catch (mailError) {
+      console.error("Failed to send welcome email:", mailError);
+    }
+
+    // 6. Broadcast notification to Super Admins
+    await notifySuperAdmins(`New user registered: ${newUser.full_name} (${newUser.role})`, 'system');
+
+    return res.status(201).json({
+      success: true,
+      message: "Account verified and registered successfully. You can now login.",
+    });
+
+  } catch (error) {
+    console.error("Verify registration error:", error);
+    return res.status(500).json({ success: false, message: "Server error during registration verification" });
   }
 }
 
@@ -213,11 +313,66 @@ async function login(req, res) {
     const id = req.data.id;
 
     if (req.user) {
+      const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || req.ip || 'Unknown';
+      const userAgent = req.headers['user-agent'] || 'Unknown';
+      const loginTime = new Date().toLocaleString('en-US', { timeZone: 'Africa/Lagos', hour12: true }) + ' (Lagos Time)';
+      const location = req.data.state && req.data.country ? `${req.data.state}, ${req.data.country}` : 'Nigeria';
+
+      const loginHtml = `
+      <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f7f6; padding: 30px 15px;">
+        <div style="max-width: 550px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border-top: 4px solid #10b981;">
+          <div style="padding: 30px; text-align: center; background-color: #f0fdf4;">
+            <div style="background-color: #d1fae5; width: 60px; height: 60px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; margin-bottom: 15px; margin-left: auto; margin-right: auto;">
+              <span style="font-size: 28px;">🔒</span>
+            </div>
+            <h2 style="margin: 0; color: #064e3b; font-size: 22px; font-weight: 700;">New Login Detected</h2>
+            <p style="margin: 5px 0 0 0; color: #047857; font-size: 14px;">Security Alert</p>
+          </div>
+          
+          <div style="padding: 30px; color: #374151; font-size: 15px; line-height: 1.6;">
+            <p>Hello <strong>${req.data.full_name || 'User'}</strong>,</p>
+            <p>A successful login to your RentULO account was just detected. Please review the details below to verify it was you:</p>
+            
+            <div style="background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin: 20px 0;">
+              <table style="width: 100%; border-collapse: collapse;">
+                <tr>
+                  <td style="padding: 6px 0; font-weight: 600; color: #4b5563; width: 100px;">Date & Time:</td>
+                  <td style="padding: 6px 0; color: #1f2937;">${loginTime}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 6px 0; font-weight: 600; color: #4b5563;">IP Address:</td>
+                  <td style="padding: 6px 0; color: #1f2937; font-family: monospace;">${ip}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 6px 0; font-weight: 600; color: #4b5563;">Device:</td>
+                  <td style="padding: 6px 0; color: #1f2937; font-size: 13px;">${userAgent}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 6px 0; font-weight: 600; color: #4b5563;">Location:</td>
+                  <td style="padding: 6px 0; color: #1f2937;">${location}</td>
+                </tr>
+              </table>
+            </div>
+            
+            <p style="font-size: 14px; color: #6b7280; margin-top: 25px;">
+              If this was you, no action is needed. If you do not recognize this login attempt, please reset your password immediately to secure your account.
+            </p>
+          </div>
+          
+          <div style="background-color: #f9fafb; padding: 20px 30px; text-align: center; border-top: 1px solid #e5e7eb;">
+            <p style="margin: 0; color: #9ca3af; font-size: 12px;">
+              © ${new Date().getFullYear()} RentULO. All rights reserved.
+            </p>
+          </div>
+        </div>
+      </div>
+      `;
+
       await logAndEmailUser(
         req.data.id,
         req.data.email,
         "New Login Alert",
-        "A successful login to your RentULO account was just detected.",
+        loginHtml,
       );
 
       const cookieOptions = {
@@ -476,8 +631,7 @@ async function googleAuth(req, res) {
       user = await withTransaction(async (t) => {
         const created = await Users.create(
           {
-            first_name: given_name || "Google",
-            last_name: family_name || "User",
+            full_name: `${given_name || "Google"} ${family_name || "User"}`.trim(),
             email,
             password: hashedPassword,
             gender: null,
@@ -485,6 +639,7 @@ async function googleAuth(req, res) {
             address: null,
             state: null,
             country: "Nigeria",
+            is_verified: false,
           },
           { transaction: t }
         );
@@ -493,7 +648,7 @@ async function googleAuth(req, res) {
           {
             user_id: created.id,
             type: "account",
-            notification: `Welcome to RentULO ${created.first_name} ${created.last_name}! Your account has been successfully created via Google.`,
+            notification: `Welcome to RentULO ${created.full_name}! Your account has been successfully created via Google.`,
             is_read: false,
           },
           { transaction: t }
@@ -503,6 +658,9 @@ async function googleAuth(req, res) {
           {
             user_id: created.id,
             bio: "Hey I'm a verified user at RentULO",
+            phone: null,
+            address: null,
+            location: null,
             verified: false,
           },
           { transaction: t }
@@ -589,9 +747,6 @@ async function logout(req, res) {
     path: "/",
   };
 
-  res.clearCookie("token", cookieOptions);
-  res.cookie("userRole", cookieOptions); // Wait, no, res.clearCookie('userRole', cookieOptions) in original code:
-  // let's match exact original:
   res.clearCookie("token", cookieOptions);
   res.clearCookie("userRole", cookieOptions);
 
@@ -815,59 +970,71 @@ async function verifyAdmin(req, res) {
         .json({ success: false, message: "OTP code has expired" });
     }
 
-    // Set active and clear OTP code
-    user.is_active = true;
-    user.otpCode = null;
-    user.otpExpiresAt = null;
-    await user.save();
+    // Set active, clear OTP code, create notification, and profile transactionally
+    await withTransaction(async (t) => {
+      user.is_active = true;
+      user.otpCode = null;
+      user.otpExpiresAt = null;
+      await user.save({ transaction: t });
 
-    // HANDLE NOTIFICATION
-    await Notifications.create({
-      user_id: user.id,
-      type: "account",
-      notification: `Welcome to RentULO ${user.full_name}! Your Admin account has been successfully verified and created.`,
-      is_read: false,
-    });
+      // HANDLE NOTIFICATION
+      await Notifications.create({
+        user_id: user.id,
+        type: "account",
+        notification: `Welcome to RentULO ${user.full_name}! Your Admin account has been successfully verified and created.`,
+        is_read: false,
+      }, { transaction: t });
 
-    // HANDLE PROFILE CREATION
-    const country = "Nigeria";
-    let location = `${user.state}, ${country}`;
-    await Profile.create({
-      user_id: user.id,
-      bio: "Hey i'm a verified admin at RentULO",
-      phone: user.phone_no,
-      address: user.address,
-      location: location,
-      verified: true,
-    });
+      // HANDLE PROFILE CREATION
+      const country = "Nigeria";
+      let location = `${user.state}, ${country}`;
+      await Profile.create({
+        user_id: user.id,
+        bio: "Hey i'm a verified admin at RentULO",
+        phone: user.phone_no,
+        address: user.address,
+        location: location,
+        verified: true,
+      }, { transaction: t });
+    }, { context: 'verifyAdmin', email });
 
     // SEND WELCOME EMAIL
     try {
       const adminWelcomeHtml = `
-        <div style="font-family: Arial, sans-serif; background-color: #f9fafb; padding: 20px;">
-          <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; padding: 30px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
-            <h2 style="color: #111827;">Welcome to RentULO, ${user.full_name}👋</h2>
-            <p style="color: #4b5563; font-size: 15px; line-height: 1.6;">
-              Your admin account has been successfully verified and your profile created. We're excited to have you join our administration team!
-            </p>
-            <p style="color: #4b5563; font-size: 15px; line-height: 1.6;">
-              You can now access the admin panel, manage listings, user profiles, reports, and oversee platform activity.
-            </p>
-            <div style="text-align: center; margin: 30px 0;">
-              <a href="https://rentulo.com/admin/dashboard" 
-                 style="background-color: #111827; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 6px; font-size: 14px;">
+      <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f7f6; padding: 30px 15px;">
+        <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border-top: 4px solid #10b981;">
+          <div style="padding: 30px; text-align: center; background-color: #f0fdf4;">
+            <div style="background-color: #d1fae5; width: 60px; height: 60px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; margin-bottom: 15px; margin-left: auto; margin-right: auto;">
+              <span style="font-size: 28px;">👑</span>
+            </div>
+            <h2 style="margin: 0; color: #064e3b; font-size: 24px; font-weight: 700;">Welcome to RentULO Admin Panel</h2>
+            <p style="margin: 5px 0 0 0; color: #047857; font-size: 15px;">Your admin account has been verified 🎉</p>
+          </div>
+
+          <div style="padding: 35px 30px; color: #374151; font-size: 16px; line-height: 1.7;">
+            <p>Hello <strong>${user.full_name}</strong>,</p>
+            <p>Your Admin account has been successfully verified. Welcome to our administration team!</p>
+            <p>You can now access the admin panel, manage listings, user profiles, reports, and oversee platform activity.</p>
+            
+            <div style="text-align: center; margin: 35px 0;">
+              <a href="https://rentulo.ng/admin/dashboard" 
+                 style="background-color: #10b981; color: #ffffff; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-size: 15px; font-weight: 600; display: inline-block; box-shadow: 0 4px 6px rgba(16, 185, 129, 0.2);">
                 Go to Admin Dashboard
               </a>
             </div>
-            <p style="color: #6b7280; font-size: 13px;">
+            
+            <p style="font-size: 14px; color: #6b7280;">
               If you have any questions, feel free to contact the super admin or our internal support team.
             </p>
-            <hr style="margin: 30px 0; border: none; border-top: 1px solid #e5e7eb;" />
-            <p style="color: #9ca3af; font-size: 12px; text-align: center;">
+          </div>
+
+          <div style="background-color: #f9fafb; padding: 25px 30px; text-align: center; border-top: 1px solid #e5e7eb;">
+            <p style="margin: 0; color: #9ca3af; font-size: 12px;">
               © ${new Date().getFullYear()} RentULO. All rights reserved.
             </p>
           </div>
         </div>
+      </div>
       `;
 
       await sendEmail(

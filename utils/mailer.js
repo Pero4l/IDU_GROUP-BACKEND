@@ -3,6 +3,8 @@ const dns = require("dns");
 const dnsPromises = dns.promises;
 const axios = require("axios");
 const logger = require("./logger");
+const axios = require("axios");
+const dnsPromises = require("dns").promises;
 require("dotenv").config();
 
 let testAccount = null;
@@ -36,6 +38,9 @@ async function getTransporter() {
       connectionTimeout: 10000,
       greetingTimeout: 10000,
       socketTimeout: 10000,
+      tls: {
+        servername: originalHost
+      }
     });
   }
 
@@ -69,7 +74,7 @@ async function sendEmail(to, subject, text, html) {
   if (process.env.BREVO_API_KEY) {
     try {
       console.log(`[EMAIL HELPER] Initiating Brevo HTTPS API delivery to ${to}...`);
-      const emailUser = process.env.EMAIL_USER || "no-reply@rentulo.com";
+      const emailUser = process.env.EMAIL_USER || "rentulonigeria@gmail.com";
       
       const response = await axios.post(
         "https://api.brevo.com/v3/smtp/email",
@@ -103,7 +108,7 @@ async function sendEmail(to, subject, text, html) {
   // 2. SMTP FALLBACK (Gmail SMTP, Brevo SMTP or Ethereal local test account)
   try {
     const mailer = await getTransporter();
-    const emailUser = process.env.EMAIL_USER || "no-reply@rentulo.com";
+    const emailUser = process.env.EMAIL_USER || "rentulonigeria@gmail.com";
     const fromAddress = `"RentULO Team" <${emailUser}>`;
 
     const mailOptions = {
@@ -125,7 +130,7 @@ async function sendEmail(to, subject, text, html) {
     return previewUrl || null;
   } catch (error) {
     console.error("[EMAIL HELPER] Standard SMTP connection delivery failed:", error);
-    throw error;
+    return null;
   }
 }
 

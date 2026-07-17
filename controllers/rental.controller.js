@@ -39,7 +39,7 @@ function uploadBufferToCloudinary(buffer, mimetype, folder) {
 // ─────────────────────────────────────────────
 async function addRental(req, res) {
   try {
-    const { title, description, propertyType, location, price, priceType, status } = req.body;
+    const { title, description, propertyType, location, price, priceType, status, amenities, legalFee, cautionFee, brokeFee, mgtServiceCharge } = req.body;
     const images = req.files?.images || [];
     const videos = req.files?.videos || [];
 
@@ -57,6 +57,15 @@ async function addRental(req, res) {
       return res.status(400).json({ success: false, message: "Max 4 videos allowed" });
     if (images.length && videos.length && (images.length > 4 || videos.length > 2))
       return res.status(400).json({ success: false, message: "When uploading both, max is 4 images + 2 videos" });
+
+    let amenitiesData = [];
+    if (amenities) {
+      try {
+        amenitiesData = typeof amenities === 'string' ? JSON.parse(amenities) : amenities;
+      } catch (e) {
+        amenitiesData = [];
+      }
+    }
 
     // Upload to Cloudinary BEFORE the transaction — Cloudinary is external,
     // not transactional. If the upload fails we never touch the DB.
@@ -78,21 +87,21 @@ async function addRental(req, res) {
       )
     );
 
-    // Single DB write — no multi-step transaction needed here.
-    // The notification is a side-effect; keep it outside so a mail/DB
-    // notification failure never rolls back the rental creation.
+    // Single DB write
     const rental = await Rentals.create({
       title, description, propertyType, location, price, priceType, status,
       images: uploadedImages.map((i) => i.secure_url),
       videos: uploadedVideos.map((v) => v.secure_url),
       amenities: amenitiesData,
+      legalFee: parseFloat(legalFee) || 0.00,
+      cautionFee: parseFloat(cautionFee) || 0.00,
+      brokeFee: parseFloat(brokeFee) || 0.00,
+      mgtServiceCharge: parseFloat(mgtServiceCharge) || 0.00,
       UserId: req.user.userId,
     });
 
     logger.info('Rental created', { rentalId: rental.id, userId: req.user.userId });
 
-    // Non-critical side-effects — logAndEmailUser and notifySuperAdmins
-    // never throw, so no .catch() needed
     const landlord = await Users.findByPk(req.user.userId);
     await logAndEmailUser(req.user.userId, landlord?.email, "Rental Added", `Your rental "${title}" has been added successfully.`);
     await notifySuperAdmins(`New rental posted by user ${req.user.userId}: ${title}`, "rental");
@@ -113,6 +122,14 @@ async function seeAllRentals(req, res) {
 
     const queryOptions = {
       attributes: ["id", "slug", "title", "description", "propertyType", "location", "price", "priceType", "images", "status", "UserId", "createdAt"],
+    const limit = req.query.limit ? parseInt(req.query.limit, 10) : null;
+    const offset = req.query.offset ? parseInt(req.query.offset, 10) : null;
+
+    const queryOptions = {
+      attributes: [
+        "id", "slug", "title", "description", "propertyType", "location", "price", "priceType",
+        "legalFee", "cautionFee", "brokeFee", "mgtServiceCharge", "images", "status", "UserId", "createdAt"
+      ],
       include: [{
         model: Users,
         attributes: ["id", "full_name", "phone_no"],
@@ -142,6 +159,11 @@ async function seeAllRentals(req, res) {
     const { count, rows } = result;
 
     return res.status(200).json({ success: true, count, data: rows, message: "Rentals retrieved successfully" });
+    if (count === 0) {
+      return res.status(404).json({ success: false, message: "No rentals found" });
+    }
+
+    return res.status(200).json({ success: true, data: rentals, total: count, message: "Rentals retrieved successfully" });
   } catch (error) {
     logger.error('Error fetching all rentals', { error: error.message });
     return res.status(500).json({ success: false, message: "Server error" });
@@ -155,7 +177,10 @@ async function getRental(req, res) {
   try {
     const { id } = req.params;
     const query = {
-      attributes: ["id", "slug", "title", "description", "propertyType", "location", "price", "priceType", "images", "videos", "status", "UserId", "createdAt", "updatedAt"],
+      attributes: [
+        "id", "slug", "title", "description", "propertyType", "location", "price", "priceType",
+        "legalFee", "cautionFee", "brokeFee", "mgtServiceCharge", "images", "videos", "status", "UserId", "createdAt", "updatedAt"
+      ],
       include: [{
         model: Users,
         attributes: ["id", "full_name", "phone_no"],
@@ -180,7 +205,7 @@ async function getRental(req, res) {
         images: rentalData.images || [],
         videos: rentalData.videos || [],
         amenities: rentalData.amenities || [],
-        landlord: rentalData.Users || { full_name: "User" },
+        landlord: rentalData.User || { full_name: "User" },
       },
       message: "Rental retrieved successfully",
     });
@@ -206,6 +231,15 @@ async function updateRental(req, res) {
       return res.status(403).json({ success: false, message: "You are not authorized to update this rental" });
     }
 
+    let amenitiesData = rental.amenities;
+    if (amenities !== undefined) {
+      try {
+        amenitiesData = typeof amenities === 'string' ? JSON.parse(amenities) : amenities;
+      } catch (e) {
+        amenitiesData = [];
+      }
+    }
+
     // Single record update — no transaction needed
     await rental.update({
       title: title || rental.title,
@@ -214,14 +248,14 @@ async function updateRental(req, res) {
       location: location || rental.location,
       price: price || rental.price,
       priceType: priceType || rental.priceType,
-      legalFee: legalFee !== undefined ? legalFee : rental.legalFee,
-      cautionFee: cautionFee !== undefined ? cautionFee : rental.cautionFee,
-      brokeFee: brokeFee !== undefined ? brokeFee : rental.brokeFee,
-      mgtServiceCharge: mgtServiceCharge !== undefined ? mgtServiceCharge : rental.mgtServiceCharge,
+      legalFee: legalFee !== undefined ? parseFloat(legalFee) : rental.legalFee,
+      cautionFee: cautionFee !== undefined ? parseFloat(cautionFee) : rental.cautionFee,
+      brokeFee: brokeFee !== undefined ? parseFloat(brokeFee) : rental.brokeFee,
+      mgtServiceCharge: mgtServiceCharge !== undefined ? parseFloat(mgtServiceCharge) : rental.mgtServiceCharge,
       images: images || rental.images,
       videos: videos || rental.videos,
       status: status || rental.status,
-      amenities: amenitiesData !== undefined ? amenitiesData : rental.amenities,
+      amenities: amenitiesData,
     });
 
     const updatedRental = await Rentals.findByPk(id, {
@@ -292,7 +326,10 @@ async function searchRentals(req, res) {
 
     const rentals = await Rentals.findAll({
       where: { location: { [Op.iLike]: `%${location}%` } },
-      attributes: ["id", "slug", "title", "description", "propertyType", "location", "price", "priceType", "images", "status", "UserId", "createdAt"],
+      attributes: [
+        "id", "slug", "title", "description", "propertyType", "location", "price", "priceType",
+        "legalFee", "cautionFee", "brokeFee", "mgtServiceCharge", "images", "status", "UserId", "createdAt"
+      ],
       include: [{
         model: Users,
         attributes: ["id", "full_name", "phone_no"],
@@ -338,6 +375,15 @@ async function seeRecentRentals(req, res) {
 
     const rentals = await Rentals.findAll({
       attributes: ["id", "slug", "title", "description", "propertyType", "location", "price", "priceType", "images", "status", "UserId", "createdAt"],
+// GET /rental/recent
+// ─────────────────────────────────────────────
+async function seeRecentRentals(req, res) {
+  try {
+    const rentals = await Rentals.findAll({
+      attributes: [
+        "id", "slug", "title", "description", "propertyType", "location", "price", "priceType",
+        "legalFee", "cautionFee", "brokeFee", "mgtServiceCharge", "images", "status", "UserId", "createdAt"
+      ],
       include: [{
         model: Users,
         attributes: ["id", "full_name", "phone_no"],
@@ -345,6 +391,7 @@ async function seeRecentRentals(req, res) {
       }],
       order: [['createdAt', 'DESC']],
       limit: parsedLimit,
+      limit: 10
     });
 
     return res.status(200).json({ success: true, data: rentals, message: "Recent rentals retrieved successfully" });
@@ -366,6 +413,35 @@ async function seeRecommendedRentals(req, res) {
     const rentals = await Rentals.findAll({
       where: { status: 'available' },
       attributes: ["id", "slug", "title", "description", "propertyType", "location", "price", "priceType", "images", "status", "UserId", "createdAt", "likesCount"],
+// GET /rental/recommended
+// ─────────────────────────────────────────────
+async function seeRecommendedRentals(req, res) {
+  try {
+    const userId = req.user.userId;
+
+    // 1. Fetch user to get their state or location
+    const user = await Users.findByPk(userId, {
+      include: [{ model: Profile, attributes: ['location'] }]
+    });
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    // Determine the search location: prefer user state, fallback to profile location, then Nigeria
+    const state = user.state;
+    const profileLocation = user.Profile?.location;
+    const searchLocation = state || (profileLocation ? profileLocation.split(',')[0] : null) || 'Nigeria';
+
+    // 2. Fetch all rentals matching this location (case-insensitive)
+    const rentals = await Rentals.findAll({
+      where: {
+        location: { [Op.iLike]: `%${searchLocation.trim()}%` }
+      },
+      attributes: [
+        "id", "slug", "title", "description", "propertyType", "location", "price", "priceType",
+        "legalFee", "cautionFee", "brokeFee", "mgtServiceCharge", "images", "status", "UserId", "createdAt"
+      ],
       include: [{
         model: Users,
         attributes: ["id", "full_name", "phone_no"],
@@ -383,3 +459,45 @@ async function seeRecommendedRentals(req, res) {
 }
 
 module.exports = { addRental, seeAllRentals, getRental, updateRental, deleteRental, searchRentals, seeRecentRentals, seeRecommendedRentals };
+      order: [['createdAt', 'DESC']],
+    });
+
+    // Determine liked status
+    const userLikes = await Progress.findAll({
+      where: { user_id: userId, liked: true },
+      attributes: ['rental_id']
+    });
+    const likedRentalIds = new Set(userLikes.map(like => like.rental_id));
+
+    const rentalsWithLiked = rentals.map(rental => {
+      const rentalData = rental.toJSON();
+      return {
+        ...rentalData,
+        liked: likedRentalIds.has(rental.id),
+        images: rentalData.images || [],
+        videos: rentalData.videos || [],
+        amenities: rentalData.amenities || [],
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: rentalsWithLiked,
+      message: `Recommended rentals in ${searchLocation} retrieved successfully`,
+    });
+  } catch (error) {
+    logger.error("Recommended rentals error:", error);
+    return res.status(500).json({ success: false, message: "Server error retrieving recommendations" });
+  }
+}
+
+module.exports = {
+  addRental,
+  seeAllRentals,
+  getRental,
+  updateRental,
+  deleteRental,
+  searchRentals,
+  seeRecentRentals,
+  seeRecommendedRentals
+};

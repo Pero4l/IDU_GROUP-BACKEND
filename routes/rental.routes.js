@@ -18,6 +18,7 @@ const upload = multer({
   limits: { fileSize: 50 * 1024 * 1024 } // 50MB per file
 });
 
+const { rentalUpload: upload } = require('../middleware/uploadConfig');
 const { authMiddleware } = require('../middleware/authUserMiddleware');
 const { getLocationMiddleware } = require('../middleware/getLocationMiddleware');
 const { requireProfileCompletion } = require('../middleware/requireProfileCompletion');

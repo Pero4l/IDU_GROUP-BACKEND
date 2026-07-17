@@ -141,8 +141,11 @@ async function getUserProfile(req, res) {
 
     const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
 
+    const nameParts = (user.full_name || '').split(' ');
     let responseData = {
       ...user.toJSON(),
+      first_name: nameParts[0] || '',
+      last_name: nameParts.slice(1).join(' ') || '',
       profile: profile || null,
     };
     delete responseData.Profile;
@@ -194,7 +197,7 @@ async function getUserProfile(req, res) {
             include: [
               {
                 model: Users,
-                attributes: ['id', 'first_name', 'last_name', 'phone_no'],
+                attributes: ['id', 'full_name', 'phone_no'],
                 include: [{ model: Profile, attributes: ['image', 'verified'] }],
               },
             ],
@@ -202,7 +205,15 @@ async function getUserProfile(req, res) {
         ],
         order: [['createdAt', 'DESC']],
       });
-      responseData.rentalHistory = rentalHistory.map((p) => p.Rentals).filter(Boolean);
+      responseData.rentalHistory = rentalHistory.map((p) => {
+        const r = p.Rentals ? p.Rentals.toJSON() : null;
+        if (r && r.User) {
+          const parts = (r.User.full_name || '').split(' ');
+          r.User.first_name = parts[0] || '';
+          r.User.last_name = parts.slice(1).join(' ') || '';
+        }
+        return r;
+      }).filter(Boolean);
     }
 
     // ────────────────────────────────────────
@@ -239,30 +250,36 @@ async function getUserProfile(req, res) {
             },
             {
               model: Users,
-              attributes: ['id', 'first_name', 'last_name', 'phone_no'],
+              attributes: ['id', 'full_name', 'phone_no'],
               include: [{ model: Profile, attributes: ['image', 'verified'] }],
             },
           ],
         });
 
-        lockedByTenants = lockedProgress.map((p) => ({
-          rental: p.Rentals,
-          tenant: p.Users
-            ? {
-                id: p.Users.id,
-                name: `${p.Users.first_name} ${p.Users.last_name}`.trim(),
-                phone_no: p.Users.phone_no,
-                profile: p.Users.Profile || null,
-              }
-            : null,
-        }));
+        lockedByTenants = lockedProgress.map((p) => {
+          const tenant = p.Users;
+          const tenantParts = tenant ? (tenant.full_name || '').split(' ') : [];
+          return {
+            rental: p.Rentals,
+            tenant: tenant
+              ? {
+                  id: tenant.id,
+                  full_name: tenant.full_name || '',
+                  first_name: tenantParts[0] || '',
+                  last_name: tenantParts.slice(1).join(' ') || '',
+                  phone_no: tenant.phone_no,
+                  profile: tenant.Profile || null,
+                }
+              : null,
+          };
+        });
       }
       responseData.lockedByTenants = lockedByTenants;
 
       // Upcoming inspections on any of the landlord's rentals
       let upcomingInspections = [];
       if (rentalIds.length > 0) {
-        upcomingInspections = await Inspections.findAll({
+        const fetchedInspections = await Inspections.findAll({
           where: {
             rental_id: { [Op.in]: rentalIds },
             date: { [Op.gte]: today },
@@ -276,7 +293,7 @@ async function getUserProfile(req, res) {
             {
               model: Users,
               as: 'tenant',
-              attributes: ['id', 'first_name', 'last_name', 'phone_no'],
+              attributes: ['id', 'full_name', 'phone_no'],
               include: [{ model: Profile, attributes: ['image'] }],
             },
           ],
@@ -284,6 +301,16 @@ async function getUserProfile(req, res) {
             ['date', 'ASC'],
             ['time', 'ASC'],
           ],
+        });
+
+        upcomingInspections = fetchedInspections.map(insp => {
+          const item = insp.toJSON();
+          if (item.tenant) {
+            const parts = (item.tenant.full_name || '').split(' ');
+            item.tenant.first_name = parts[0] || '';
+            item.tenant.last_name = parts.slice(1).join(' ') || '';
+          }
+          return item;
         });
       }
       responseData.upcomingInspections = upcomingInspections;

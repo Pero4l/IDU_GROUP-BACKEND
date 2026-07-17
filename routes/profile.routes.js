@@ -17,6 +17,7 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 } // 10MB per file
 });
 
+const { imageUpload: upload } = require('../middleware/uploadConfig');
 const { authMiddleware } = require('../middleware/authUserMiddleware');
 const { updateProfile, getUserProfile } = require('../controllers/profile.controller');
 

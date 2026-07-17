@@ -25,6 +25,7 @@ app.use((req, res, next) => {
 // Security headers
 app.use(helmet());
 
+app.use(helmet());
 app.use(cookieParser());
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: false, limit: "1mb" }));
@@ -42,15 +43,17 @@ app.use(
         callback(new Error("Not allowed by CORS"));
       }
     },
+    origin: [
+      "https://rentulo.ng",
+      "https://www.rentulo.ng",
+      // "https://rentulo.com",
+      // "https://www.rentulo.com",
+      "http://localhost:3000",
+      // "http://localhost:5173",
+      // "http://localhost:5174"
+    ],
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allowedHeaders: [
-      "Origin",
-      "X-Requested-With",
-      "Content-Type",
-      "Accept",
-      "Authorization",
-    ],
   }),
 );
 
@@ -75,17 +78,19 @@ app.use((req, res, next) => {
 
 const db = require("./models");
 
-const userAuth = require('./routes/user.routes');
-const rentalsRoute = require('./routes/rental.routes');
-const notificationRoute = require('./routes/notification.routes');
-const counts = require('./routes/allCount.routes');
-const progressRoute = require('./routes/progress.routes');
-const profileRoute = require('./routes/profile.routes');
-const reportRoute = require('./routes/report.routes');
-const searchRoute = require('./routes/search.routes');
-const superAdminRoute = require('./routes/superAdmin.routes');
-const chatRoute = require('./routes/chat.routes');
-const inspectionRoute = require('./routes/inspection.routes');
+const userAuth = require("./routes/user.routes");
+const rentalsRoute = require("./routes/rental.routes");
+const notificationRoute = require("./routes/notification.routes");
+const counts = require("./routes/allCount.routes");
+const progressRoute = require("./routes/progress.routes");
+const profileRoute = require("./routes/profile.routes");
+const reportRoute = require("./routes/report.routes");
+const searchRoute = require("./routes/search.routes");
+const superAdminRoute = require("./routes/superAdmin.routes");
+const chatRoute = require("./routes/chat.routes");
+const inspectionRoute = require("./routes/inspection.routes");
+const subscriptionRoute = require("./routes/subscribe.routes");
+const testimonialRoutes = require("./routes/testimonials.routes");
 
 app.get("/", (req, res) => {
   res.status(200).json({
@@ -96,15 +101,25 @@ app.get("/", (req, res) => {
 app.use("/auth", userAuth);
 app.use("/rental", rentalsRoute);
 app.use("/notification", notificationRoute);
-app.use('/counts', counts);
-app.use('/progress', progressRoute);
-app.use('/profile', profileRoute);
-app.use('/report', reportRoute);
-app.use('/search', searchRoute);
-app.use('/admin', superAdminRoute);
-app.use('/chat', chatRoute);
-app.use('/inspection', inspectionRoute);
+app.use("/counts", counts);
+app.use("/progress", progressRoute);
+app.use("/profile", profileRoute);
+app.use("/report", reportRoute);
+app.use("/search", searchRoute);
+app.use("/admin", superAdminRoute);
+app.use("/chat", chatRoute);
+app.use("/inspection", inspectionRoute);
+app.use("/subscriptions", subscriptionRoute);
+app.use("/api/testimonials", testimonialRoutes);
 
+app.use((err, req, res, next) => {
+  console.error(err);
+  const status = err.status || 400;
+  res.status(status).json({
+    success: false,
+    message: err.message || "Something went wrong",
+  });
+});
 
 // DB CONNECTION
 const PORT = process.env.PORT;
