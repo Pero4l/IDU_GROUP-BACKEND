@@ -12,6 +12,7 @@ const { OAuth2Client } = require("google-auth-library");
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
 const { withTransaction } = require('../utils/rollback');
+const { createWalletForUser } = require('../utils/wallet');
 const logger = require('../utils/logger');
 const { sendEmail } = require('../utils/mailer');
 
@@ -175,6 +176,8 @@ async function verifyRegistration(req, res) {
         notification: `Welcome to RentULO ${createdUser.full_name}! Your account has been successfully created.`,
         is_read: false
       }, { transaction: t });
+
+      await createWalletForUser(createdUser, t);
 
       await pending.destroy({ transaction: t });
 
@@ -615,6 +618,8 @@ async function googleAuth(req, res) {
           { transaction: t }
         );
 
+        await createWalletForUser(created, t);
+
         return created;
       }, { context: 'googleAuth', email });
 
@@ -957,6 +962,8 @@ async function verifyAdmin(req, res) {
         location: location,
         verified: true,
       }, { transaction: t });
+
+      await createWalletForUser(user, t);
     }, { context: 'verifyAdmin', email });
 
     // SEND WELCOME EMAIL

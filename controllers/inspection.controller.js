@@ -1,6 +1,7 @@
 const { Inspections, Rentals, Users, Profile } = require('../models');
 const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
 const { withTransaction } = require('../utils/rollback');
+const { chargeMarketplacePayment, InsufficientBalanceError } = require('../utils/wallet');
 const logger = require('../utils/logger');
 
 // ─────────────────────────────────────────────
@@ -28,10 +29,38 @@ async function createInspection(req, res) {
       });
     }
 
-    // Single write — no multi-step transaction needed for the create itself
-    const inspection = await Inspections.create({ user_id, rental_id, date, time, is_paid: false });
+    // Inspection fee is set by the agent/landlord on the listing — charge the
+    // wallet and create the booking atomically, so a tenant can never end up
+    // charged with no inspection to show for it. A fee of 0 means it's free.
+    const inspectionFee = parseFloat(rental.inspectionFee) || 0;
+    let inspection;
 
-    logger.info('Inspection created', { user_id, rental_id, date });
+    if (inspectionFee > 0) {
+      try {
+        const chargeResult = await chargeMarketplacePayment({
+          payerUserId: user_id,
+          landlordUserId: rental.UserId,
+          amount: inspectionFee,
+          commissionPercent: Number(process.env.PLATFORM_INSPECTION_COMMISSION_PERCENT ?? 100),
+          type: 'inspection fee',
+          narration: `Inspection fee for "${rental.title}"`,
+          applyEffects: (t) => Inspections.create({ user_id, rental_id, date, time, is_paid: true }, { transaction: t }),
+        });
+        inspection = chargeResult.effects;
+      } catch (error) {
+        if (error instanceof InsufficientBalanceError) {
+          return res.status(400).json({
+            success: false,
+            message: 'Insufficient wallet balance. Please top up your wallet to book this inspection.'
+          });
+        }
+        throw error;
+      }
+    } else {
+      inspection = await Inspections.create({ user_id, rental_id, date, time, is_paid: true });
+    }
+
+    logger.info('Inspection created', { user_id, rental_id, date, inspectionFee });
 
     // Non-critical notifications
     const user = await Users.findByPk(user_id);

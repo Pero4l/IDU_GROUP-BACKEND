@@ -47,6 +47,7 @@ const chatRoute = require("./routes/chat.routes");
 const inspectionRoute = require("./routes/inspection.routes");
 const subscriptionRoute = require("./routes/subscribe.routes");
 const testimonialRoutes = require("./routes/testimonials.routes");
+const walletRoute = require("./routes/wallet.routes");
 
 app.get("/", (req, res) => {
   res.status(200).json({
@@ -67,6 +68,7 @@ app.use("/chat", chatRoute);
 app.use("/inspection", inspectionRoute);
 app.use("/subscriptions", subscriptionRoute);
 app.use("/api/testimonials", testimonialRoutes);
+app.use("/wallet", walletRoute);
 
 app.use((err, req, res, next) => {
   console.error(err);

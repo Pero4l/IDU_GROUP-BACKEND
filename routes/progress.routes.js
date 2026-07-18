@@ -5,9 +5,9 @@ const { authMiddleware } = require('../middleware/authUserMiddleware');
 const { isVerifiedMiddleware } = require('../middleware/verificationMiddleware');
 const {
   likeHouse, getLikedHouses, unlikeHouse, deleteAllLikedHouses,
-  initializeLockPayment, verifyLockPayment, verifyLockPaymentCallback, getLockedHouses, deleteLockedHouse, deleteAllLockedHouses,
+  lockHouse, getLockedHouses, deleteLockedHouse, deleteAllLockedHouses,
   bookHouse, getBookedHouses, deleteBookedHouse, deleteAllBookedHouses,
-  initializeRentPayment, verifyRentPayment, verifyRentPaymentCallback
+  payRent
 } = require('../controllers/progreess.controller');
 
 // Liked endpoints
@@ -16,10 +16,8 @@ router.get('/like', authMiddleware, getLikedHouses);
 router.delete('/like/:id', authMiddleware, unlikeHouse);
 router.delete('/like', authMiddleware, deleteAllLikedHouses);
 
-// Locked endpoints
-router.post('/lock/initialize', authMiddleware, isVerifiedMiddleware, initializeLockPayment);
-router.post('/lock/verify', authMiddleware, isVerifiedMiddleware, verifyLockPayment);
-router.get('/lock/verify-callback', verifyLockPaymentCallback);
+// Locked endpoints — charges the wallet directly, no gateway redirect
+router.post('/lock', authMiddleware, isVerifiedMiddleware, lockHouse);
 router.get('/lock', authMiddleware, getLockedHouses);
 router.delete('/lock/:id', authMiddleware, deleteLockedHouse);
 router.delete('/lock', authMiddleware, deleteAllLockedHouses);
@@ -30,9 +28,7 @@ router.get('/book', authMiddleware, getBookedHouses);
 router.delete('/book/:id', authMiddleware, deleteBookedHouse);
 router.delete('/book', authMiddleware, deleteAllBookedHouses);
 
-// Rent payment endpoints
-router.post('/rent/initialize', authMiddleware, isVerifiedMiddleware, initializeRentPayment);
-router.post('/rent/verify', authMiddleware, isVerifiedMiddleware, verifyRentPayment);
-router.get('/rent/verify-callback', verifyRentPaymentCallback);
+// Rent payment — charges the wallet directly, no gateway redirect
+router.post('/rent/pay', authMiddleware, isVerifiedMiddleware, payRent);
 
 module.exports = router;
