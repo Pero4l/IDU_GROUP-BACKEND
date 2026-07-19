@@ -28,7 +28,10 @@ module.exports = (sequelize, DataTypes) => {
     bio: DataTypes.STRING,
     address: DataTypes.STRING,
     location: DataTypes.STRING,
-    verified: DataTypes.BOOLEAN
+    verified: DataTypes.BOOLEAN,
+    withdrawalBankName: DataTypes.STRING,
+    withdrawalAccountNumber: DataTypes.STRING,
+    withdrawalAccountName: DataTypes.STRING
   }, {
     sequelize,
     modelName: 'Profile',

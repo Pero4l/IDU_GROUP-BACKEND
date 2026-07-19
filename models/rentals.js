@@ -44,6 +44,10 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.DECIMAL(12, 2),
       defaultValue: 0.00
     },
+    inspectionFee: {
+      type: DataTypes.DECIMAL(12, 2),
+      defaultValue: 0.00
+    },
     images: DataTypes.JSON,
     videos: DataTypes.JSON,
     amenities: DataTypes.JSON,

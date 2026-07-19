@@ -1,6 +1,8 @@
 const { Inspections, Rentals, Users, Profile } = require('../models');
 const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
 const { withTransaction } = require('../utils/rollback');
+const { chargeMarketplacePayment, InsufficientBalanceError } = require('../utils/wallet');
+const { buildPropertyEmailHtml } = require('../utils/emailTemplates');
 const logger = require('../utils/logger');
 
 // ─────────────────────────────────────────────
@@ -28,27 +30,75 @@ async function createInspection(req, res) {
       });
     }
 
-    // Single write — no multi-step transaction needed for the create itself
-    const inspection = await Inspections.create({ user_id, rental_id, date, time, is_paid: false });
+    // Inspection fee is set by the agent/landlord on the listing — charge the
+    // wallet and create the booking atomically, so a tenant can never end up
+    // charged with no inspection to show for it. A fee of 0 means it's free.
+    const inspectionFee = parseFloat(rental.inspectionFee) || 0;
+    let inspection;
 
-    logger.info('Inspection created', { user_id, rental_id, date });
+    if (inspectionFee > 0) {
+      try {
+        const chargeResult = await chargeMarketplacePayment({
+          payerUserId: user_id,
+          landlordUserId: rental.UserId,
+          amount: inspectionFee,
+          commissionPercent: Number(process.env.PLATFORM_INSPECTION_COMMISSION_PERCENT ?? 100),
+          type: 'inspection fee',
+          narration: `Inspection fee for "${rental.title}"`,
+          applyEffects: (t) => Inspections.create({ user_id, rental_id, date, time, is_paid: true }, { transaction: t }),
+        });
+        inspection = chargeResult.effects;
+      } catch (error) {
+        if (error instanceof InsufficientBalanceError) {
+          return res.status(400).json({
+            success: false,
+            message: 'Insufficient wallet balance. Please top up your wallet to book this inspection.'
+          });
+        }
+        throw error;
+      }
+    } else {
+      inspection = await Inspections.create({ user_id, rental_id, date, time, is_paid: true });
+    }
+
+    logger.info('Inspection created', { user_id, rental_id, date, inspectionFee });
 
     // Non-critical notifications
     const user = await Users.findByPk(user_id);
-    await logAndEmailUser(user_id, user?.email, 'Inspection Scheduled',
-      `Your inspection for "${rental.title}" has been scheduled for ${date} at ${time}.`
-    );
+    const landlord = rental.UserId ? await Users.findByPk(rental.UserId) : null;
+    const inspectionTransaction = inspectionFee > 0
+      ? { amount: inspectionFee, reference: 'Wallet Payment', payment_type: 'inspection_fee' }
+      : null;
 
-    if (rental.UserId) {
-      const landlord = await Users.findByPk(rental.UserId);
-      if (landlord) {
-        await logAndEmailUser(landlord.id, landlord.email, 'New Inspection Request',
-          `${user?.full_name ?? 'A tenant'} has scheduled an inspection for your property "${rental.title}" on ${date} at ${time}.`
-        );
-      }
+    const tenantHtml = buildPropertyEmailHtml({
+      heading: 'Inspection Scheduled',
+      subheading: 'Booking Confirmation',
+      bodyText: `Your inspection for <strong>"${rental.title}"</strong> has been scheduled for <strong>${date} at ${time}</strong>.${inspectionFee > 0 ? ` The inspection fee has been deducted from your wallet.` : ' This inspection is free.'}`,
+      recipientName: user?.full_name,
+      rental,
+      transaction: inspectionTransaction,
+      landlord
+    });
+    await logAndEmailUser(user_id, user?.email, 'Inspection Scheduled', tenantHtml);
+
+    if (landlord) {
+      const landlordHtml = buildPropertyEmailHtml({
+        heading: 'New Inspection Request',
+        subheading: 'A tenant wants to view your property',
+        bodyText: `<strong>${user?.full_name ?? 'A tenant'}</strong> has scheduled an inspection for your property <strong>"${rental.title}"</strong> on <strong>${date} at ${time}</strong>.`,
+        recipientName: landlord.full_name,
+        rental,
+        transaction: inspectionTransaction,
+        tenant: user
+      });
+      await logAndEmailUser(landlord.id, landlord.email, 'New Inspection Request', landlordHtml);
     }
 
-    await notifySuperAdmins(`Inspection scheduled by user ${user_id} for rental ${rental_id} on ${date}`, 'inspection');
+    await notifySuperAdmins(
+      `Inspection scheduled by ${user?.full_name ?? user_id} for "${rental.title}" on ${date} at ${time}`,
+      'inspection',
+      { heading: 'Inspection Scheduled', rental, transaction: inspectionTransaction, tenant: user, landlord }
+    );
 
     return res.status(201).json({ success: true, message: 'Inspection scheduled successfully', data: inspection });
   } catch (error) {

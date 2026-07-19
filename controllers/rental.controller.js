@@ -104,7 +104,7 @@ async function addRental(req, res) {
 
     const landlord = await Users.findByPk(req.user.userId);
     await logAndEmailUser(req.user.userId, landlord?.email, "Rental Added", `Your rental "${title}" has been added successfully.`);
-    await notifySuperAdmins(`New rental posted by user ${req.user.userId}: ${title}`, "rental");
+    await notifySuperAdmins(`New rental posted by ${landlord?.full_name ?? req.user.userId}: ${title}`, "rental");
 
     return res.status(201).json({ success: true, message: "Rental property added successfully" });
   } catch (err) {
@@ -259,7 +259,7 @@ async function updateRental(req, res) {
     if (updatedRental.User) {
       await logAndEmailUser(req.user.userId, updatedRental.User.email, "Rental Updated", `Your rental "${updatedRental.title}" has been updated.`);
     }
-    await notifySuperAdmins(`Rental ${id} was updated by user ${req.user.userId}`, "rental");
+    await notifySuperAdmins(`Rental "${updatedRental.title}" was updated by ${updatedRental.User?.full_name ?? req.user.userId}`, "rental");
 
     return res.status(200).json({ success: true, data: updatedRental, message: "Rental updated successfully" });
   } catch (error) {
@@ -299,7 +299,7 @@ async function deleteRental(req, res) {
     // Non-critical side-effects
     const landlord = await Users.findByPk(landlordId);
     await logAndEmailUser(landlordId, landlord?.email, "Rental Deleted", `Your rental "${rentalTitle}" has been deleted.`);
-    await notifySuperAdmins(`Rental "${rentalTitle}" was deleted by user ${landlordId}`, "rental");
+    await notifySuperAdmins(`Rental "${rentalTitle}" was deleted by ${landlord?.full_name ?? landlordId}`, "rental");
 
     return res.status(200).json({ success: true, message: "Rental deleted successfully" });
   } catch (error) {
