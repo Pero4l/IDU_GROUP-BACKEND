@@ -1,5 +1,6 @@
 const { Notifications, Users } = require("../models");
 const { sendEmail } = require('../utils/mailer');
+const { buildPropertyEmailHtml } = require('../utils/emailTemplates');
 const logger = require('../utils/logger');
 
 /**
@@ -43,10 +44,18 @@ async function logAndEmailUser(userId, userEmail, title, html) {
  *
  * This function NEVER throws. Failures are logged and swallowed.
  *
- * @param {string} message
+ * @param {string} message  - short text, stored as the in-app notification and used as a plain-text fallback
  * @param {string} [type]
+ * @param {object} [details] - when given, the admin email becomes the full branded
+ *   template instead of a bare paragraph. The in-app notification list always
+ *   stays as the short `message` text regardless.
+ * @param {object} [details.rental] - property being referenced (renders image/price/location)
+ * @param {object} [details.transaction] - { amount, reference, payment_type }
+ * @param {object} [details.tenant] - { full_name, phone_no, email }
+ * @param {object} [details.landlord] - { full_name, phone_no, email }
+ * @param {string} [details.heading] - defaults to the `type`, title-cased
  */
-async function notifySuperAdmins(message, type = "system") {
+async function notifySuperAdmins(message, type = "system", details = null) {
   try {
     const superAdmins = await Users.findAll({ where: { is_superadmin: true } });
     if (superAdmins.length === 0) return;
@@ -67,7 +76,23 @@ async function notifySuperAdmins(message, type = "system") {
   }
 
   // Email is also fire-and-forget — sendEmail never throws
-  await sendEmail("rentulonigeria@gmail.com", "Admin Alert: " + message, message);
+  if (details && (details.rental || details.tenant || details.landlord)) {
+    const html = buildPropertyEmailHtml({
+      heading: details.heading || 'Admin Alert',
+      subheading: 'RentULO Activity Notification',
+      bodyText: message,
+      recipientName: 'Admin',
+      rental: details.rental,
+      transaction: details.transaction,
+      tenant: details.tenant,
+      landlord: details.landlord,
+      actionLabel: 'Open Admin Dashboard',
+      actionUrl: 'https://rentulo.ng/admin/dashboard',
+    });
+    await sendEmail("rentulonigeria@gmail.com", "Admin Alert: " + message, message, html);
+  } else {
+    await sendEmail("rentulonigeria@gmail.com", "Admin Alert: " + message, message);
+  }
 }
 
 // ─── Route handlers ───────────────────────────────────────────────────────────

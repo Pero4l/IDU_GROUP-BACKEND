@@ -2,6 +2,7 @@ const { Progress, Users, Rentals } = require('../models');
 const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
 const { withTransaction } = require('../utils/rollback');
 const { chargeMarketplacePayment, InsufficientBalanceError } = require('../utils/wallet');
+const { buildPropertyEmailHtml } = require('../utils/emailTemplates');
 const logger = require('../utils/logger');
 const { Op } = require('sequelize');
 
@@ -40,15 +41,23 @@ async function likeHouse(req, res) {
     // Non-critical side-effects
     const userObj = await Users.findByPk(user_id);
     const rental = await Rentals.findByPk(rental_id);
+    const landlord = rental?.UserId ? await Users.findByPk(rental.UserId) : null;
+
     const likeHtml = buildPropertyEmailHtml({
       heading: "Added to Your Favorites",
       subheading: "You liked a property on RentULO",
       bodyText: "You have successfully added a property to your liked list. Here are the details of the property you liked:",
+      recipientName: userObj?.full_name,
       rental,
-      userObj
+      landlord
     });
     await logAndEmailUser(user_id, userObj?.email, "Property Liked", likeHtml);
-    await notifySuperAdmins(`A property has been liked by ${userObj?.full_name ?? user_id}.`, 'system');
+
+    await notifySuperAdmins(
+      `A property has been liked by ${userObj?.full_name ?? user_id}.`,
+      'system',
+      { heading: 'Property Liked', rental, tenant: userObj, landlord }
+    );
 
     return res.status(200).json({ success: true, message: "House liked successfully", data: progressRecord });
   } catch (error) {
@@ -204,16 +213,25 @@ async function lockHouse(req, res) {
     }
 
     const userObj = await Users.findByPk(user_id);
+    const landlord = rental.UserId ? await Users.findByPk(rental.UserId) : null;
+    const lockTransaction = { amount: LOCK_FEE_NGN, reference: 'Wallet Payment', payment_type: 'lock_fee' };
+
     const lockHtml = buildPropertyEmailHtml({
       heading: "Property Locked Successfully",
       subheading: "Receipt & Confirmation",
       bodyText: `We have successfully deducted <strong>₦${LOCK_FEE_NGN.toLocaleString()}</strong> from your wallet. The property has been locked and reserved for you.`,
+      recipientName: userObj?.full_name,
       rental,
-      transaction: { amount: LOCK_FEE_NGN, reference: 'Wallet Payment', payment_type: 'lock_fee' },
-      userObj
+      transaction: lockTransaction,
+      landlord
     });
     await logAndEmailUser(user_id, userObj?.email, "Property Locked", lockHtml);
-    await notifySuperAdmins(`A property has been successfully locked by ${userObj?.full_name ?? user_id} after wallet payment.`, 'system');
+
+    await notifySuperAdmins(
+      `A property has been successfully locked by ${userObj?.full_name ?? user_id} after wallet payment.`,
+      'system',
+      { heading: 'Property Locked', rental, transaction: lockTransaction, tenant: userObj, landlord }
+    );
 
     return res.status(200).json({
       success: true,
@@ -320,15 +338,23 @@ async function bookHouse(req, res) {
 
     const userObj = await Users.findByPk(user_id);
     const rental = await Rentals.findByPk(rental_id);
+    const landlord = rental?.UserId ? await Users.findByPk(rental.UserId) : null;
+
     const bookHtml = buildPropertyEmailHtml({
       heading: "Property Booked Successfully",
       subheading: "Booking Confirmation",
       bodyText: "You have successfully booked a property on RentULO. Here are the details of your booking:",
+      recipientName: userObj?.full_name,
       rental,
-      userObj
+      landlord
     });
     await logAndEmailUser(user_id, userObj?.email, "Property Booked", bookHtml);
-    await notifySuperAdmins(`A property has been successfully booked by ${userObj?.full_name ?? user_id}.`, 'system');
+
+    await notifySuperAdmins(
+      `A property has been successfully booked by ${userObj?.full_name ?? user_id}.`,
+      'system',
+      { heading: 'Property Booked', rental, tenant: userObj, landlord }
+    );
 
     return res.status(200).json({ success: true, message: "House booked successfully", data: progressRecord });
   } catch (error) {
@@ -474,32 +500,42 @@ async function payRent(req, res) {
 
     const progressRecord = chargeResult.effects;
     const userObj = await Users.findByPk(user_id);
+    const rentTransaction = { amount: totalAmount, reference: 'Wallet Payment', payment_type: 'rent_payment' };
+    let landlord = null;
+
+    if (rental.UserId) {
+      landlord = await Users.findByPk(rental.UserId);
+    }
+
     const tenantHtml = buildPropertyEmailHtml({
       heading: "Rent Paid Successfully",
       subheading: "Payment Receipt Confirmation",
       bodyText: `You have successfully paid the rent of <strong>₦${totalAmount.toLocaleString()}</strong> for the property: <strong>${rental.title}</strong> from your wallet.`,
+      recipientName: userObj?.full_name,
       rental,
-      transaction: { amount: totalAmount, reference: 'Wallet Payment', payment_type: 'rent_payment' },
-      userObj
+      transaction: rentTransaction,
+      landlord
     });
     await logAndEmailUser(user_id, userObj?.email, "Rent Paid Successfully", tenantHtml);
 
-    if (rental.UserId) {
-      const landlord = await Users.findByPk(rental.UserId);
-      if (landlord) {
-        const landlordHtml = buildPropertyEmailHtml({
-          heading: "Property Rented",
-          subheading: "Congratulations! Your property has a new tenant",
-          bodyText: `Your property <strong>"${rental.title}"</strong> has been successfully rented by <strong>${userObj.full_name}</strong>. Your share of <strong>₦${chargeResult.landlordShare.toLocaleString()}</strong> has been credited to your wallet.`,
-          rental,
-          transaction: { amount: totalAmount, reference: 'Wallet Payment', payment_type: 'rent_payment' },
-          landlord
-        });
-        await logAndEmailUser(rental.UserId, landlord.email, "Property Rented", landlordHtml);
-      }
+    if (landlord) {
+      const landlordHtml = buildPropertyEmailHtml({
+        heading: "Property Rented",
+        subheading: "Congratulations! Your property has a new tenant",
+        bodyText: `Your property <strong>"${rental.title}"</strong> has been successfully rented by <strong>${userObj.full_name}</strong>. Your share of <strong>₦${chargeResult.landlordShare.toLocaleString()}</strong> has been credited to your wallet.`,
+        recipientName: landlord.full_name,
+        rental,
+        transaction: rentTransaction,
+        tenant: userObj
+      });
+      await logAndEmailUser(rental.UserId, landlord.email, "Property Rented", landlordHtml);
     }
 
-    await notifySuperAdmins(`Property "${rental.title}" has been successfully rented by ${userObj?.full_name ?? user_id} after wallet payment.`, 'system');
+    await notifySuperAdmins(
+      `Property "${rental.title}" has been successfully rented by ${userObj?.full_name ?? user_id} after wallet payment.`,
+      'system',
+      { heading: 'Property Rented', rental, transaction: rentTransaction, tenant: userObj, landlord }
+    );
 
     return res.status(200).json({
       success: true,
@@ -512,129 +548,6 @@ async function payRent(req, res) {
     logger.error('Error paying rent', { error: error.message, userId: req.user?.userId });
     return res.status(500).json({ success: false, message: "Server error" });
   }
-}
-
-/**
- * Helper to build a professional styled email layout with light green color scheme
- */
-function buildPropertyEmailHtml({ heading, subheading, bodyText, rental, transaction, userObj, landlord }) {
-  let imageUrl = '';
-  if (rental && rental.images) {
-    if (Array.isArray(rental.images) && rental.images.length > 0) {
-      imageUrl = rental.images[0];
-    } else if (typeof rental.images === 'string') {
-      try {
-        const parsed = JSON.parse(rental.images);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          imageUrl = parsed[0];
-        }
-      } catch (_) {
-        imageUrl = rental.images;
-      }
-    }
-  }
-
-  const currentYear = new Date().getFullYear();
-  
-  // Custom card section for property if present
-  let propertyCardHtml = '';
-  if (rental) {
-    const priceText = rental.price ? `₦${rental.price.toLocaleString()}` : '';
-    const priceTypeSuffix = rental.priceType ? ` / ${rental.priceType}` : '';
-    propertyCardHtml = `
-      <div style="border: 1px solid #e5e7eb; border-radius: 10px; overflow: hidden; margin: 20px 0; background-color: #ffffff; box-shadow: 0 2px 8px rgba(0,0,0,0.02);">
-        ${imageUrl ? `<img src="${imageUrl}" alt="${rental.title}" style="width: 100%; height: 180px; object-fit: cover; border-bottom: 1px solid #e5e7eb;" />` : ''}
-        <div style="padding: 15px;">
-          <h4 style="margin: 0 0 5px 0; color: #111827; font-size: 15px; font-weight: 600;">${rental.title}</h4>
-          ${priceText ? `<p style="margin: 0 0 5px 0; color: #10b981; font-size: 16px; font-weight: 700;">${priceText}<span style="font-size: 12px; font-weight: normal; color: #6b7280;">${priceTypeSuffix}</span></p>` : ''}
-          <p style="margin: 0; color: #6b7280; font-size: 13px;">📍 ${rental.location}</p>
-        </div>
-      </div>
-    `;
-  }
-
-  // Custom receipt section if transaction details are present
-  let receiptHtml = '';
-  if (transaction) {
-    receiptHtml = `
-      <div style="background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin: 20px 0;">
-        <h4 style="margin: 0 0 15px 0; color: #111827; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #e5e7eb; padding-bottom: 8px;">Transaction Summary</h4>
-        <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
-          <tr>
-            <td style="padding: 5px 0; color: #6b7280;">Payment Type:</td>
-            <td style="padding: 5px 0; text-align: right; color: #111827; font-weight: 500;">${transaction.payment_type === 'lock_fee' ? 'Lock Fee' : 'Rent Payment'}</td>
-          </tr>
-          <tr>
-            <td style="padding: 5px 0; color: #6b7280;">Amount Paid:</td>
-            <td style="padding: 5px 0; text-align: right; color: #10b981; font-weight: 600;">₦${transaction.amount.toLocaleString()}</td>
-          </tr>
-          <tr>
-            <td style="padding: 5px 0; color: #6b7280;">Reference:</td>
-            <td style="padding: 5px 0; text-align: right; color: #111827; font-family: monospace; font-size: 12px;">${transaction.reference}</td>
-          </tr>
-          <tr>
-            <td style="padding: 5px 0; color: #6b7280;">Status:</td>
-            <td style="padding: 5px 0; text-align: right; color: #10b981; font-weight: 600;">Success</td>
-          </tr>
-        </table>
-      </div>
-    `;
-  }
-
-  // Action Button
-  let actionButtonHtml = '';
-  if (rental) {
-    const btnLabel = transaction ? (landlord ? 'Go to Dashboard' : 'View Reservation') : 'View Listing';
-    const btnUrl = rental.slug ? `https://rentulo.ng/listings/${rental.slug}` : 'https://rentulo.ng/dashboard';
-    actionButtonHtml = `
-      <div style="text-align: center; margin: 30px 0 10px 0;">
-        <a href="${btnUrl}" 
-           style="background-color: #10b981; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-size: 14px; font-weight: 600; display: inline-block; box-shadow: 0 4px 6px rgba(16, 185, 129, 0.15);">
-          ${btnLabel}
-        </a>
-      </div>
-    `;
-  } else {
-    actionButtonHtml = `
-      <div style="text-align: center; margin: 30px 0 10px 0;">
-        <a href="https://rentulo.ng/dashboard" 
-           style="background-color: #10b981; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-size: 14px; font-weight: 600; display: inline-block; box-shadow: 0 4px 6px rgba(16, 185, 129, 0.15);">
-          Go to Dashboard
-        </a>
-      </div>
-    `;
-  }
-
-  const recipientName = userObj ? userObj.full_name : (landlord ? landlord.full_name : 'User');
-
-  return `
-    <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f7f6; padding: 30px 15px;">
-      <div style="max-width: 550px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border-top: 4px solid #10b981;">
-        <div style="padding: 25px; text-align: center; background-color: #f0fdf4;">
-          <div style="background-color: #d1fae5; width: 50px; height: 50px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; margin-bottom: 10px; margin-left: auto; margin-right: auto;">
-            <span style="font-size: 24px;">${transaction ? '💰' : '❤️'}</span>
-          </div>
-          <h2 style="margin: 0; color: #064e3b; font-size: 20px; font-weight: 700;">${heading}</h2>
-          <p style="margin: 5px 0 0 0; color: #047857; font-size: 14px;">${subheading}</p>
-        </div>
-
-        <div style="padding: 30px; color: #374151; font-size: 15px; line-height: 1.6;">
-          <p>Hello <strong>${recipientName}</strong>,</p>
-          <p>${bodyText}</p>
-          
-          ${propertyCardHtml}
-          ${receiptHtml}
-          ${actionButtonHtml}
-        </div>
-
-        <div style="background-color: #f9fafb; padding: 20px 30px; text-align: center; border-top: 1px solid #e5e7eb;">
-          <p style="margin: 0; color: #9ca3af; font-size: 12px;">
-            © ${currentYear} RentULO. All rights reserved.
-          </p>
-        </div>
-      </div>
-    </div>
-  `;
 }
 
 module.exports = {
