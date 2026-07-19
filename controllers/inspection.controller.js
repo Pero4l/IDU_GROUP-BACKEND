@@ -77,7 +77,7 @@ async function createInspection(req, res) {
       }
     }
 
-    await notifySuperAdmins(`Inspection scheduled by user ${user_id} for rental ${rental_id} on ${date}`, 'inspection');
+    await notifySuperAdmins(`Inspection scheduled by ${user?.full_name ?? user_id} for rental ${rental_id} on ${date}`, 'inspection');
 
     return res.status(201).json({ success: true, message: 'Inspection scheduled successfully', data: inspection });
   } catch (error) {

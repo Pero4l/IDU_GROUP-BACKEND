@@ -48,7 +48,7 @@ async function likeHouse(req, res) {
       userObj
     });
     await logAndEmailUser(user_id, userObj?.email, "Property Liked", likeHtml);
-    await notifySuperAdmins(`A property has been liked by user ${user_id}.`, 'system');
+    await notifySuperAdmins(`A property has been liked by ${userObj?.full_name ?? user_id}.`, 'system');
 
     return res.status(200).json({ success: true, message: "House liked successfully", data: progressRecord });
   } catch (error) {
@@ -168,14 +168,11 @@ async function lockHouse(req, res) {
       });
     }
 
-    // Find if a progress record exists for this user and rental
+    // Find if a progress record exists for this user and rental — create one
+    // if not, since liking first is no longer required before locking.
     let progressRecord = await Progress.findOne({ where: { user_id, rental_id } });
-
-    if (!progressRecord || !progressRecord.liked) {
-      return res.status(400).json({
-        success: false,
-        message: "You must like the house first before locking it"
-      });
+    if (!progressRecord) {
+      progressRecord = await Progress.create({ user_id, rental_id, liked: false, locked: false, booked: false });
     }
 
     let chargeResult;
@@ -216,7 +213,7 @@ async function lockHouse(req, res) {
       userObj
     });
     await logAndEmailUser(user_id, userObj?.email, "Property Locked", lockHtml);
-    await notifySuperAdmins(`A property has been successfully locked by user ${user_id} after wallet payment.`, 'system');
+    await notifySuperAdmins(`A property has been successfully locked by ${userObj?.full_name ?? user_id} after wallet payment.`, 'system');
 
     return res.status(200).json({
       success: true,
@@ -308,16 +305,14 @@ async function bookHouse(req, res) {
     }
 
     const progressRecord = await withTransaction(async (t) => {
-      const record = await Progress.findOne({ where: { user_id, rental_id }, transaction: t });
+      let record = await Progress.findOne({ where: { user_id, rental_id }, transaction: t });
 
-      if (!record || !record.liked) {
-        const err = new Error("MUST_LIKE_FIRST");
-        err.statusCode = 400;
-        throw err;
+      if (!record) {
+        record = await Progress.create({ user_id, rental_id, liked: false, locked: false, booked: true }, { transaction: t });
+      } else {
+        record.booked = true;
+        await record.save({ transaction: t });
       }
-
-      record.booked = true;
-      await record.save({ transaction: t });
       return record;
     }, { context: 'bookHouse', user_id, rental_id });
 
@@ -333,13 +328,10 @@ async function bookHouse(req, res) {
       userObj
     });
     await logAndEmailUser(user_id, userObj?.email, "Property Booked", bookHtml);
-    await notifySuperAdmins(`A property has been successfully booked by user ${user_id}.`, 'system');
+    await notifySuperAdmins(`A property has been successfully booked by ${userObj?.full_name ?? user_id}.`, 'system');
 
     return res.status(200).json({ success: true, message: "House booked successfully", data: progressRecord });
   } catch (error) {
-    if (error.message === "MUST_LIKE_FIRST") {
-      return res.status(400).json({ success: false, message: "You must like the house first before booking it" });
-    }
     logger.error('Error booking house', { error: error.message, userId: req.user?.userId });
     return res.status(500).json({ success: false, message: "Server error" });
   }
@@ -507,7 +499,7 @@ async function payRent(req, res) {
       }
     }
 
-    await notifySuperAdmins(`Property "${rental.title}" has been successfully rented by user ${user_id} after wallet payment.`, 'system');
+    await notifySuperAdmins(`Property "${rental.title}" has been successfully rented by ${userObj?.full_name ?? user_id} after wallet payment.`, 'system');
 
     return res.status(200).json({
       success: true,
