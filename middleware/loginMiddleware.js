@@ -65,7 +65,6 @@ async function loginMiddleware(req, res, next) {
   if (!existingUser) {
     return res.status(401).json({
       success: false,
-      message: "Invalid credentials",
       message: "Invalid email/number or password",
     });
   }
@@ -83,7 +82,6 @@ async function loginMiddleware(req, res, next) {
     logger.warn('Failed login attempt', { userId: existingUser.id, email: existingUser.email });
     return res.status(401).json({
       success: false,
-      message: "Invalid credentials",
       message: "Invalid email/number or password",
     });
   }

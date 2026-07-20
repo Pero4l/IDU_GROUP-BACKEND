@@ -3,7 +3,7 @@ const { Users, Rentals, Reports, Progress, Conversations, Messages, Transactions
 async function getAllUsers(req, res) {
   try {
     const users = await Users.findAll({
-      attributes: { exclude: ['password'] }
+      attributes: { exclude: ['password', 'otpCode', 'otpExpiresAt'] }
     });
     return res.status(200).json({ success: true, count: users.length, data: users });
   } catch (error) {
@@ -28,10 +28,11 @@ async function toggleUserStatus(req, res) {
     user.is_active = !user.is_active;
     await user.save();
     
+    const { password, otpCode, otpExpiresAt, ...safeUser } = user.toJSON();
     return res.status(200).json({ 
       success: true, 
       message: `User status updated to ${user.is_active ? 'active' : 'blocked'}`, 
-      data: user 
+      data: safeUser 
     });
   } catch (error) {
     console.error("Super Admin - toggleUserStatus error:", error);
@@ -265,10 +266,11 @@ async function suspendUser(req, res) {
     user.is_active = false;
     await user.save();
 
+    const { password, otpCode, otpExpiresAt, ...safeUser } = user.toJSON();
     return res.status(200).json({
       success: true,
       message: "User suspended successfully",
-      data: user
+      data: safeUser
     });
   } catch (error) {
     console.error("Super Admin - suspendUser error:", error);
@@ -291,10 +293,11 @@ async function unsuspendUser(req, res) {
     user.is_active = true;
     await user.save();
 
+    const { password, otpCode, otpExpiresAt, ...safeUser } = user.toJSON();
     return res.status(200).json({
       success: true,
       message: "User unsuspended successfully",
-      data: user
+      data: safeUser
     });
   } catch (error) {
     console.error("Super Admin - unsuspendUser error:", error);

@@ -119,11 +119,8 @@ async function addRental(req, res) {
 async function seeAllRentals(req, res) {
   try {
     const { limit, offset } = req.query;
-
-    const queryOptions = {
-      attributes: ["id", "slug", "title", "description", "propertyType", "location", "price", "priceType", "images", "status", "UserId", "createdAt"],
-    const limit = req.query.limit ? parseInt(req.query.limit, 10) : null;
-    const offset = req.query.offset ? parseInt(req.query.offset, 10) : null;
+    const parsedLimit = limit ? parseInt(limit, 10) : null;
+    const parsedOffset = offset ? parseInt(offset, 10) : null;
 
     const queryOptions = {
       attributes: [
@@ -137,9 +134,6 @@ async function seeAllRentals(req, res) {
       }],
       order: [['createdAt', 'DESC']],
     };
-
-    const parsedLimit = limit ? parseInt(limit, 10) : null;
-    const parsedOffset = offset ? parseInt(offset, 10) : null;
 
     if (parsedLimit !== null) {
       queryOptions.limit = parsedLimit;
@@ -158,12 +152,11 @@ async function seeAllRentals(req, res) {
 
     const { count, rows } = result;
 
-    return res.status(200).json({ success: true, count, data: rows, message: "Rentals retrieved successfully" });
     if (count === 0) {
       return res.status(404).json({ success: false, message: "No rentals found" });
     }
 
-    return res.status(200).json({ success: true, data: rentals, total: count, message: "Rentals retrieved successfully" });
+    return res.status(200).json({ success: true, count, data: rows, message: "Rentals retrieved successfully" });
   } catch (error) {
     logger.error('Error fetching all rentals', { error: error.message });
     return res.status(500).json({ success: false, message: "Server error" });
@@ -374,12 +367,6 @@ async function seeRecentRentals(req, res) {
     const parsedLimit = limit ? parseInt(limit, 10) : 10;
 
     const rentals = await Rentals.findAll({
-      attributes: ["id", "slug", "title", "description", "propertyType", "location", "price", "priceType", "images", "status", "UserId", "createdAt"],
-// GET /rental/recent
-// ─────────────────────────────────────────────
-async function seeRecentRentals(req, res) {
-  try {
-    const rentals = await Rentals.findAll({
       attributes: [
         "id", "slug", "title", "description", "propertyType", "location", "price", "priceType",
         "legalFee", "cautionFee", "brokeFee", "mgtServiceCharge", "images", "status", "UserId", "createdAt"
@@ -391,7 +378,6 @@ async function seeRecentRentals(req, res) {
       }],
       order: [['createdAt', 'DESC']],
       limit: parsedLimit,
-      limit: 10
     });
 
     return res.status(200).json({ success: true, data: rentals, message: "Recent rentals retrieved successfully" });
@@ -406,18 +392,9 @@ async function seeRecentRentals(req, res) {
 // ─────────────────────────────────────────────
 async function seeRecommendedRentals(req, res) {
   try {
+    const userId = req.user.userId;
     const { limit } = req.query;
     const parsedLimit = limit ? parseInt(limit, 10) : 10;
-
-    // Simple recommendation: return available rentals ordered by likes (popular first)
-    const rentals = await Rentals.findAll({
-      where: { status: 'available' },
-      attributes: ["id", "slug", "title", "description", "propertyType", "location", "price", "priceType", "images", "status", "UserId", "createdAt", "likesCount"],
-// GET /rental/recommended
-// ─────────────────────────────────────────────
-async function seeRecommendedRentals(req, res) {
-  try {
-    const userId = req.user.userId;
 
     // 1. Fetch user to get their state or location
     const user = await Users.findByPk(userId, {
@@ -447,19 +424,8 @@ async function seeRecommendedRentals(req, res) {
         attributes: ["id", "full_name", "phone_no"],
         include: [{ model: Profile, attributes: ['image', 'verified'] }]
       }],
-      order: [['likesCount', 'DESC'], ['createdAt', 'DESC']],
-      limit: parsedLimit,
-    });
-
-    return res.status(200).json({ success: true, data: rentals, message: "Recommended rentals retrieved successfully" });
-  } catch (error) {
-    logger.error('Error fetching recommended rentals', { error: error.message });
-    return res.status(500).json({ success: false, message: "Server error" });
-  }
-}
-
-module.exports = { addRental, seeAllRentals, getRental, updateRental, deleteRental, searchRentals, seeRecentRentals, seeRecommendedRentals };
       order: [['createdAt', 'DESC']],
+      limit: parsedLimit,
     });
 
     // Determine liked status

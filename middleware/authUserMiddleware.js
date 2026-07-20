@@ -29,10 +29,12 @@ function authMiddleware(req, res, next) {
         const userId = String(decoded.userId || '');
         const role = String(decoded.role || 'tenant');
         db.sequelize.query(
-            `SET LOCAL app.current_user_id = ${db.sequelize.escape(userId)};`
+            `SET LOCAL app.current_user_id = :userId;`,
+            { replacements: { userId }, type: db.sequelize.QueryTypes.SET }
         ).then(() =>
             db.sequelize.query(
-                `SET LOCAL app.current_user_role = ${db.sequelize.escape(role)};`
+                `SET LOCAL app.current_user_role = :role;`,
+                { replacements: { role }, type: db.sequelize.QueryTypes.SET }
             )
         ).then(() => {
             next();
