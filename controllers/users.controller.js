@@ -14,6 +14,7 @@ const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
 const { sendEmail } = require('../utils/mailer');
 const { withTransaction } = require('../utils/rollback');
+const { createWalletForUser } = require('../utils/wallet');
 const logger = require('../utils/logger');
 
 
@@ -197,6 +198,8 @@ async function verifyRegistration(req, res) {
       );
 
       // Remove the pending registration
+      await createWalletForUser(createdUser, t);
+
       await pending.destroy({ transaction: t });
 
       return user;
@@ -593,6 +596,8 @@ async function googleAuth(req, res) {
           { transaction: t }
         );
 
+        await createWalletForUser(created, t);
+
         return created;
       }, { context: 'googleAuth', email });
 
@@ -926,6 +931,8 @@ async function verifyAdmin(req, res) {
         location: location,
         verified: true,
       }, { transaction: t });
+
+      await createWalletForUser(user, t);
     }, { context: 'verifyAdmin', email });
 
     // SEND WELCOME EMAIL

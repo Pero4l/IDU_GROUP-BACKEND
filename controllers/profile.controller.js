@@ -1,4 +1,4 @@
-const { Profile, Users, Rentals, Progress, Inspections } = require('../models');
+const { Profile, Users, Rentals, Progress, Inspections, Wallet } = require('../models');
 const cloudinary = require("cloudinary").v2;
 const { v4: uuidv4 } = require("uuid");
 const { Op } = require('sequelize');
@@ -44,7 +44,15 @@ function uploadBufferToCloudinary(buffer, mimetype, folder) {
 async function updateProfile(req, res) {
   try {
     const userId = req.user.userId;
-    const { bio, phone_no, state, address } = req.body;
+    const {
+      bio,
+      phone_no,
+      state,
+      address,
+      withdrawalBankName,
+      withdrawalAccountNumber,
+      withdrawalAccountName,
+    } = req.body;
     
     let profile = await Profile.findOne({ where: { user_id: userId } });
     if (!profile) {
@@ -93,7 +101,10 @@ async function updateProfile(req, res) {
       phone: user.phone_no,
       address: user.address,
       location: user.state ? `${user.state}, ${user.country || 'Nigeria'}` : profile.location,
-      verified: isCompleted ? true : profile.verified
+      verified: isCompleted ? true : profile.verified,
+      withdrawalBankName: withdrawalBankName !== undefined ? withdrawalBankName : profile.withdrawalBankName,
+      withdrawalAccountNumber: withdrawalAccountNumber !== undefined ? withdrawalAccountNumber : profile.withdrawalAccountNumber,
+      withdrawalAccountName: withdrawalAccountName !== undefined ? withdrawalAccountName : profile.withdrawalAccountName,
     });
 
     logger.info('Profile updated', { userId });
@@ -139,6 +150,12 @@ async function getUserProfile(req, res) {
     // 2. Fetch profile details
     const profile = await Profile.findOne({ where: { user_id: id } });
 
+    // 3. Fetch RentULO wallet (account name/number)
+    const wallet = await Wallet.findOne({
+      where: { user_id: id },
+      attributes: ['accountName', 'accountNumber', 'balance', 'status'],
+    });
+
     const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
 
     const nameParts = (user.full_name || '').split(' ');
@@ -147,6 +164,7 @@ async function getUserProfile(req, res) {
       first_name: nameParts[0] || '',
       last_name: nameParts.slice(1).join(' ') || '',
       profile: profile || null,
+      wallet: wallet || null,
     };
     delete responseData.Profile;
 

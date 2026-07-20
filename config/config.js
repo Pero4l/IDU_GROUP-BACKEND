@@ -34,6 +34,20 @@
 
 require('dotenv').config();
 const fs = require('fs');
+const net = require('net');
+const dns = require('dns');
+
+// Node races IPv4/IPv6 connection attempts (Happy Eyeballs) with a short
+// default per-candidate timeout. Against this host that timeout is too
+// short — one family hangs rather than failing cleanly — which was causing
+// intermittent ETIMEDOUT on otherwise-healthy connections. Widening the
+// attempt timeout and preferring IPv4 fixes it. This file is loaded
+// directly by sequelize-cli too, not just index.js, so the fix has to live
+// here rather than only at the app's entry point.
+dns.setDefaultResultOrder('ipv4first');
+if (net.setDefaultAutoSelectFamilyAttemptTimeout) {
+  net.setDefaultAutoSelectFamilyAttemptTimeout(10000);
+}
 
 // Aiven (and most managed Postgres providers) sign their certs with their
 // own CA, so verification needs that CA loaded explicitly. Point
@@ -56,7 +70,10 @@ module.exports = {
   development: {
     use_env_variable: 'DATABASE_URL',
     dialect: 'postgres',
-    dialectOptions: { ssl },
+    // The TLS handshake to this host has been observed taking up to ~14s;
+    // the default connect timeout is shorter than that and was causing
+    // intermittent ETIMEDOUT failures on otherwise-healthy connections.
+    dialectOptions: { ssl, connectionTimeoutMillis: 30000 },
     pool: {
       max: 5,
       min: 0,
@@ -71,7 +88,10 @@ module.exports = {
   production: {
     use_env_variable: 'DATABASE_URL',
     dialect: 'postgres',
-    dialectOptions: { ssl },
+    // The TLS handshake to this host has been observed taking up to ~14s;
+    // the default connect timeout is shorter than that and was causing
+    // intermittent ETIMEDOUT failures on otherwise-healthy connections.
+    dialectOptions: { ssl, connectionTimeoutMillis: 30000 },
     pool: {
       max: 10,
       min: 0,

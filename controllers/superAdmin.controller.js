@@ -1,4 +1,6 @@
-const { Users, Rentals, Reports, Progress, Conversations, Messages, Transactions, Waitlist } = require('../models');
+const { Users, Rentals, Reports, Progress, Conversations, Messages, WalletTransactions, Waitlist } = require('../models');
+
+const MARKETPLACE_PAYMENT_TYPES = ['lock house', 'house rent', 'inspection fee'];
 
 async function getAllUsers(req, res) {
   try {
@@ -204,13 +206,31 @@ async function getAnalytics(req, res) {
       Reports.count({ where: { report_status: 'pending' } }),
       Reports.count({ where: { report_status: 'resolved' } }),
       Reports.count({ where: { report_status: 'rejected' } }),
-      Transactions.findAll({
-        where: { status: 'success', payment_type: 'lock_fee' },
-        attributes: ['amount']
+      // Only the payer-side row per payment — the paired landlord-share row
+      // carries the same underlying payment and would double-count amounts.
+      WalletTransactions.findAll({
+        where: { status: 'success', role: 'payer', type: MARKETPLACE_PAYMENT_TYPES },
+        attributes: ['type', 'amount', 'meta']
       })
     ]);
 
-    const totalRevenue = successfulTransactions.reduce((acc, t) => acc + (t.amount || 0), 0);
+    // Gross = everything tenants paid. Platform revenue = what we actually
+    // keep after the landlord's commission-split share. Both matter: gross
+    // moved through the wallet system, but platform revenue is the real number.
+    let grossPaymentsNGN = 0;
+    let platformRevenueNGN = 0;
+    let landlordPayoutsNGN = 0;
+    const countsByType = { 'lock house': 0, 'house rent': 0, 'inspection fee': 0 };
+
+    for (const tx of successfulTransactions) {
+      const amount = Number(tx.amount) || 0;
+      const platformShare = Number(tx.meta?.platformShare ?? amount);
+      const landlordShare = Number(tx.meta?.landlordShare ?? 0);
+      grossPaymentsNGN += amount;
+      platformRevenueNGN += platformShare;
+      landlordPayoutsNGN += landlordShare;
+      countsByType[tx.type] = (countsByType[tx.type] || 0) + 1;
+    }
 
     return res.status(200).json({
       success: true,
@@ -240,8 +260,15 @@ async function getAnalytics(req, res) {
           rejected: rejectedReports
         },
         financials: {
-          totalRevenueNGN: totalRevenue,
-          successfulLockPaymentsCount: successfulTransactions.length
+          // totalRevenueNGN = what the platform actually keeps (gross minus
+          // landlord payouts) — the accurate revenue figure now that lock
+          // fees, rent, and inspection fees all split with the landlord.
+          totalRevenueNGN: platformRevenueNGN,
+          grossPaymentsCollectedNGN: grossPaymentsNGN,
+          landlordPayoutsNGN,
+          successfulLockPaymentsCount: countsByType['lock house'],
+          successfulRentPaymentsCount: countsByType['house rent'],
+          successfulInspectionPaymentsCount: countsByType['inspection fee']
         }
       }
     });

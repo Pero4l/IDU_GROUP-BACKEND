@@ -112,6 +112,7 @@ const inspectionRoute = require("./routes/inspection.routes");
 const subscriptionRoute = require("./routes/subscribe.routes");
 const testimonialRoutes = require("./routes/testimonials.routes");
 const aiSupportRoute = require("./routes/aiSupport.routes");
+const walletRoute = require("./routes/wallet.routes");
 
 app.get("/", (req, res) => {
   res.status(200).json({
@@ -141,6 +142,7 @@ app.use((req, res) => {
     message: "Route not found",
   });
 });
+app.use("/wallet", walletRoute);
 
 // Global error handler — never leak raw error details to the client
 app.use((err, req, res, next) => {
