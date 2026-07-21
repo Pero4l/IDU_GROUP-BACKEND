@@ -52,7 +52,7 @@ const globalLimiter = rateLimit({
 app.use(globalLimiter);
 
 // CORS — use ONLY the env-driven allowlist (the duplicate hardcoded origin block was overriding it)
-const allowedOrigins = (process.env.ALLOWED_ORIGINS || "https://rentulo.ng,http://localhost:3000")
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || "https://rentulo.ng,http://localhost:3000,https://idu-group-backend.onrender.com")
   .split(",")
   .map((o) => o.trim());
 
@@ -62,7 +62,7 @@ app.use(
       if (!origin || allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
-        callback(new Error("Not allowed by CORS"));
+        callback(new Error(`Not allowed by CORS: ${origin}`));
       }
     },
     credentials: true,
