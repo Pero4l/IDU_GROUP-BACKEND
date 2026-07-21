@@ -17,6 +17,10 @@ const app = express();
 const server = http.createServer(app);
 socketConfig.init(server);
 
+// Render/Heroku sit behind a reverse proxy — trust the first hop so
+// express-rate-limit and req.ip see the real client IP from X-Forwarded-For
+app.set("trust proxy", 1);
+
 // HTTPS enforcement (for platforms like Render/Heroku behind a proxy)
 app.use((req, res, next) => {
   if (req.header("x-forwarded-proto") !== "https" && process.env.NODE_ENV === "production") {

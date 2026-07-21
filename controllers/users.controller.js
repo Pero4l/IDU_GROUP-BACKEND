@@ -198,7 +198,7 @@ async function verifyRegistration(req, res) {
       );
 
       // Remove the pending registration
-      await createWalletForUser(createdUser, t);
+      await createWalletForUser(user, t);
 
       await pending.destroy({ transaction: t });
 
