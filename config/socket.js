@@ -1,13 +1,38 @@
 const socketIo = require('socket.io');
+const jwt = require('jsonwebtoken');
 
 let io;
+
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'https://rentulo.ng,http://localhost:3000')
+  .split(',')
+  .map((o) => o.trim());
 
 module.exports = {
     init: (httpServer) => {
         io = socketIo(httpServer, {
             cors: {
-                origin: "*",
-                methods: ["GET", "POST"]
+                origin: function (origin, callback) {
+                    if (!origin || allowedOrigins.includes(origin)) {
+                        callback(null, true);
+                    } else {
+                        callback(new Error('Not allowed by CORS'));
+                    }
+                },
+                methods: ['GET', 'POST']
+            }
+        });
+
+        io.use((socket, next) => {
+            const token = socket.handshake.auth?.token || socket.handshake.query?.token;
+            if (!token) {
+                return next(new Error('Authentication required'));
+            }
+            try {
+                const decoded = jwt.verify(token, process.env.JWT_SECRET);
+                socket.user = decoded;
+                next();
+            } catch (err) {
+                return next(new Error('Invalid or expired token'));
             }
         });
 

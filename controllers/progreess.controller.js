@@ -4,6 +4,8 @@ const { withTransaction } = require('../utils/rollback');
 const { chargeMarketplacePayment, InsufficientBalanceError } = require('../utils/wallet');
 const { buildPropertyEmailHtml } = require('../utils/emailTemplates');
 const logger = require('../utils/logger');
+const axios = require('axios');
+require('dotenv').config();
 const { Op } = require('sequelize');
 
 // ═══════════════════════════════════════
@@ -20,8 +22,6 @@ async function likeHouse(req, res) {
       return res.status(400).json({ success: false, message: "rental_id is required" });
     }
 
-    // Wrap the progress write in a transaction so a partial save never
-    // leaves the record in an inconsistent state
     const progressRecord = await withTransaction(async (t) => {
       let record = await Progress.findOne({ where: { user_id, rental_id }, transaction: t });
       if (record) {
@@ -38,7 +38,6 @@ async function likeHouse(req, res) {
 
     logger.info('House liked', { user_id, rental_id });
 
-    // Non-critical side-effects
     const userObj = await Users.findByPk(user_id);
     const rental = await Rentals.findByPk(rental_id);
     const landlord = rental?.UserId ? await Users.findByPk(rental.UserId) : null;
@@ -118,6 +117,12 @@ async function deleteAllLikedHouses(req, res) {
 // LOCKED HOUSE CONTROLLERS
 // ═══════════════════════════════════════
 
+// 1. Initialize lock payment via Paystack ===> POST
+async function initializeLockPayment(req, res) {
+  try {
+    const { rental_id } = req.body;
+    const user_id = req.user.userId;
+    const userEmail = req.user.email;
 const LOCK_FEE_NGN = 5000;
 
 // POST — lock a house (charges the wallet directly, no external gateway)
@@ -132,6 +137,7 @@ async function lockHouse(req, res) {
 
     const rental = await Rentals.findByPk(rental_id);
     if (!rental) {
+      return res.status(404).json({ success: false, message: "Rental property not found" });
       return res.status(404).json({ success: false, message: "Rental not found" });
     }
 
@@ -170,13 +176,172 @@ async function lockHouse(req, res) {
       });
     }
 
-    if (alreadyLocked) {
+    // Check if user has liked the property
+    const progress = await Progress.findOne({ where: { user_id, rental_id } });
+    if (!progress || !progress.liked) {
+      return res.status(400).json({ success: false, message: "You must like the house first before locking it" });
+    }
+
+    // Calculate lock fee (5% of rental price, minimum 5000 NGN)
+    const price = parseFloat(rental.price) || 0;
+    const lockFee = Math.max(price * 0.05, 5000);
+    const amountInKobo = Math.round(lockFee * 100);
+
+    const host = req.get('host');
+    const protocol = req.protocol;
+    const defaultCallback = `${protocol}://${host}/progress/lock/verify-callback`;
+    const callbackUrl = process.env.PAYSTACK_LOCK_CALLBACK_URL || defaultCallback;
+
+    const response = await axios.post(
+      'https://api.paystack.co/transaction/initialize',
+      {
+        email: userEmail,
+        amount: amountInKobo,
+        callback_url: callbackUrl,
+        metadata: {
+          user_id,
+          rental_id,
+          payment_type: 'lock_fee'
+        }
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    const { authorization_url, reference } = response.data.data;
+
+    await Transactions.create({
+      user_id,
+      rental_id,
+      reference,
+      amount: lockFee,
+      status: 'pending',
+      payment_type: 'lock_fee'
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Lock payment initialization successful",
+      authorization_url,
+      reference
+    });
+  } catch (error) {
+    console.error("Error initializing lock payment:", error.response ? error.response.data : error.message);
+    return res.status(500).json({ success: false, message: "Server error during payment initialization" });
+  }
+}
+
+// 2. Verify lock payment and successfully lock the house ===> POST
+async function verifyLockPayment(req, res) {
+  try {
+    const { reference } = req.body;
+    const user_id = req.user.userId;
+
+    if (!reference) {
+      return res.status(400).json({ success: false, message: "Transaction reference is required" });
+    }
+
+    const transaction = await Transactions.findOne({ where: { reference, user_id } });
+    if (!transaction) {
+      return res.status(404).json({ success: false, message: "Transaction not found" });
+    }
+
+    if (transaction.status === 'success') {
+      return res.status(400).json({ success: false, message: "Transaction already processed" });
+    }
+
+    // Verify with Paystack
+    const response = await axios.get(`https://api.paystack.co/transaction/verify/${reference}`, {
+      headers: {
+        Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`
+      }
+    });
+
+    const paymentStatus = response.data.data.status;
+
+    if (paymentStatus === 'success') {
+      // Update transaction
+      transaction.status = 'success';
+      await transaction.save();
+
+      // Update progress record
+      let progressRecord = await Progress.findOne({ where: { user_id, rental_id: transaction.rental_id } });
+      if (progressRecord) {
+        progressRecord.locked = true;
+        progressRecord.locked_at = new Date();
+        await progressRecord.save();
+      } else {
+        progressRecord = await Progress.create({
+          user_id,
+          rental_id: transaction.rental_id,
+          liked: false,
+          locked: true,
+          locked_at: new Date()
+        });
+      }
+
+      const userObj = await Users.findByPk(user_id);
+      const rental = await Rentals.findByPk(transaction.rental_id);
+      const lockHtml = buildPropertyEmailHtml({
+        heading: "Property Locked Successfully",
+        subheading: "Receipt & Confirmation",
+        bodyText: `We have successfully verified your payment of <strong>₦${transaction.amount.toLocaleString()}</strong>. The property has been locked and reserved for you.`,
+        rental,
+        transaction,
+        userObj
+      });
+      await logAndEmailUser(user_id, userObj?.email, "Property Locked", lockHtml);
+      await notifySuperAdmins(`A property has been successfully locked by user ${user_id} after successful payment.`, 'system');
+
+      return res.status(200).json({
+        success: true,
+        message: "Payment verified and house locked successfully",
+        data: progressRecord,
+        redirectUrl: process.env.PAYSTACK_REDIRECT_URL || "https://rentulo.ng/tenant/locked-house"
+      });
+    } else {
+      transaction.status = 'failed';
+      await transaction.save();
       return res.status(400).json({
         success: false,
-        message: "This property is already locked by another user"
+        message: `Payment verification failed. Status: ${paymentStatus}`,
+        redirectUrl: process.env.PAYSTACK_FAILURE_URL || "https://rentulo.ng/tenant/locked-house"
       });
     }
 
+  } catch (error) {
+    console.error("Error verifying payment:", error.response ? error.response.data : error.message);
+    return res.status(500).json({ success: false, message: "Server error during payment verification" });
+  }
+}
+
+// 3. Callback verification for browser redirects ===> GET
+async function verifyLockPaymentCallback(req, res) {
+  try {
+    const { reference } = req.query;
+
+    if (!reference) {
+      return res.redirect(process.env.PAYSTACK_FAILURE_URL || "https://rentulo.com/payment-failed");
+    }
+
+    const transaction = await Transactions.findOne({ where: { reference } });
+    if (!transaction) {
+      return res.redirect(process.env.PAYSTACK_FAILURE_URL || "https://rentulo.com/payment-failed");
+    }
+
+    if (transaction.status === 'success') {
+      return res.redirect(process.env.PAYSTACK_REDIRECT_URL || "https://rentulo.com/payment-success");
+    }
+
+    // Verify with Paystack
+    const response = await axios.get(`https://api.paystack.co/transaction/verify/${reference}`, {
+      headers: {
+        Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`
+      }
     // Find if a progress record exists for this user and rental — create one
     // if not, since liking first is no longer required before locking.
     let progressRecord = await Progress.findOne({ where: { user_id, rental_id } });
@@ -420,6 +585,7 @@ async function payRent(req, res) {
   try {
     const { rental_id } = req.body;
     const user_id = req.user.userId;
+    const userEmail = req.user.email;
 
     if (!rental_id) {
       return res.status(400).json({ success: false, message: "rental_id is required" });
@@ -455,6 +621,64 @@ async function payRent(req, res) {
 
     const totalAmount = price + legalFee + cautionFee + brokeFee + mgtServiceCharge;
 
+    const response = await axios.post(
+      'https://api.paystack.co/transaction/initialize',
+      {
+        email: userEmail,
+        amount: amountInKobo,
+        callback_url: callbackUrl,
+        metadata: {
+          user_id,
+          rental_id,
+          payment_type: 'rent_payment'
+        }
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    const { authorization_url, reference } = response.data.data;
+
+    await Transactions.create({
+      user_id,
+      rental_id,
+      reference,
+      amount: totalAmount,
+      status: 'pending',
+      payment_type: 'rent_payment'
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Rent payment initialization successful",
+      authorization_url,
+      reference
+    });
+
+  } catch (error) {
+    console.error("Error initializing rent payment:", error.response ? error.response.data : error.message);
+    return res.status(500).json({ success: false, message: "Server error during payment initialization" });
+  }
+}
+
+// 2. Verify rent payment via reference ===> POST
+async function verifyRentPayment(req, res) {
+  try {
+    const { reference } = req.body;
+    const user_id = req.user.userId;
+
+    if (!reference) {
+      return res.status(400).json({ success: false, message: "Transaction reference is required" });
+    }
+
+    const transaction = await Transactions.findOne({ where: { reference, user_id } });
+    if (!transaction) {
+      return res.status(404).json({ success: false, message: "Transaction not found" });
+    }
     let chargeResult;
     try {
       chargeResult = await chargeMarketplacePayment({
@@ -531,6 +755,14 @@ async function payRent(req, res) {
       await logAndEmailUser(rental.UserId, landlord.email, "Property Rented", landlordHtml);
     }
 
+    const transaction = await Transactions.findOne({ where: { reference } });
+    if (!transaction) {
+      return res.redirect(process.env.PAYSTACK_FAILURE_URL || "https://rentulo.com/payment-failed");
+    }
+
+    if (transaction.status === 'success') {
+      return res.redirect(process.env.PAYSTACK_REDIRECT_URL || "https://rentulo.com/payment-success");
+    }
     await notifySuperAdmins(
       `Property "${rental.title}" has been successfully rented by ${userObj?.full_name ?? user_id} after wallet payment.`,
       'system',
@@ -545,6 +777,153 @@ async function payRent(req, res) {
     });
 
   } catch (error) {
+    console.error("Error in verifyRentPaymentCallback:", error.response ? error.response.data : error.message);
+    return res.redirect(process.env.PAYSTACK_FAILURE_URL || "https://rentulo.com/payment-failed");
+  }
+}
+
+// ==========================
+// EMAIL HELPER
+// ==========================
+
+/**
+ * Helper to build a professional styled email layout with light green color scheme
+ */
+function buildPropertyEmailHtml({ heading, subheading, bodyText, rental, transaction, userObj, landlord }) {
+  let imageUrl = '';
+  if (rental && rental.images) {
+    if (Array.isArray(rental.images) && rental.images.length > 0) {
+      imageUrl = rental.images[0];
+    } else if (typeof rental.images === 'string') {
+      try {
+        const parsed = JSON.parse(rental.images);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          imageUrl = parsed[0];
+        }
+      } catch (_) {
+        imageUrl = rental.images;
+      }
+    }
+  }
+
+  const currentYear = new Date().getFullYear();
+
+  let propertyCardHtml = '';
+  if (rental) {
+    const priceText = rental.price ? `₦${rental.price.toLocaleString()}` : '';
+    const priceTypeSuffix = rental.priceType ? ` / ${rental.priceType}` : '';
+    propertyCardHtml = `
+      <div style="border: 1px solid #e5e7eb; border-radius: 10px; overflow: hidden; margin: 20px 0; background-color: #ffffff; box-shadow: 0 2px 8px rgba(0,0,0,0.02);">
+        ${imageUrl ? `<img src="${imageUrl}" alt="${rental.title}" style="width: 100%; height: 180px; object-fit: cover; border-bottom: 1px solid #e5e7eb;" />` : ''}
+        <div style="padding: 15px;">
+          <h4 style="margin: 0 0 5px 0; color: #111827; font-size: 15px; font-weight: 600;">${rental.title}</h4>
+          ${priceText ? `<p style="margin: 0 0 5px 0; color: #10b981; font-size: 16px; font-weight: 700;">${priceText}<span style="font-size: 12px; font-weight: normal; color: #6b7280;">${priceTypeSuffix}</span></p>` : ''}
+          <p style="margin: 0; color: #6b7280; font-size: 13px;">📍 ${rental.location}</p>
+        </div>
+      </div>
+    `;
+  }
+
+  let receiptHtml = '';
+  if (transaction) {
+    receiptHtml = `
+      <div style="background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin: 20px 0;">
+        <h4 style="margin: 0 0 15px 0; color: #111827; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #e5e7eb; padding-bottom: 8px;">Transaction Summary</h4>
+        <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+          <tr>
+            <td style="padding: 5px 0; color: #6b7280;">Payment Type:</td>
+            <td style="padding: 5px 0; text-align: right; color: #111827; font-weight: 500;">${transaction.payment_type === 'lock_fee' ? 'Lock Fee' : 'Rent Payment'}</td>
+          </tr>
+          <tr>
+            <td style="padding: 5px 0; color: #6b7280;">Amount Paid:</td>
+            <td style="padding: 5px 0; text-align: right; color: #10b981; font-weight: 600;">₦${transaction.amount.toLocaleString()}</td>
+          </tr>
+          <tr>
+            <td style="padding: 5px 0; color: #6b7280;">Reference:</td>
+            <td style="padding: 5px 0; text-align: right; color: #111827; font-family: monospace; font-size: 12px;">${transaction.reference}</td>
+          </tr>
+          <tr>
+            <td style="padding: 5px 0; color: #6b7280;">Status:</td>
+            <td style="padding: 5px 0; text-align: right; color: #10b981; font-weight: 600;">Success</td>
+          </tr>
+        </table>
+      </div>
+    `;
+  }
+
+  let actionButtonHtml = '';
+  if (rental) {
+    const btnLabel = transaction ? (landlord ? 'Go to Dashboard' : 'View Reservation') : 'View Listing';
+    const btnUrl = rental.slug ? `https://rentulo.ng/listings/${rental.slug}` : 'https://rentulo.ng/dashboard';
+    actionButtonHtml = `
+      <div style="text-align: center; margin: 30px 0 10px 0;">
+        <a href="${btnUrl}"
+           style="background-color: #10b981; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-size: 14px; font-weight: 600; display: inline-block; box-shadow: 0 4px 6px rgba(16, 185, 129, 0.15);">
+          ${btnLabel}
+        </a>
+      </div>
+    `;
+  } else {
+    actionButtonHtml = `
+      <div style="text-align: center; margin: 30px 0 10px 0;">
+        <a href="https://rentulo.ng/dashboard"
+           style="background-color: #10b981; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-size: 14px; font-weight: 600; display: inline-block; box-shadow: 0 4px 6px rgba(16, 185, 129, 0.15);">
+          Go to Dashboard
+        </a>
+      </div>
+    `;
+  }
+
+  const recipientName = userObj ? userObj.full_name : (landlord ? landlord.full_name : 'User');
+
+  return `
+    <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f7f6; padding: 30px 15px;">
+      <div style="max-width: 550px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border-top: 4px solid #10b981;">
+        <div style="padding: 25px; text-align: center; background-color: #f0fdf4;">
+          <div style="background-color: #d1fae5; width: 50px; height: 50px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; margin-bottom: 10px; margin-left: auto; margin-right: auto;">
+            <span style="font-size: 24px;">${transaction ? '💰' : '❤️'}</span>
+          </div>
+          <h2 style="margin: 0; color: #064e3b; font-size: 20px; font-weight: 700;">${heading}</h2>
+          <p style="margin: 5px 0 0 0; color: #047857; font-size: 14px;">${subheading}</p>
+        </div>
+
+        <div style="padding: 30px; color: #374151; font-size: 15px; line-height: 1.6;">
+          <p>Hello <strong>${recipientName}</strong>,</p>
+          <p>${bodyText}</p>
+
+          ${propertyCardHtml}
+          ${receiptHtml}
+          ${actionButtonHtml}
+        </div>
+
+        <div style="background-color: #f9fafb; padding: 20px 30px; text-align: center; border-top: 1px solid #e5e7eb;">
+          <p style="margin: 0; color: #9ca3af; font-size: 12px;">
+            © ${currentYear} RentULO. All rights reserved.
+          </p>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+module.exports = {
+  likeHouse,
+  getLikedHouses,
+  unlikeHouse,
+  deleteAllLikedHouses,
+  initializeLockPayment,
+  verifyLockPayment,
+  verifyLockPaymentCallback,
+  getLockedHouses,
+  deleteLockedHouse,
+  deleteAllLockedHouses,
+  bookHouse,
+  getBookedHouses,
+  deleteBookedHouse,
+  deleteAllBookedHouses,
+  initializeRentPayment,
+  verifyRentPayment,
+  verifyRentPaymentCallback
     logger.error('Error paying rent', { error: error.message, userId: req.user?.userId });
     return res.status(500).json({ success: false, message: "Server error" });
   }

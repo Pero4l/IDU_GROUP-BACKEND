@@ -1,8 +1,9 @@
 const nodemailer = require("nodemailer");
-const logger = require("./logger");
 const axios = require("axios");
-const dnsPromises = require("dns").promises;
+const logger = require("./logger");
 require("dotenv").config();
+
+const dnsPromises = require("dns").promises;
 
 let testAccount = null;
 
@@ -132,5 +133,3 @@ async function sendEmail(to, subject, text, html) {
 }
 
 module.exports = { sendEmail };
-
-

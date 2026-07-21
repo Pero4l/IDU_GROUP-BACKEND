@@ -121,7 +121,7 @@ async function updateProfile(req, res) {
 
   } catch (error) {
     logger.error('Error updating profile', { error: error.message, userId: req.user?.userId });
-    return res.status(500).json({ success: false, message: "Server error", error: error.message });
+    return res.status(500).json({ success: false, message: "Server error" });
   }
 }
 
@@ -344,7 +344,7 @@ async function getUserProfile(req, res) {
 
   } catch (error) {
     logger.error('Error fetching user profile', { error: error.message, userId: req.user?.userId });
-    return res.status(500).json({ success: false, message: "Server error", error: error.message });
+    return res.status(500).json({ success: false, message: "Server error" });
   }
 }
 

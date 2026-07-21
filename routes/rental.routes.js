@@ -1,5 +1,22 @@
 const express = require('express');
 const router = express.Router();
+const multer = require('multer');
+
+const rentalFileFilter = (req, file, cb) => {
+  const allowedImageTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+  const allowedVideoTypes = ['video/mp4', 'video/quicktime', 'video/webm'];
+  if (allowedImageTypes.includes(file.mimetype) || allowedVideoTypes.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new Error('Invalid file type. Only JPEG, PNG, WebP images and MP4, MOV, WebM videos are allowed.'), false);
+  }
+};
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  fileFilter: rentalFileFilter,
+  limits: { fileSize: 50 * 1024 * 1024 } // 50MB per file
+});
 
 const { rentalUpload: upload } = require('../middleware/uploadConfig');
 const { authMiddleware } = require('../middleware/authUserMiddleware');

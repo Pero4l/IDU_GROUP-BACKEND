@@ -103,7 +103,7 @@ async function createInspection(req, res) {
     return res.status(201).json({ success: true, message: 'Inspection scheduled successfully', data: inspection });
   } catch (error) {
     logger.error('Error creating inspection', { error: error.message, userId: req.user?.userId });
-    return res.status(500).json({ success: false, message: 'Server error', error: error.message });
+    return res.status(500).json({ success: false, message: 'Server error' });
   }
 }
 
@@ -124,7 +124,7 @@ async function getMyInspections(req, res) {
     return res.status(200).json({ success: true, message: 'Inspections retrieved successfully', data: inspections });
   } catch (error) {
     logger.error('Error fetching inspections', { error: error.message, userId: req.user?.userId });
-    return res.status(500).json({ success: false, message: 'Server error', error: error.message });
+    return res.status(500).json({ success: false, message: 'Server error' });
   }
 }
 
@@ -163,7 +163,7 @@ async function getInspection(req, res) {
     return res.status(200).json({ success: true, message: 'Inspection retrieved successfully', data: dataJson });
   } catch (error) {
     logger.error('Error fetching inspection', { error: error.message, userId: req.user?.userId });
-    return res.status(500).json({ success: false, message: 'Server error', error: error.message });
+    return res.status(500).json({ success: false, message: 'Server error' });
   }
 }
 
@@ -242,7 +242,7 @@ async function getInspectionsForRental(req, res) {
     return res.status(200).json({ success: true, message: 'Inspections for rental retrieved successfully', data: dataJson });
   } catch (error) {
     logger.error('Error fetching inspections for rental', { error: error.message, userId: req.user?.userId });
-    return res.status(500).json({ success: false, message: 'Server error', error: error.message });
+    return res.status(500).json({ success: false, message: 'Server error' });
   }
 }
 

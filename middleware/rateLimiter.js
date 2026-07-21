@@ -36,4 +36,28 @@ const otpRequestLimiter = rateLimit({
   handler: respondTooManyRequests,
 });
 
-module.exports = { loginLimiter, otpLimiter, otpRequestLimiter };
+// Chat: prevent spam messages
+const chatLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  limit: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: respondTooManyRequests,
+});
+
+// Subscription / general write operations
+const writeLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: respondTooManyRequests,
+});
+
+module.exports = {
+  loginLimiter,
+  otpLimiter,
+  otpRequestLimiter,
+  chatLimiter,
+  writeLimiter,
+};

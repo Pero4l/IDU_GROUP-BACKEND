@@ -109,7 +109,7 @@ async function addRental(req, res) {
     return res.status(201).json({ success: true, message: "Rental property added successfully" });
   } catch (err) {
     logger.error('Error adding rental', { error: err.message, userId: req.user?.userId });
-    return res.status(500).json({ success: false, message: "Error adding rental", error: err.message });
+    return res.status(500).json({ success: false, message: "Error adding rental" });
   }
 }
 
@@ -118,8 +118,9 @@ async function addRental(req, res) {
 // ─────────────────────────────────────────────
 async function seeAllRentals(req, res) {
   try {
-    const limit = req.query.limit ? parseInt(req.query.limit, 10) : null;
-    const offset = req.query.offset ? parseInt(req.query.offset, 10) : null;
+    const { limit, offset } = req.query;
+    const parsedLimit = limit ? parseInt(limit, 10) : null;
+    const parsedOffset = offset ? parseInt(offset, 10) : null;
 
     const queryOptions = {
       attributes: [
@@ -134,28 +135,28 @@ async function seeAllRentals(req, res) {
       order: [['createdAt', 'DESC']],
     };
 
-    if (limit !== null) {
-      queryOptions.limit = limit;
+    if (parsedLimit !== null) {
+      queryOptions.limit = parsedLimit;
     }
-    if (offset !== null) {
-      queryOptions.offset = offset;
+    if (parsedOffset !== null) {
+      queryOptions.offset = parsedOffset;
     }
 
     let result;
-    if (limit !== null) {
+    if (parsedLimit !== null) {
       result = await Rentals.findAndCountAll(queryOptions);
     } else {
       const rows = await Rentals.findAll(queryOptions);
       result = { count: rows.length, rows };
     }
 
-    const { count, rows: rentals } = result;
+    const { count, rows } = result;
 
     if (count === 0) {
       return res.status(404).json({ success: false, message: "No rentals found" });
     }
 
-    return res.status(200).json({ success: true, data: rentals, total: count, message: "Rentals retrieved successfully" });
+    return res.status(200).json({ success: true, count, data: rows, message: "Rentals retrieved successfully" });
   } catch (error) {
     logger.error('Error fetching all rentals', { error: error.message });
     return res.status(500).json({ success: false, message: "Server error" });
@@ -203,7 +204,7 @@ async function getRental(req, res) {
     });
   } catch (error) {
     logger.error('Error fetching rental', { error: error.message });
-    return res.status(500).json({ success: false, message: "Server error", error: error.message });
+    return res.status(500).json({ success: false, message: "Server error" });
   }
 }
 
@@ -264,7 +265,7 @@ async function updateRental(req, res) {
     return res.status(200).json({ success: true, data: updatedRental, message: "Rental updated successfully" });
   } catch (error) {
     logger.error('Error updating rental', { error: error.message, userId: req.user?.userId });
-    return res.status(500).json({ success: false, message: "Server error", error: error.message });
+    return res.status(500).json({ success: false, message: "Server error" });
   }
 }
 
@@ -358,10 +359,13 @@ async function searchRentals(req, res) {
 }
 
 // ─────────────────────────────────────────────
-// GET /rental/recent
+// GET /rental/recent  — most recent rentals (public)
 // ─────────────────────────────────────────────
 async function seeRecentRentals(req, res) {
   try {
+    const { limit } = req.query;
+    const parsedLimit = limit ? parseInt(limit, 10) : 10;
+
     const rentals = await Rentals.findAll({
       attributes: [
         "id", "slug", "title", "description", "propertyType", "location", "price", "priceType",
@@ -373,7 +377,7 @@ async function seeRecentRentals(req, res) {
         include: [{ model: Profile, attributes: ['image', 'verified'] }]
       }],
       order: [['createdAt', 'DESC']],
-      limit: 10
+      limit: parsedLimit,
     });
 
     return res.status(200).json({ success: true, data: rentals, message: "Recent rentals retrieved successfully" });
@@ -384,11 +388,13 @@ async function seeRecentRentals(req, res) {
 }
 
 // ─────────────────────────────────────────────
-// GET /rental/recommended
+// GET /rental/recommended  — recommended rentals for the user
 // ─────────────────────────────────────────────
 async function seeRecommendedRentals(req, res) {
   try {
     const userId = req.user.userId;
+    const { limit } = req.query;
+    const parsedLimit = limit ? parseInt(limit, 10) : 10;
 
     // 1. Fetch user to get their state or location
     const user = await Users.findByPk(userId, {
@@ -419,6 +425,7 @@ async function seeRecommendedRentals(req, res) {
         include: [{ model: Profile, attributes: ['image', 'verified'] }]
       }],
       order: [['createdAt', 'DESC']],
+      limit: parsedLimit,
     });
 
     // Determine liked status
