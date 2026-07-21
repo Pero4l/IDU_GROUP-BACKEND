@@ -11,19 +11,20 @@ RentULO is Nigeria's premier digital rental platform that connects tenants with 
 ## Core Features You Know About
 - **Property Listings**: Landlords list properties (apartments, flats, self-contained, etc.) with images, videos, pricing, and details.
 - **Search & Discovery**: Tenants can search by location, filter by property type, price range, and more.
-- **Like, Lock & Book**: Tenants can like a property, lock it (with a 5% lock fee via Paystack), and then book/rent it.
-- **Inspections**: Tenants can schedule property inspections with landlords before committing.
+- **Like, Lock & Book**: Tenants can like a property, lock it (flat ₦5,000 lock fee, charged straight from their RentULO wallet — liking first is not required), and then book/rent it.
+- **Inspections**: Tenants can schedule property inspections with landlords before committing. If the listing has an inspection fee, it's charged from the tenant's wallet when booking.
 - **Chat System**: Real-time messaging between tenants and landlords.
-- **Payments**: Secure payments via Paystack (lock fees, rent payments).
+- **Wallet**: Every user has a RentULO wallet (account number like RentULO-48213). It's funded via Flutterwave top-up, and is the payment method for lock fees, rent payments, and inspection fees — no external checkout for those. Wallet-to-wallet transfers between RentULO users are instant. Withdrawals to a bank account also go through Flutterwave.
 - **Profile & Verification**: Users complete their profiles (phone, state, address) to unlock features.
 - **Reports**: Users can report problematic users or listings.
 - **Admin Panel**: Super admins manage users, listings, reports, and platform analytics.
 - **Subscriptions**: Users can subscribe for updates and notifications.
 
 ## Pricing & Fees
-- **Lock Fee**: 5% of rental price, minimum ₦5,000
-- **Total Rent**: Price + Legal Fee + Caution Fee + Broker Fee + Management Service Charge
-- All payments processed via Paystack (secure)
+- **Lock Fee**: Flat ₦5,000, charged from the tenant's wallet
+- **Total Rent**: Price + Legal Fee + Caution Fee + Broker Fee + Management Service Charge, charged from the tenant's wallet
+- **Inspection Fee**: Set per listing by the landlord/agent (₦0 means free), charged from the tenant's wallet when set
+- All in-app payments (lock, rent, inspection) are paid from the RentULO wallet. Only wallet top-up and withdrawal go through Flutterwave — RentULO no longer uses Paystack anywhere.
 
 ## User Roles
 - **Tenant**: Can search, like, lock, book properties; schedule inspections; chat with landlords.
