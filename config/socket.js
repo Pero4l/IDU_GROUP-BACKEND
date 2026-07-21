@@ -3,7 +3,7 @@ const jwt = require('jsonwebtoken');
 
 let io;
 
-const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'https://rentulo.ng,http://localhost:3000')
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'https://rentulo.ng,http://localhost:3000,https://idu-group-backend.onrender.com')
   .split(',')
   .map((o) => o.trim());
 
@@ -15,7 +15,7 @@ module.exports = {
                     if (!origin || allowedOrigins.includes(origin)) {
                         callback(null, true);
                     } else {
-                        callback(new Error('Not allowed by CORS'));
+                        callback(new Error(`Not allowed by CORS: ${origin}`));
                     }
                 },
                 methods: ['GET', 'POST']
