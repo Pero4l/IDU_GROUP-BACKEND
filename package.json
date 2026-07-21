@@ -33,12 +33,10 @@
     "express-rate-limit": "^8.5.2",
     "google-auth-library": "^10.6.2",
     "helmet": "^8.3.0",
-    "helmet": "^8.2.0",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
     "mysql2": "^3.15.3",
     "node-geocoder": "^4.4.1",
-    "nodemailer": "^8.0.4",
     "nodemailer": "^9.0.1",
     "nodemon": "^3.1.11",
     "pg": "^8.16.3",
@@ -48,9 +46,5 @@
     "socket.io": "^4.8.3",
     "uuid": "^14.0.1",
     "xss": "^1.0.15"
-    "socket.io": "^4.8.3"
-  },
-  "overrides": {
-    "uuid": "^11.1.1"
   }
 }
