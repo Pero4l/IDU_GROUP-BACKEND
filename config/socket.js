@@ -3,7 +3,7 @@ const jwt = require('jsonwebtoken');
 
 let io;
 
-const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'https://rentulo.ng,http://localhost:3000,https://idu-group-backend.onrender.com')
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'https://rentulo.ng,https://www.rentulo.ng,http://localhost:3000,https://idu-group-backend.onrender.com')
   .split(',')
   .map((o) => o.trim());
 
