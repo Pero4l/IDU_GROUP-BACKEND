@@ -16,3 +16,5 @@ test_fee_structure_and_redirects.js
 ca.pem
 ca(1).pem
 /ca(1).pem
+
+/scripts/backfillWallets.js
