@@ -1,8 +1,93 @@
+// Shared building blocks for all RentULO transactional emails.
+//
+// Style: flat and edge-to-edge like Google's own account/security emails —
+// no outer gray backdrop, no floating card, no shadows/heavy radii. Content
+// sits directly on a white background with thin hairline dividers.
+
+const BRAND_NAME = 'RentULO';
+const BRAND_COLOR = '#059669';
+const TEXT_PRIMARY = '#202124';
+const TEXT_SECONDARY = '#3c4043';
+const TEXT_MUTED = '#5f6368';
+const TEXT_FAINT = '#9aa0a6';
+const BORDER_COLOR = '#e8eaed';
+const SURFACE = '#f8f9fa';
+const FONT_STACK = "Roboto, 'Segoe UI', Helvetica, Arial, sans-serif";
+
 const PAYMENT_TYPE_LABELS = {
   lock_fee: 'Lock Fee',
   rent_payment: 'Rent Payment',
   inspection_fee: 'Inspection Fee',
 };
+
+/**
+ * Full-bleed, flat email shell shared by every RentULO email — a wordmark
+ * header, body content, and a footer, all separated by hairline borders
+ * instead of padding/margin around a floating card.
+ *
+ * @param {object} opts
+ * @param {string} [opts.preheader] - hidden preview text shown in inbox lists
+ * @param {string} [opts.eyebrow] - small uppercase label above the heading (e.g. "Security alert")
+ * @param {string} opts.heading
+ * @param {string} opts.bodyHtml - inner content HTML
+ * @param {string} [opts.footerNote] - overrides the default footer line
+ */
+function buildEmailShell({ preheader, eyebrow, heading, bodyHtml, footerNote }) {
+  const year = new Date().getFullYear();
+  return `
+    <div style="background-color:#ffffff;">
+      ${preheader ? `<div style="display:none;max-height:0;overflow:hidden;opacity:0;">${preheader}</div>` : ''}
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;background-color:#ffffff;">
+        <tr>
+          <td align="center">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;font-family:${FONT_STACK};">
+              <tr>
+                <td style="padding:26px 40px;border-bottom:1px solid ${BORDER_COLOR};">
+                  <span style="font-size:19px;font-weight:600;color:${BRAND_COLOR};letter-spacing:-0.2px;">${BRAND_NAME}</span>
+                </td>
+              </tr>
+              <tr>
+                <td style="padding:36px 40px 32px 40px;">
+                  ${eyebrow ? `<p style="margin:0 0 8px;font-size:12px;font-weight:600;letter-spacing:.4px;text-transform:uppercase;color:${BRAND_COLOR};">${eyebrow}</p>` : ''}
+                  ${heading ? `<h1 style="margin:0 0 16px;font-size:21px;line-height:27px;font-weight:400;color:${TEXT_PRIMARY};">${heading}</h1>` : ''}
+                  <div style="font-size:14px;line-height:22px;color:${TEXT_SECONDARY};">
+                    ${bodyHtml}
+                  </div>
+                </td>
+              </tr>
+              <tr>
+                <td style="padding:24px 40px 32px 40px;border-top:1px solid ${BORDER_COLOR};">
+                  <p style="margin:0;font-size:12px;line-height:18px;color:${TEXT_MUTED};">
+                    ${footerNote || `This is an automated message from ${BRAND_NAME}. Please don't reply directly to this email.`}
+                  </p>
+                  <p style="margin:14px 0 0;font-size:12px;color:${TEXT_FAINT};">&copy; ${year} ${BRAND_NAME} Nigeria. All rights reserved.</p>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+    </div>
+  `;
+}
+
+function buildActionButton(label, url) {
+  if (!label || !url) return '';
+  return `
+    <div style="margin:28px 0 4px;">
+      <a href="${url}" style="background-color:${BRAND_COLOR};color:#ffffff;padding:10px 24px;text-decoration:none;border-radius:4px;font-size:14px;font-weight:500;display:inline-block;">${label}</a>
+    </div>
+  `;
+}
+
+function buildCodeBadge(code) {
+  if (!code) return '';
+  return `
+    <div style="margin:24px 0;">
+      <span style="display:inline-block;font-size:30px;font-weight:600;letter-spacing:8px;color:${TEXT_PRIMARY};background-color:${SURFACE};padding:14px 28px;border-radius:4px;">${code}</span>
+    </div>
+  `;
+}
 
 function resolvePropertyImage(rental) {
   if (!rental || !rental.images) return '';
@@ -26,14 +111,16 @@ function buildPropertyCardHtml(rental) {
   const priceText = rental.price ? `₦${Number(rental.price).toLocaleString()}` : '';
   const priceTypeSuffix = rental.priceType ? ` / ${rental.priceType}` : '';
   return `
-    <div style="border: 1px solid #e5e7eb; border-radius: 10px; overflow: hidden; margin: 20px 0; background-color: #ffffff; box-shadow: 0 2px 8px rgba(0,0,0,0.02);">
-      ${imageUrl ? `<img src="${imageUrl}" alt="${rental.title}" style="width: 100%; height: 180px; object-fit: cover; border-bottom: 1px solid #e5e7eb;" />` : ''}
-      <div style="padding: 15px;">
-        <h4 style="margin: 0 0 5px 0; color: #111827; font-size: 15px; font-weight: 600;">${rental.title}</h4>
-        ${priceText ? `<p style="margin: 0 0 5px 0; color: #10b981; font-size: 16px; font-weight: 700;">${priceText}<span style="font-size: 12px; font-weight: normal; color: #6b7280;">${priceTypeSuffix}</span></p>` : ''}
-        <p style="margin: 0; color: #6b7280; font-size: 13px;">📍 ${rental.location || ''}</p>
-      </div>
-    </div>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid ${BORDER_COLOR};border-radius:4px;margin:20px 0;">
+      ${imageUrl ? `<tr><td><img src="${imageUrl}" alt="${rental.title}" style="width:100%;max-height:180px;object-fit:cover;display:block;border-radius:3px 3px 0 0;" /></td></tr>` : ''}
+      <tr>
+        <td style="padding:16px;">
+          <p style="margin:0 0 4px;color:${TEXT_PRIMARY};font-size:15px;font-weight:600;">${rental.title}</p>
+          ${priceText ? `<p style="margin:0 0 4px;color:${BRAND_COLOR};font-size:15px;font-weight:600;">${priceText}<span style="font-size:12px;font-weight:400;color:${TEXT_MUTED};"> ${priceTypeSuffix}</span></p>` : ''}
+          <p style="margin:0;color:${TEXT_MUTED};font-size:13px;">${rental.location || ''}</p>
+        </td>
+      </tr>
+    </table>
   `;
 }
 
@@ -41,34 +128,42 @@ function buildReceiptHtml(transaction) {
   if (!transaction) return '';
   const label = PAYMENT_TYPE_LABELS[transaction.payment_type] || 'Payment';
   return `
-    <div style="background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin: 20px 0;">
-      <h4 style="margin: 0 0 15px 0; color: #111827; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #e5e7eb; padding-bottom: 8px;">Transaction Summary</h4>
-      <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
-        <tr>
-          <td style="padding: 5px 0; color: #6b7280;">Payment Type:</td>
-          <td style="padding: 5px 0; text-align: right; color: #111827; font-weight: 500;">${label}</td>
-        </tr>
-        <tr>
-          <td style="padding: 5px 0; color: #6b7280;">Amount Paid:</td>
-          <td style="padding: 5px 0; text-align: right; color: #10b981; font-weight: 600;">₦${Number(transaction.amount).toLocaleString()}</td>
-        </tr>
-        <tr>
-          <td style="padding: 5px 0; color: #6b7280;">Reference:</td>
-          <td style="padding: 5px 0; text-align: right; color: #111827; font-family: monospace; font-size: 12px;">${transaction.reference || '—'}</td>
-        </tr>
-        <tr>
-          <td style="padding: 5px 0; color: #6b7280;">Status:</td>
-          <td style="padding: 5px 0; text-align: right; color: #10b981; font-weight: 600;">Success</td>
-        </tr>
-      </table>
-    </div>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid ${BORDER_COLOR};border-radius:4px;margin:20px 0;">
+      <tr>
+        <td style="padding:12px 16px;border-bottom:1px solid ${BORDER_COLOR};font-size:12px;font-weight:600;letter-spacing:.4px;text-transform:uppercase;color:${TEXT_MUTED};">
+          Transaction Summary
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:8px 16px 14px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:14px;">
+            <tr>
+              <td style="padding:5px 0;color:${TEXT_MUTED};">Payment Type</td>
+              <td style="padding:5px 0;text-align:right;color:${TEXT_PRIMARY};font-weight:500;">${label}</td>
+            </tr>
+            <tr>
+              <td style="padding:5px 0;color:${TEXT_MUTED};">Amount Paid</td>
+              <td style="padding:5px 0;text-align:right;color:${BRAND_COLOR};font-weight:600;">₦${Number(transaction.amount).toLocaleString()}</td>
+            </tr>
+            <tr>
+              <td style="padding:5px 0;color:${TEXT_MUTED};">Reference</td>
+              <td style="padding:5px 0;text-align:right;color:${TEXT_PRIMARY};font-family:monospace;font-size:12px;">${transaction.reference || '—'}</td>
+            </tr>
+            <tr>
+              <td style="padding:5px 0;color:${TEXT_MUTED};">Status</td>
+              <td style="padding:5px 0;text-align:right;color:${BRAND_COLOR};font-weight:600;">Success</td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
   `;
 }
 
 function personLine(person) {
   if (!person) return '';
   const contact = [person.phone_no, person.email].filter(Boolean).join(' · ');
-  return `${person.full_name}${contact ? ` <span style="color:#9ca3af;font-weight:400;">(${contact})</span>` : ''}`;
+  return `${person.full_name}${contact ? ` <span style="color:${TEXT_FAINT};font-weight:400;">(${contact})</span>` : ''}`;
 }
 
 // Who's involved — shown to admins (both parties) and to tenants/landlords
@@ -79,30 +174,30 @@ function buildPeopleHtml({ tenant, landlord }) {
   if (tenant) {
     rows.push(`
       <tr>
-        <td style="padding: 5px 0; color: #6b7280;">Tenant:</td>
-        <td style="padding: 5px 0; text-align: right; color: #111827; font-weight: 500;">${personLine(tenant)}</td>
+        <td style="padding:5px 0;color:${TEXT_MUTED};">Tenant</td>
+        <td style="padding:5px 0;text-align:right;color:${TEXT_PRIMARY};font-weight:500;">${personLine(tenant)}</td>
       </tr>
     `);
   }
   if (landlord) {
     rows.push(`
       <tr>
-        <td style="padding: 5px 0; color: #6b7280;">Landlord:</td>
-        <td style="padding: 5px 0; text-align: right; color: #111827; font-weight: 500;">${personLine(landlord)}</td>
+        <td style="padding:5px 0;color:${TEXT_MUTED};">Landlord</td>
+        <td style="padding:5px 0;text-align:right;color:${TEXT_PRIMARY};font-weight:500;">${personLine(landlord)}</td>
       </tr>
     `);
   }
   return `
-    <div style="background-color: #f0fdf4; border: 1px solid #d1fae5; border-radius: 8px; padding: 15px 20px; margin: 20px 0;">
-      <table style="width: 100%; border-collapse: collapse; font-size: 14px;">${rows.join('')}</table>
-    </div>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid ${BORDER_COLOR};border-radius:4px;padding:14px 16px;margin:20px 0;">
+      <tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:14px;">${rows.join('')}</table></td></tr>
+    </table>
   `;
 }
 
 /**
- * Shared light-green branded email shell for RentULO property emails —
- * used for tenant confirmations, landlord notifications, and admin alerts
- * alike, so all three look and feel consistent.
+ * Branded email body for RentULO property emails — used for tenant
+ * confirmations, landlord notifications, and admin alerts alike, so all
+ * three look and feel consistent. Wraps its content in the shared flat shell.
  *
  * @param {object} opts
  * @param {string} opts.heading
@@ -128,52 +223,32 @@ function buildPropertyEmailHtml({
   actionLabel,
   actionUrl,
 }) {
-  const currentYear = new Date().getFullYear();
-
   const propertyCardHtml = buildPropertyCardHtml(rental);
   const receiptHtml = buildReceiptHtml(transaction);
   const peopleHtml = buildPeopleHtml({ tenant, landlord });
 
   const btnLabel = actionLabel || (rental ? (transaction ? 'View Details' : 'View Listing') : 'Go to Dashboard');
   const btnUrl = actionUrl || (rental && rental.slug ? `https://rentulo.ng/listings/${rental.slug}` : 'https://rentulo.ng/dashboard');
-  const actionButtonHtml = `
-    <div style="text-align: center; margin: 30px 0 10px 0;">
-      <a href="${btnUrl}"
-         style="background-color: #10b981; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-size: 14px; font-weight: 600; display: inline-block; box-shadow: 0 4px 6px rgba(16, 185, 129, 0.15);">
-        ${btnLabel}
-      </a>
-    </div>
+
+  const bodyHtml = `
+    <p style="margin:0 0 16px;">Hello <strong>${recipientName || 'there'}</strong>,</p>
+    <p style="margin:0;">${bodyText}</p>
+    ${propertyCardHtml}
+    ${peopleHtml}
+    ${receiptHtml}
+    ${buildActionButton(btnLabel, btnUrl)}
   `;
 
-  return `
-    <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f7f6; padding: 30px 15px;">
-      <div style="max-width: 550px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border-top: 4px solid #10b981;">
-        <div style="padding: 25px; text-align: center; background-color: #f0fdf4;">
-          <div style="background-color: #d1fae5; width: 50px; height: 50px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; margin-bottom: 10px; margin-left: auto; margin-right: auto;">
-            <span style="font-size: 24px;">${transaction ? '💰' : '❤️'}</span>
-          </div>
-          <h2 style="margin: 0; color: #064e3b; font-size: 20px; font-weight: 700;">${heading}</h2>
-          <p style="margin: 5px 0 0 0; color: #047857; font-size: 14px;">${subheading}</p>
-        </div>
-
-        <div style="padding: 30px; color: #374151; font-size: 15px; line-height: 1.6;">
-          <p>Hello <strong>${recipientName || 'there'}</strong>,</p>
-          <p>${bodyText}</p>
-
-          ${propertyCardHtml}
-          ${peopleHtml}
-          ${receiptHtml}
-          ${actionButtonHtml}
-        </div>
-
-        <div style="background-color: #f9fafb; padding: 20px 30px; text-align: center; border-top: 1px solid #e5e7eb;">
-          <p style="margin: 0; color: #9ca3af; font-size: 12px;">
-            © ${currentYear} RentULO. All rights reserved.
-          </p>
-        </div>
-      </div>
-    </div>
-  `;
+  return buildEmailShell({
+    eyebrow: subheading,
+    heading,
+    bodyHtml,
+  });
 }
 
-module.exports = { buildPropertyEmailHtml };
+module.exports = {
+  buildEmailShell,
+  buildActionButton,
+  buildCodeBadge,
+  buildPropertyEmailHtml,
+};

@@ -1,5 +1,6 @@
 const { Testimonials, Users, Profile } = require("../models");
 const { sendEmail } = require("../utils/mailer");
+const { buildEmailShell, buildActionButton } = require("../utils/emailTemplates");
 
 // CREATE testimonials
 async function createTestimonial(req, res) {
@@ -59,43 +60,22 @@ async function createTestimonial(req, res) {
     // SEND CONFIRMATION EMAIL
     try {
       const stars = "⭐".repeat(rating);
-      const emailHtml = `<div style="font-family: Arial, sans-serif; background-color: #f9fafb; padding: 20px;">
-          <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; padding: 30px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
-            
-            <h2 style="color: #111827;">Thanks for your testimonial, ${userName}! 🎉</h2>
-            
-            <p style="color: #4b5563; font-size: 15px; line-height: 1.6;">
-              We appreciate you taking the time to share your experience with RentULO. Here's what you submitted:
-            </p>
-
-            <div style="background-color: #f3f4f6; border-radius: 8px; padding: 20px; margin: 20px 0;">
-              <p style="color: #111827; font-size: 16px; margin: 0 0 10px 0;">${stars}</p>
-              <p style="color: #374151; font-size: 15px; font-style: italic; margin: 0;">"${message}"</p>
-            </div>
-
-            <p style="color: #4b5563; font-size: 14px; line-height: 1.6;">
-              Your testimonial may be featured on our platform to help other users make informed decisions.
-            </p>
-
-            <p style="color: #4b5563; font-size: 14px;">
-              Want to make changes? You can update or delete your testimonial anytime from your dashboard.
-            </p>
-
-            <div style="text-align: center; margin: 30px 0;">
-              <a href="https://rentulo.com/dashboard" 
-                style="background-color: #111827; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 6px; font-size: 14px;">
-                Go to Dashboard
-              </a>
-            </div>
-
-            <hr style="margin: 30px 0; border: none; border-top: 1px solid #e5e7eb;" />
-
-            <p style="color: #9ca3af; font-size: 12px; text-align: center;">
-              © ${new Date().getFullYear()} RentULO. All rights reserved.
-            </p>
-
-          </div>
-        </div>`;
+      const emailHtml = buildEmailShell({
+        eyebrow: 'Testimonial received',
+        heading: `Thanks for your testimonial, ${userName}!`,
+        bodyHtml: `
+          <p style="margin:0;">We appreciate you taking the time to share your experience with RentULO. Here's what you submitted:</p>
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e8eaed;border-radius:4px;margin:20px 0;">
+            <tr><td style="padding:16px;">
+              <p style="margin:0 0 8px;color:#202124;font-size:15px;">${stars}</p>
+              <p style="margin:0;color:#3c4043;font-size:14px;font-style:italic;">"${message}"</p>
+            </td></tr>
+          </table>
+          <p style="margin:0 0 12px;">Your testimonial may be featured on our platform to help other users make informed decisions.</p>
+          <p style="margin:0;">Want to make changes? You can update or delete your testimonial anytime from your dashboard.</p>
+          ${buildActionButton('Go to Dashboard', 'https://rentulo.com/dashboard')}
+        `,
+      });
 
       const emailText = `Hi ${userName},\n\nThank you for submitting your testimonial on RentULO!\n\nYour rating: ${rating}/5\nYour message: "${message}"\n\nYou can update or delete your testimonial anytime from your dashboard.\n\nBest regards,\nThe RentULO Team`;
 
@@ -173,41 +153,21 @@ async function updateTestimonial(req, res) {
     try {
       const stars = "⭐".repeat(testimonial.rating);
 
-      const emailHtml = `
-        <div style="font-family: Arial, sans-serif; background-color: #f9fafb; padding: 20px;">
-          <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; padding: 30px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
-            
-            <h2 style="color: #111827;">Your testimonial has been updated ✏️</h2>
-            
-            <p style="color: #4b5563; font-size: 15px; line-height: 1.6;">
-              Hi ${userName}, your testimonial on RentULO has been successfully updated. Here's what it looks like now:
-            </p>
-
-            <div style="background-color: #f3f4f6; border-radius: 8px; padding: 20px; margin: 20px 0;">
-              <p style="color: #111827; font-size: 16px; margin: 0 0 10px 0;">${stars}</p>
-              <p style="color: #374151; font-size: 15px; font-style: italic; margin: 0;">"${testimonial.message}"</p>
-            </div>
-
-            <p style="color: #4b5563; font-size: 14px;">
-              If you did not make this change, please contact our support team immediately.
-            </p>
-
-            <div style="text-align: center; margin: 30px 0;">
-              <a href="https://rentulo.com/dashboard" 
-                style="background-color: #111827; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 6px; font-size: 14px;">
-                Go to Dashboard
-              </a>
-            </div>
-
-            <hr style="margin: 30px 0; border: none; border-top: 1px solid #e5e7eb;" />
-
-            <p style="color: #9ca3af; font-size: 12px; text-align: center;">
-              © ${new Date().getFullYear()} RentULO. All rights reserved.
-            </p>
-
-          </div>
-        </div>
-      `;
+      const emailHtml = buildEmailShell({
+        eyebrow: 'Testimonial updated',
+        heading: 'Your testimonial has been updated',
+        bodyHtml: `
+          <p style="margin:0;">Hi ${userName}, your testimonial on RentULO has been successfully updated. Here's what it looks like now:</p>
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e8eaed;border-radius:4px;margin:20px 0;">
+            <tr><td style="padding:16px;">
+              <p style="margin:0 0 8px;color:#202124;font-size:15px;">${stars}</p>
+              <p style="margin:0;color:#3c4043;font-size:14px;font-style:italic;">"${testimonial.message}"</p>
+            </td></tr>
+          </table>
+          <p style="margin:0;">If you did not make this change, please contact our support team immediately.</p>
+          ${buildActionButton('Go to Dashboard', 'https://rentulo.com/dashboard')}
+        `,
+      });
 
       const emailText = `Hi ${userName},\n\nYour testimonial has been successfully updated.\n\nYour rating: ${testimonial.rating}/5\nYour message: "${testimonial.message}"\n\nIf you did not make this change, please contact support.\n\nBest regards,\nThe RentULO Team`;
       await sendEmail(
@@ -254,40 +214,16 @@ async function deleteTestimonial(req, res) {
 
     // SEND DELETE EMAIL
     try {
-      const emailHtml = `
-        <div style="font-family: Arial, sans-serif; background-color: #f9fafb; padding: 20px;">
-          <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; padding: 30px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
-            
-            <h2 style="color: #111827;">Your testimonial has been deleted 🗑️</h2>
-            
-            <p style="color: #4b5563; font-size: 15px; line-height: 1.6;">
-              Hi ${userName}, your testimonial on RentULO has been successfully deleted.
-            </p>
-
-            <p style="color: #4b5563; font-size: 14px; line-height: 1.6;">
-              If you change your mind, you can always submit a new testimonial from your dashboard anytime.
-            </p>
-
-            <p style="color: #4b5563; font-size: 14px;">
-              If you did not request this deletion, please contact our support team immediately.
-            </p>
-
-            <div style="text-align: center; margin: 30px 0;">
-              <a href="https://rentulo.com/dashboard" 
-                style="background-color: #111827; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 6px; font-size: 14px;">
-                Go to Dashboard
-              </a>
-            </div>
-
-            <hr style="margin: 30px 0; border: none; border-top: 1px solid #e5e7eb;" />
-
-            <p style="color: #9ca3af; font-size: 12px; text-align: center;">
-              © ${new Date().getFullYear()} RentULO. All rights reserved.
-            </p>
-
-          </div>
-        </div>
-      `;
+      const emailHtml = buildEmailShell({
+        eyebrow: 'Testimonial deleted',
+        heading: 'Your testimonial has been deleted',
+        bodyHtml: `
+          <p style="margin:0 0 12px;">Hi ${userName}, your testimonial on RentULO has been successfully deleted.</p>
+          <p style="margin:0 0 12px;">If you change your mind, you can always submit a new testimonial from your dashboard anytime.</p>
+          <p style="margin:0;">If you did not request this deletion, please contact our support team immediately.</p>
+          ${buildActionButton('Go to Dashboard', 'https://rentulo.com/dashboard')}
+        `,
+      });
 
       const emailText = `Hi ${userName},\n\nYour testimonial on RentULO has been successfully deleted.\n\nIf you did not request this, please contact support immediately.\n\nBest regards,\nThe RentULO Team`;
 
