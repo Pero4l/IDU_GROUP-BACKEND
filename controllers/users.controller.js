@@ -13,6 +13,7 @@ const { OAuth2Client } = require("google-auth-library");
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
 const { sendEmail } = require('../utils/mailer');
+const { buildEmailShell, buildCodeBadge, buildActionButton } = require('../utils/emailTemplates');
 const { withTransaction } = require('../utils/rollback');
 const { createWalletForUser } = require('../utils/wallet');
 const logger = require('../utils/logger');
@@ -79,31 +80,16 @@ async function register(req, res) {
     // Send OTP Verification Email
     let previewUrl = null;
     try {
-      const verifyRegisterHtml = `
-        <div style="font-family: Arial, sans-serif; background-color: #f9fafb; padding: 20px;">
-          <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; padding: 30px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
-            <h2 style="color: #111827;">Verify Your Email Address</h2>
-            <p style="color: #4b5563; font-size: 15px; line-height: 1.6;">
-              Thank you for starting your registration on RentULO. To complete your sign-up, please verify your email using the 6-digit OTP code below:
-            </p>
-            <div style="text-align: center; margin: 30px 0;">
-              <span style="font-size: 32px; font-weight: bold; letter-spacing: 5px; color: #111827; background-color: #f3f4f6; padding: 15px 30px; border-radius: 8px; display: inline-block;">
-                ${otpCode}
-              </span>
-            </div>
-            <p style="color: #ef4444; font-size: 14px; font-weight: 500;">
-              Note: This verification code is valid for exactly 15 minutes.
-            </p>
-            <p style="color: #6b7280; font-size: 13px;">
-              If you did not initiate this registration, please ignore this email.
-            </p>
-            <hr style="margin: 30px 0; border: none; border-top: 1px solid #e5e7eb;" />
-            <p style="color: #9ca3af; font-size: 12px; text-align: center;">
-              &copy; ${new Date().getFullYear()} RentULO. All rights reserved.
-            </p>
-          </div>
-        </div>
-      `;
+      const verifyRegisterHtml = buildEmailShell({
+        eyebrow: 'Account verification',
+        heading: 'Verify your email address',
+        bodyHtml: `
+          <p style="margin:0;">Thanks for starting your registration on RentULO. Enter the 6-digit code below to verify your email and complete your sign-up:</p>
+          ${buildCodeBadge(otpCode)}
+          <p style="margin:0 0 8px;color:#d93025;font-weight:500;">This code expires in 15 minutes.</p>
+          <p style="margin:0;color:#5f6368;">If you didn't request this, you can safely ignore this email.</p>
+        `,
+      });
 
       previewUrl = await sendEmail(
         email,
@@ -248,55 +234,37 @@ async function login(req, res) {
       const loginTime = new Date().toLocaleString('en-US', { timeZone: 'Africa/Lagos', hour12: true }) + ' (Lagos Time)';
       const location = req.data.state && req.data.country ? `${req.data.state}, ${req.data.country}` : 'Nigeria';
 
-      const loginHtml = `
-      <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f7f6; padding: 30px 15px;">
-        <div style="max-width: 550px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border-top: 4px solid #10b981;">
-          <div style="padding: 30px; text-align: center; background-color: #f0fdf4;">
-            <div style="background-color: #d1fae5; width: 60px; height: 60px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; margin-bottom: 15px; margin-left: auto; margin-right: auto;">
-              <span style="font-size: 28px;">&#128274;</span>
-            </div>
-            <h2 style="margin: 0; color: #064e3b; font-size: 22px; font-weight: 700;">New Login Detected</h2>
-            <p style="margin: 5px 0 0 0; color: #047857; font-size: 14px;">Security Alert</p>
-          </div>
-          
-          <div style="padding: 30px; color: #374151; font-size: 15px; line-height: 1.6;">
-            <p>Hello <strong>${req.data.full_name || 'User'}</strong>,</p>
-            <p>A successful login to your RentULO account was just detected. Please review the details below to verify it was you:</p>
-            
-            <div style="background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin: 20px 0;">
-              <table style="width: 100%; border-collapse: collapse;">
+      const loginHtml = buildEmailShell({
+        eyebrow: 'Security alert',
+        heading: 'New login detected',
+        bodyHtml: `
+          <p style="margin:0 0 16px;">Hello <strong>${req.data.full_name || 'User'}</strong>,</p>
+          <p style="margin:0;">A successful login to your RentULO account was just detected. Please review the details below to verify it was you:</p>
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e8eaed;border-radius:4px;margin:20px 0;">
+            <tr><td style="padding:14px 16px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:14px;">
                 <tr>
-                  <td style="padding: 6px 0; font-weight: 600; color: #4b5563; width: 100px;">Date & Time:</td>
-                  <td style="padding: 6px 0; color: #1f2937;">${loginTime}</td>
+                  <td style="padding:6px 0;font-weight:600;color:#5f6368;width:110px;">Date & time</td>
+                  <td style="padding:6px 0;color:#202124;">${loginTime}</td>
                 </tr>
                 <tr>
-                  <td style="padding: 6px 0; font-weight: 600; color: #4b5563;">IP Address:</td>
-                  <td style="padding: 6px 0; color: #1f2937; font-family: monospace;">${ip}</td>
+                  <td style="padding:6px 0;font-weight:600;color:#5f6368;">IP address</td>
+                  <td style="padding:6px 0;color:#202124;font-family:monospace;">${ip}</td>
                 </tr>
                 <tr>
-                  <td style="padding: 6px 0; font-weight: 600; color: #4b5563;">Device:</td>
-                  <td style="padding: 6px 0; color: #1f2937; font-size: 13px;">${userAgent}</td>
+                  <td style="padding:6px 0;font-weight:600;color:#5f6368;">Device</td>
+                  <td style="padding:6px 0;color:#202124;font-size:13px;">${userAgent}</td>
                 </tr>
                 <tr>
-                  <td style="padding: 6px 0; font-weight: 600; color: #4b5563;">Location:</td>
-                  <td style="padding: 6px 0; color: #1f2937;">${location}</td>
+                  <td style="padding:6px 0;font-weight:600;color:#5f6368;">Location</td>
+                  <td style="padding:6px 0;color:#202124;">${location}</td>
                 </tr>
               </table>
-            </div>
-            
-            <p style="font-size: 14px; color: #6b7280; margin-top: 25px;">
-              If this was you, no action is needed. If you do not recognize this login attempt, please reset your password immediately to secure your account.
-            </p>
-          </div>
-          
-          <div style="background-color: #f9fafb; padding: 20px 30px; text-align: center; border-top: 1px solid #e5e7eb;">
-            <p style="margin: 0; color: #9ca3af; font-size: 12px;">
-              &copy; ${new Date().getFullYear()} RentULO. All rights reserved.
-            </p>
-          </div>
-        </div>
-      </div>
-      `;
+            </td></tr>
+          </table>
+          <p style="margin:0;color:#5f6368;">If this was you, no action is needed. If you don't recognize this login, please reset your password immediately to secure your account.</p>
+        `,
+      });
 
       await logAndEmailUser(
         req.data.id,
@@ -397,11 +365,22 @@ async function forgotPassword(req, res) {
       // Setup mailer and send OTP
       let previewUrl = null;
       try {
+        const resetOtpHtml = buildEmailShell({
+          eyebrow: 'Password reset',
+          heading: 'Reset your password',
+          bodyHtml: `
+            <p style="margin:0;">We received a request to reset the password for your RentULO account. Enter the 6-digit code below to continue:</p>
+            ${buildCodeBadge(otpCode)}
+            <p style="margin:0 0 8px;color:#d93025;font-weight:500;">This code expires in 15 minutes.</p>
+            <p style="margin:0;color:#5f6368;">If you didn't request a password reset, you can safely ignore this email — your password won't be changed.</p>
+          `,
+        });
+
         previewUrl = await sendEmail(
           email,
           "Password Reset OTP",
           `Your password reset OTP is ${otpCode}. It expires in 15 minutes.`,
-          `<p>Your password reset OTP is <b>${otpCode}</b>. It expires in 15 minutes.</p>`,
+          resetOtpHtml,
         );
       } catch (mailError) {
         console.error("Forgot password email error:", mailError);
@@ -807,31 +786,16 @@ async function registerAdmin(req, res) {
     // SEND OTP EMAIL
     let previewUrl = null;
     try {
-      const adminOtpHtml = `
-        <div style="font-family: Arial, sans-serif; background-color: #f9fafb; padding: 20px;">
-          <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; padding: 30px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
-            <h2 style="color: #111827;">Verify Your Admin Account</h2>
-            <p style="color: #4b5563; font-size: 15px; line-height: 1.6;">
-              Thank you for registering as an Admin on RentULO. To complete your registration, please verify your email address using the 6-digit OTP code below:
-            </p>
-            <div style="text-align: center; margin: 30px 0;">
-              <span style="font-size: 32px; font-weight: bold; letter-spacing: 5px; color: #111827; background-color: #f3f4f6; padding: 15px 30px; border-radius: 8px; display: inline-block;">
-                ${otpCode}
-              </span>
-            </div>
-            <p style="color: #ef4444; font-size: 14px; font-weight: 500;">
-              Note: This verification code is valid for exactly 10 minutes.
-            </p>
-            <p style="color: #6b7280; font-size: 13px;">
-              If you did not initiate this registration, please ignore this email.
-            </p>
-            <hr style="margin: 30px 0; border: none; border-top: 1px solid #e5e7eb;" />
-            <p style="color: #9ca3af; font-size: 12px; text-align: center;">
-              &copy; ${new Date().getFullYear()} RentULO. All rights reserved.
-            </p>
-          </div>
-        </div>
-      `;
+      const adminOtpHtml = buildEmailShell({
+        eyebrow: 'Account verification',
+        heading: 'Verify your admin account',
+        bodyHtml: `
+          <p style="margin:0;">Thanks for registering as an Admin on RentULO. Enter the 6-digit code below to verify your email and complete registration:</p>
+          ${buildCodeBadge(otpCode)}
+          <p style="margin:0 0 8px;color:#d93025;font-weight:500;">This code expires in 10 minutes.</p>
+          <p style="margin:0;color:#5f6368;">If you didn't request this, you can safely ignore this email.</p>
+        `,
+      });
 
       previewUrl = await sendEmail(
         email,
@@ -940,42 +904,17 @@ async function verifyAdmin(req, res) {
 
     // SEND WELCOME EMAIL
     try {
-      const adminWelcomeHtml = `
-      <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f7f6; padding: 30px 15px;">
-        <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border-top: 4px solid #10b981;">
-          <div style="padding: 30px; text-align: center; background-color: #f0fdf4;">
-            <div style="background-color: #d1fae5; width: 60px; height: 60px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; margin-bottom: 15px; margin-left: auto; margin-right: auto;">
-              <span style="font-size: 28px;">&#128081;</span>
-            </div>
-            <h2 style="margin: 0; color: #064e3b; font-size: 24px; font-weight: 700;">Welcome to RentULO Admin Panel</h2>
-            <p style="margin: 5px 0 0 0; color: #047857; font-size: 15px;">Your admin account has been verified</p>
-          </div>
-
-          <div style="padding: 35px 30px; color: #374151; font-size: 16px; line-height: 1.7;">
-            <p>Hello <strong>${user.full_name}</strong>,</p>
-            <p>Your Admin account has been successfully verified. Welcome to our administration team!</p>
-            <p>You can now access the admin panel, manage listings, user profiles, reports, and oversee platform activity.</p>
-            
-            <div style="text-align: center; margin: 35px 0;">
-              <a href="https://rentulo.ng/admin/dashboard" 
-                 style="background-color: #10b981; color: #ffffff; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-size: 15px; font-weight: 600; display: inline-block; box-shadow: 0 4px 6px rgba(16, 185, 129, 0.2);">
-                Go to Admin Dashboard
-              </a>
-            </div>
-            
-            <p style="font-size: 14px; color: #6b7280;">
-              If you have any questions, feel free to contact the super admin or our internal support team.
-            </p>
-          </div>
-
-          <div style="background-color: #f9fafb; padding: 25px 30px; text-align: center; border-top: 1px solid #e5e7eb;">
-            <p style="margin: 0; color: #9ca3af; font-size: 12px;">
-              &copy; ${new Date().getFullYear()} RentULO. All rights reserved.
-            </p>
-          </div>
-        </div>
-      </div>
-      `;
+      const adminWelcomeHtml = buildEmailShell({
+        eyebrow: 'Account verified',
+        heading: 'Welcome to the RentULO Admin Panel',
+        bodyHtml: `
+          <p style="margin:0 0 16px;">Hello <strong>${user.full_name}</strong>,</p>
+          <p style="margin:0 0 12px;">Your Admin account has been successfully verified. Welcome to our administration team!</p>
+          <p style="margin:0;">You can now access the admin panel, manage listings, user profiles, reports, and oversee platform activity.</p>
+          ${buildActionButton('Go to Admin Dashboard', 'https://rentulo.ng/admin/dashboard')}
+          <p style="margin:0;color:#5f6368;">If you have any questions, feel free to contact the super admin or our internal support team.</p>
+        `,
+      });
 
       await sendEmail(
         email,
