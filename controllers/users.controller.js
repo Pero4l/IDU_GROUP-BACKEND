@@ -380,38 +380,40 @@ async function forgotPassword(req, res) {
     const user = await Users.findOne({ where: { email } });
     if (!user) {
       // Return success even if user not found to prevent email enumeration
-      return res
-        .status(200)
-        .json({ success: true, message: "If an account exists with this email, an OTP has been sent." });
+      return res.status(404).json({
+        success: true, 
+        message: "No account exist with this email." 
+      })
+    } else {
+      // Generate a 6-digit OTP using cryptographically secure random
+      const otpCode = crypto.randomInt(100000, 999999);
+      // Set expiration to 15 minutes from now
+      const otpExpiresAt = new Date(Date.now() + 15 * 60 * 1000);
+
+      user.otpCode = otpCode;
+      user.otpExpiresAt = otpExpiresAt;
+      await user.save();
+
+      // Setup mailer and send OTP
+      let previewUrl = null;
+      try {
+        previewUrl = await sendEmail(
+          email,
+          "Password Reset OTP",
+          `Your password reset OTP is ${otpCode}. It expires in 15 minutes.`,
+          `<p>Your password reset OTP is <b>${otpCode}</b>. It expires in 15 minutes.</p>`,
+        );
+      } catch (mailError) {
+        console.error("Forgot password email error:", mailError);
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: "OTP sent to email successfully",
+        ...(process.env.NODE_ENV !== "production" && previewUrl ? { testMailUrl: previewUrl } : {}),
+      });
     }
 
-    // Generate a 6-digit OTP using cryptographically secure random
-    const otpCode = crypto.randomInt(100000, 999999);
-    // Set expiration to 15 minutes from now
-    const otpExpiresAt = new Date(Date.now() + 15 * 60 * 1000);
-
-    user.otpCode = otpCode;
-    user.otpExpiresAt = otpExpiresAt;
-    await user.save();
-
-    // Setup mailer and send OTP
-    let previewUrl = null;
-    try {
-      previewUrl = await sendEmail(
-        email,
-        "Password Reset OTP",
-        `Your password reset OTP is ${otpCode}. It expires in 15 minutes.`,
-        `<p>Your password reset OTP is <b>${otpCode}</b>. It expires in 15 minutes.</p>`,
-      );
-    } catch (mailError) {
-      console.error("Forgot password email error:", mailError);
-    }
-
-    return res.status(200).json({
-      success: true,
-      message: "OTP sent to email successfully",
-      ...(process.env.NODE_ENV !== "production" && previewUrl ? { testMailUrl: previewUrl } : {}),
-    });
   } catch (error) {
     console.error("Forgot password error:", error);
     return res.status(500).json({ success: false, message: "Server error" });
