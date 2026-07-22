@@ -40,8 +40,8 @@ async function register(req, res) {
       return res.status(400).json({ message: "All fields are required" });
     }
 
-    if (password.length < 8) {
-      return res.status(400).json({ message: "Password must be at least 8 characters" });
+    if (password.length < 6) {
+      return res.status(400).json({ message: "Password must be at least 6 characters" });
     } else if (!/[A-Z]/.test(password) || !/[a-z]/.test(password)) {
       return res.status(400).json({ message: "Password must contain both uppercase and lowercase letters" });
     } else if (!/[0-9]/.test(password)) {
