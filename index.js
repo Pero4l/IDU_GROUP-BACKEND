@@ -138,6 +138,7 @@ app.use("/inspection", inspectionRoute);
 app.use("/subscriptions", subscriptionRoute);
 app.use("/api/testimonials", testimonialRoutes);
 app.use("/ai-support", aiSupportRoute);
+app.use("/wallet", walletRoute);
 
 // 404 handler
 app.use((req, res) => {
@@ -146,7 +147,7 @@ app.use((req, res) => {
     message: "Route not found",
   });
 });
-app.use("/wallet", walletRoute);
+
 
 // Global error handler — never leak raw error details to the client
 app.use((err, req, res, next) => {
