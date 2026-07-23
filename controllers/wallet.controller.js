@@ -1,5 +1,6 @@
 const crypto = require('crypto');
-const { Wallet, WalletTransactions, Profile } = require('../models');
+const { Wallet, WalletTransactions, Profile, Users } = require('../models');
+const { notifySuperAdmins } = require('./notification.controller');
 const { withTransaction } = require('../utils/rollback');
 const logger = require('../utils/logger');
 const {
@@ -168,7 +169,9 @@ async function creditTopUpIfVerified(tx, flwTransactionId) {
     data.currency === 'NGN' &&
     Number(data.amount) >= Number(tx.amount);
 
-  return withTransaction(async (t) => {
+  let didTransition = false;
+
+  const result = await withTransaction(async (t) => {
     const freshTx = await WalletTransactions.findOne({ where: { id: tx.id }, transaction: t, lock: t.LOCK.UPDATE });
     if (!freshTx || freshTx.status !== 'pending') {
       return freshTx; // already processed — idempotent no-op
@@ -193,8 +196,34 @@ async function creditTopUpIfVerified(tx, flwTransactionId) {
     freshTx.from_account_name = data.customer?.name || freshTx.from_account_name;
     await freshTx.save({ transaction: t });
 
+    didTransition = true;
     return freshTx;
   }, { context: 'creditTopUp', tx_ref: tx.tx_ref });
+
+  if (didTransition && result && result.status === 'success') {
+    try {
+      const user = await Users.findByPk(result.user_id);
+      const amountFormatted = Number(result.amount).toLocaleString();
+      const message = `A wallet top-up payment of ₦${amountFormatted} was successfully made by ${user ? user.full_name : 'Unknown User'}.`;
+      await notifySuperAdmins(
+        message,
+        'system',
+        {
+          heading: 'Wallet Top-up Payment Successful',
+          tenant: user || undefined,
+          transaction: {
+            amount: result.amount,
+            reference: result.tx_ref,
+            payment_type: 'topup',
+          },
+        }
+      );
+    } catch (err) {
+      logger.error('Error sending top-up notification to admin', { error: err.message });
+    }
+  }
+
+  return result;
 }
 
 // ─────────────────────────────────────────────────────────────

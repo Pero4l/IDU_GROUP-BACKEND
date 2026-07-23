@@ -18,6 +18,7 @@ const PAYMENT_TYPE_LABELS = {
   lock_fee: 'Lock Fee',
   rent_payment: 'Rent Payment',
   inspection_fee: 'Inspection Fee',
+  topup: 'Wallet Top-up',
 };
 
 /**
