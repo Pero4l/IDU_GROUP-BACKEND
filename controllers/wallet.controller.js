@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const { Wallet, WalletTransactions, Profile, Users } = require('../models');
-const { notifySuperAdmins } = require('./notification.controller');
+const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
+const { buildPropertyEmailHtml } = require('../utils/emailTemplates');
 const { withTransaction } = require('../utils/rollback');
 const logger = require('../utils/logger');
 const {
@@ -169,7 +170,8 @@ async function creditTopUpIfVerified(tx, flwTransactionId) {
     data.currency === 'NGN' &&
     Number(data.amount) >= Number(tx.amount);
 
-  let didTransition = false;
+  let didTransitionSuccess = false;
+  let didTransitionFailed = false;
 
   const result = await withTransaction(async (t) => {
     const freshTx = await WalletTransactions.findOne({ where: { id: tx.id }, transaction: t, lock: t.LOCK.UPDATE });
@@ -182,6 +184,7 @@ async function creditTopUpIfVerified(tx, flwTransactionId) {
       freshTx.flw_ref = data ? String(data.id) : freshTx.flw_ref;
       freshTx.meta = data || null;
       await freshTx.save({ transaction: t });
+      didTransitionFailed = true;
       return freshTx;
     }
 
@@ -196,30 +199,89 @@ async function creditTopUpIfVerified(tx, flwTransactionId) {
     freshTx.from_account_name = data.customer?.name || freshTx.from_account_name;
     await freshTx.save({ transaction: t });
 
-    didTransition = true;
+    didTransitionSuccess = true;
     return freshTx;
   }, { context: 'creditTopUp', tx_ref: tx.tx_ref });
 
-  if (didTransition && result && result.status === 'success') {
-    try {
-      const user = await Users.findByPk(result.user_id);
-      const amountFormatted = Number(result.amount).toLocaleString();
-      const message = `A wallet top-up payment of ₦${amountFormatted} was successfully made by ${user ? user.full_name : 'Unknown User'}.`;
-      await notifySuperAdmins(
-        message,
-        'system',
-        {
-          heading: 'Wallet Top-up Payment Successful',
-          tenant: user || undefined,
+  if (result) {
+    if (didTransitionSuccess && result.status === 'success') {
+      try {
+        const user = await Users.findByPk(result.user_id);
+        const amountFormatted = Number(result.amount).toLocaleString();
+
+        // 1. Send receipt/notification to the user
+        const tenantHtml = buildPropertyEmailHtml({
+          heading: 'Wallet Top-up Successful',
+          subheading: 'Payment Receipt Confirmation',
+          bodyText: `You have successfully topped up your wallet with <strong>₦${amountFormatted}</strong>.`,
+          recipientName: user?.full_name,
           transaction: {
             amount: result.amount,
             reference: result.tx_ref,
             payment_type: 'topup',
+            status: 'Success',
           },
-        }
-      );
-    } catch (err) {
-      logger.error('Error sending top-up notification to admin', { error: err.message });
+        });
+        await logAndEmailUser(result.user_id, user?.email, 'Wallet Top-up Successful', tenantHtml);
+
+        // 2. Send receipt/notification to the admin
+        const message = `A wallet top-up payment of ₦${amountFormatted} was successfully made by ${user ? user.full_name : 'Unknown User'}.`;
+        await notifySuperAdmins(
+          message,
+          'system',
+          {
+            heading: 'Wallet Top-up Payment Successful',
+            tenant: user || undefined,
+            transaction: {
+              amount: result.amount,
+              reference: result.tx_ref,
+              payment_type: 'topup',
+              status: 'Success',
+            },
+          }
+        );
+      } catch (err) {
+        logger.error('Error sending top-up success notifications', { error: err.message });
+      }
+    } else if (didTransitionFailed && result.status === 'failed') {
+      try {
+        const user = await Users.findByPk(result.user_id);
+        const amountFormatted = Number(result.amount).toLocaleString();
+
+        // 1. Send failure notification/email to the user
+        const tenantHtml = buildPropertyEmailHtml({
+          heading: 'Wallet Top-up Failed',
+          subheading: 'Payment Failed Notification',
+          bodyText: `Your attempt to top up your wallet with <strong>₦${amountFormatted}</strong> failed or was rejected. If you were debited, please contact support.`,
+          recipientName: user?.full_name,
+          transaction: {
+            amount: result.amount,
+            reference: result.tx_ref,
+            payment_type: 'topup',
+            status: 'Failed',
+          },
+        });
+        await logAndEmailUser(result.user_id, user?.email, 'Wallet Top-up Failed', tenantHtml);
+
+        // 2. Send failure notification/email to the admin
+        const message = `A wallet top-up payment of ₦${amountFormatted} failed for ${user ? user.full_name : 'Unknown User'}.`;
+        await notifySuperAdmins(
+          message,
+          'system',
+          {
+            heading: 'Wallet Top-up Payment Failed',
+            tenant: user || undefined,
+            transaction: {
+              amount: result.amount,
+              reference: result.tx_ref,
+              payment_type: 'topup',
+              status: 'Failed',
+            },
+          }
+        );
+      } catch (err) {
+        logger.error('Error sending top-up failure notifications', { error: err.message });
+      }
     }
   }
 

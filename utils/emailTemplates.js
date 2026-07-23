@@ -128,6 +128,8 @@ function buildPropertyCardHtml(rental) {
 function buildReceiptHtml(transaction) {
   if (!transaction) return '';
   const label = PAYMENT_TYPE_LABELS[transaction.payment_type] || 'Payment';
+  const status = transaction.status || 'Success';
+  const statusColor = status.toLowerCase() === 'failed' ? '#dc2626' : BRAND_COLOR;
   return `
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid ${BORDER_COLOR};border-radius:4px;margin:20px 0;">
       <tr>
@@ -152,7 +154,7 @@ function buildReceiptHtml(transaction) {
             </tr>
             <tr>
               <td style="padding:5px 0;color:${TEXT_MUTED};">Status</td>
-              <td style="padding:5px 0;text-align:right;color:${BRAND_COLOR};font-weight:600;">Success</td>
+              <td style="padding:5px 0;text-align:right;color:${statusColor};font-weight:600;">${status}</td>
             </tr>
           </table>
         </td>
