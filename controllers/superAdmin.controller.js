@@ -1,6 +1,20 @@
+const axios = require('axios');
 const { Users, Rentals, Reports, Progress, Conversations, Messages, WalletTransactions, Waitlist } = require('../models');
 
 const MARKETPLACE_PAYMENT_TYPES = ['lock house', 'house rent', 'inspection fee'];
+
+// Flutterwave's Transfers API rejects calls from IPs not on its whitelist.
+// This surfaces the exact outbound IP this server is calling out with, so
+// it can be pasted into the Flutterwave dashboard's IP whitelist setting.
+async function getOutboundIp(req, res) {
+  try {
+    const response = await axios.get('https://api.ipify.org?format=json', { timeout: 5000 });
+    return res.status(200).json({ success: true, ip: response.data.ip });
+  } catch (error) {
+    console.error("Super Admin - getOutboundIp error:", error);
+    return res.status(500).json({ success: false, message: "Could not determine outbound IP" });
+  }
+}
 
 async function getAllUsers(req, res) {
   try {
@@ -358,5 +372,6 @@ module.exports = {
   getAnalytics,
   suspendUser,
   unsuspendUser,
-  getWaitlist
+  getWaitlist,
+  getOutboundIp
 };
