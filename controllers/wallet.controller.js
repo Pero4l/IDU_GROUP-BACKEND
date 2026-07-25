@@ -9,6 +9,8 @@ const {
   verifyTransactionById,
   initiateTransfer,
   resolveBankCode,
+  extractFlutterwaveError,
+  shouldSimulateTransfer,
 } = require('../utils/flutterwave');
 
 function generateTxRef(prefix) {
@@ -401,6 +403,26 @@ async function withdraw(req, res) {
 
     // Attempt the actual payout. Any failure here must refund the hold we just placed.
     try {
+      if (shouldSimulateTransfer()) {
+        await WalletTransactions.update(
+          {
+            status: 'success',
+            flw_ref: 'simulated',
+            meta: { simulated: true, provider: 'flutterwave-simulated' },
+          },
+          { where: { tx_ref } }
+        );
+
+        logger.info('Withdrawal transfer simulated successfully', { user_id, tx_ref, amount });
+
+        return res.status(200).json({
+          success: true,
+          message: "Withdrawal completed successfully",
+          tx_ref,
+          balance: wallet.balance,
+        });
+      }
+
       const transfer = await initiateTransfer({
         account_bank: bankCode,
         account_number: profile.withdrawalAccountNumber,
@@ -436,6 +458,7 @@ async function withdraw(req, res) {
       // let the transfer.completed webhook — or manual reconciliation —
       // resolve it once we actually know the outcome.
       const isDefiniteRejection = !!error.response;
+      const flwError = extractFlutterwaveError(error);
 
       if (isDefiniteRejection) {
         await withTransaction(async (t) => {
@@ -447,24 +470,29 @@ async function withdraw(req, res) {
           await w.save({ transaction: t });
 
           freshTx.status = 'failed';
-          freshTx.meta = { error: error.response.data };
+          freshTx.meta = { error: flwError.raw || flwError.message };
           await freshTx.save({ transaction: t });
         }, { context: 'withdrawRefund', user_id, tx_ref });
 
         logger.error('Withdrawal transfer rejected by Flutterwave, refunded wallet', {
-          error: JSON.stringify(error.response.data),
+          error: flwError.message,
+          raw: flwError.raw,
           user_id,
           tx_ref,
         });
 
+        const userMessage = flwError.isIpWhitelistError
+          ? "Withdrawal could not be processed because your Flutterwave account is not configured to allow transfers from this server IP. Please enable IP whitelisting in the Flutterwave dashboard or contact support."
+          : "Withdrawal could not be processed. Your wallet balance has been restored.";
+
         return res.status(502).json({
           success: false,
-          message: "Withdrawal could not be processed. Your wallet balance has been restored.",
+          message: userMessage,
         });
       }
 
       logger.error('Withdrawal transfer response unknown (network error) — left pending for reconciliation, NOT refunded', {
-        error: error.message,
+        error: flwError.message,
         user_id,
         tx_ref,
       });

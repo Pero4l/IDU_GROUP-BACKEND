@@ -8,7 +8,7 @@ const {
   getAllReports, updateReportStatus,
   getAllConversations, getConversationMessages,
   getAnalytics, suspendUser, unsuspendUser,
-  getWaitlist
+  getWaitlist, getOutboundIp
 } = require('../controllers/superAdmin.controller');
 
 
@@ -37,5 +37,8 @@ router.get('/chats/:id/messages', authMiddleware, requireSuperAdmin, getConversa
 
 // Waitlist oversight
 router.get('/waitlist', authMiddleware, requireSuperAdmin, getWaitlist);
+
+// Diagnostics — outbound IP for whitelisting with payment providers (e.g. Flutterwave transfers)
+router.get('/outbound-ip', authMiddleware, requireSuperAdmin, getOutboundIp);
 
 module.exports = router;
