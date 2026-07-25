@@ -61,6 +61,25 @@ async function getTransferStatus(transferId) {
   return response.data;
 }
 
+function extractFlutterwaveError(error) {
+  const responseData = error?.response?.data;
+  const message = responseData?.message || responseData?.errors?.message || error?.message || 'Flutterwave request failed';
+  const status = responseData?.status || error?.response?.status || 'error';
+  const isIpWhitelistError = /ip whitelisting|whitelist/i.test(message);
+
+  return {
+    message,
+    status,
+    isIpWhitelistError,
+    raw: responseData || null,
+  };
+}
+
+function shouldSimulateTransfer() {
+  const value = String(process.env.FLW_SIMULATE_TRANSFERS || '').trim().toLowerCase();
+  return ['1', 'true', 'yes', 'on'].includes(value);
+}
+
 let bankListCache = { country: null, fetchedAt: 0, banks: [] };
 const BANK_LIST_TTL_MS = 60 * 60 * 1000; // 1 hour — bank lists rarely change
 
@@ -95,6 +114,8 @@ module.exports = {
   verifyTransactionByRef,
   initiateTransfer,
   getTransferStatus,
+  extractFlutterwaveError,
+  shouldSimulateTransfer,
   getBanks,
   resolveBankCode,
 };

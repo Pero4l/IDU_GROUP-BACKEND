@@ -17,6 +17,10 @@ const app = express();
 const server = http.createServer(app);
 socketConfig.init(server);
 
+// Render/Heroku sit behind a reverse proxy — trust the first hop so
+// express-rate-limit and req.ip see the real client IP from X-Forwarded-For
+app.set("trust proxy", 1);
+
 // HTTPS enforcement (for platforms like Render/Heroku behind a proxy)
 app.use((req, res, next) => {
   if (req.header("x-forwarded-proto") !== "https" && process.env.NODE_ENV === "production") {
@@ -52,7 +56,7 @@ const globalLimiter = rateLimit({
 app.use(globalLimiter);
 
 // CORS — use ONLY the env-driven allowlist (the duplicate hardcoded origin block was overriding it)
-const allowedOrigins = (process.env.ALLOWED_ORIGINS || "https://rentulo.ng,http://localhost:3000")
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || "https://rentulo.ng,https://www.rentulo.ng,http://localhost:3000,https://idu-group-backend.onrender.com")
   .split(",")
   .map((o) => o.trim());
 
@@ -62,7 +66,7 @@ app.use(
       if (!origin || allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
-        callback(new Error("Not allowed by CORS"));
+        callback(new Error(`Not allowed by CORS: ${origin}`));
       }
     },
     credentials: true,
@@ -134,6 +138,7 @@ app.use("/inspection", inspectionRoute);
 app.use("/subscriptions", subscriptionRoute);
 app.use("/api/testimonials", testimonialRoutes);
 app.use("/ai-support", aiSupportRoute);
+app.use("/wallet", walletRoute);
 
 // 404 handler
 app.use((req, res) => {
@@ -142,7 +147,7 @@ app.use((req, res) => {
     message: "Route not found",
   });
 });
-app.use("/wallet", walletRoute);
+
 
 // Global error handler — never leak raw error details to the client
 app.use((err, req, res, next) => {
