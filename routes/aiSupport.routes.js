@@ -1,13 +1,13 @@
 const express = require('express');
 const router = express.Router();
 const rateLimit = require('express-rate-limit');
-const { authMiddleware } = require('../middleware/authUserMiddleware');
+const { authMiddleware, optionalAuth } = require('../middleware/authUserMiddleware');
 const { chat, getHistory, deleteSession, getSessions } = require('../controllers/aiSupport.controller');
 
 const aiChatLimiter = rateLimit({
   windowMs: 1 * 60 * 1000,
   max: 30,
-  keyGenerator: (req) => req.user.userId,
+  keyGenerator: (req) => req.user?.userId || req.ip,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
@@ -16,8 +16,8 @@ const aiChatLimiter = rateLimit({
   },
 });
 
-// Chat with AI — send message and get response
-router.post('/chat', authMiddleware, aiChatLimiter, chat);
+// Chat with AI — auth optional (works for guests and logged-in users)
+router.post('/chat', optionalAuth, aiChatLimiter, chat);
 
 // Get all sessions for the current user
 router.get('/sessions', authMiddleware, getSessions);
