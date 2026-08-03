@@ -54,4 +54,28 @@ function authMiddleware(req, res, next) {
     }
 }
 
-module.exports = { authMiddleware };
+function optionalAuth(req, res, next) {
+    const authHeader = req.headers["authorization"];
+
+    if (!authHeader) {
+        req.user = null;
+        return next();
+    }
+
+    const parts = authHeader.split(" ");
+    if (parts.length !== 2 || parts[0] !== "Bearer") {
+        req.user = null;
+        return next();
+    }
+
+    const token = parts[1];
+    try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        req.user = decoded;
+    } catch (err) {
+        req.user = null;
+    }
+    next();
+}
+
+module.exports = { authMiddleware, optionalAuth };

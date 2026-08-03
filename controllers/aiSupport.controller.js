@@ -114,8 +114,8 @@ For complex issues beyond your knowledge, direct users to:
 // Send a message and get an AI response. Creates a new session if session_id is not provided.
 async function chat(req, res) {
   try {
-    const { message, session_id } = req.body;
-    const user_id = req.user.userId;
+    const { message, session_id, history: clientHistory } = req.body;
+    const user_id = req.user?.userId || null;
 
     if (!message || !message.trim()) {
       return res.status(400).json({
@@ -124,7 +124,6 @@ async function chat(req, res) {
       });
     }
 
-    // Limit message length
     if (message.length > 2000) {
       return res.status(400).json({
         success: false,
@@ -133,65 +132,88 @@ async function chat(req, res) {
     }
 
     const sessionId = session_id || uuidv4();
+    const isLoggedIn = !!user_id;
 
-    // Save user message
-    await AiSupport.create({
-      user_id,
-      session_id: sessionId,
-      role: 'user',
-      content: message.trim(),
-    });
+    // Logged-in users: persist to DB
+    let dbHistory = [];
+    if (isLoggedIn) {
+      await AiSupport.create({
+        user_id,
+        session_id: sessionId,
+        role: 'user',
+        content: message.trim(),
+      });
 
-    // Fetch recent conversation history for context (last 20 messages)
-    const history = await AiSupport.findAll({
-      where: { user_id, session_id: sessionId },
-      order: [['createdAt', 'ASC']],
-      limit: 20,
-      attributes: ['role', 'content'],
-    });
+      dbHistory = await AiSupport.findAll({
+        where: { user_id, session_id: sessionId },
+        order: [['createdAt', 'ASC']],
+        limit: 20,
+        attributes: ['role', 'content'],
+      });
+    }
 
-    // Build OpenAI messages array
+    // Use DB history for logged-in users, or client-provided history for guests
+    const conversationHistory = isLoggedIn
+      ? dbHistory.map((msg) => ({ role: msg.role, content: msg.content }))
+      : Array.isArray(clientHistory)
+        ? clientHistory.slice(-20)
+        : [];
+
     const messages = [
       { role: 'system', content: SYSTEM_PROMPT },
-      ...history.map((msg) => ({
-        role: msg.role,
-        content: msg.content,
-      })),
+      ...conversationHistory,
+      { role: 'user', content: message.trim() },
     ];
 
-    // Call OpenAI API
     const axios = require('axios');
-    const openaiResponse = await axios.post(
-      'https://api.openai.com/v1/chat/completions',
-      {
-        model: 'gpt-4o-mini',
-        messages,
-        max_tokens: 800,
-        temperature: 0.7,
-        top_p: 0.9,
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        timeout: 30000,
+    let openaiResponse;
+    const MAX_RETRIES = 3;
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        openaiResponse = await axios.post(
+          'https://api.openai.com/v1/chat/completions',
+          {
+            model: 'gpt-4o-mini',
+            messages,
+            max_tokens: 800,
+            temperature: 0.7,
+            top_p: 0.9,
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+              'Content-Type': 'application/json',
+            },
+            timeout: 30000,
+          }
+        );
+        break;
+      } catch (err) {
+        if (err.response?.status === 429 && attempt < MAX_RETRIES) {
+          const delay = Math.pow(2, attempt) * 1000;
+          logger.warn(`OpenAI rate limited, retrying in ${delay}ms (attempt ${attempt}/${MAX_RETRIES})`);
+          await new Promise((r) => setTimeout(r, delay));
+          continue;
+        }
+        throw err;
       }
-    );
+    }
 
     const aiReply =
       openaiResponse.data.choices?.[0]?.message?.content ||
       "I'm sorry, I couldn't generate a response. Please try again.";
 
-    // Save AI response
-    await AiSupport.create({
-      user_id,
-      session_id: sessionId,
-      role: 'assistant',
-      content: aiReply,
-    });
+    // Save AI response only for logged-in users
+    if (isLoggedIn) {
+      await AiSupport.create({
+        user_id,
+        session_id: sessionId,
+        role: 'assistant',
+        content: aiReply,
+      });
+    }
 
-    logger.info('AI Support chat', { user_id, session_id: sessionId });
+    logger.info('AI Support chat', { user_id, session_id: sessionId, guest: !isLoggedIn });
 
     return res.status(200).json({
       success: true,
@@ -201,11 +223,10 @@ async function chat(req, res) {
       },
     });
   } catch (error) {
-    // Handle OpenAI-specific errors gracefully
     if (error.response?.status === 429) {
       return res.status(429).json({
         success: false,
-        message: 'AI service is busy. Please try again in a moment.',
+        message: 'Too many people are using the AI right now. Please try again in a few seconds.',
       });
     }
 
