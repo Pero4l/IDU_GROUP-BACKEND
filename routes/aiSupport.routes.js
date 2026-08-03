@@ -1,10 +1,23 @@
 const express = require('express');
 const router = express.Router();
+const rateLimit = require('express-rate-limit');
 const { authMiddleware } = require('../middleware/authUserMiddleware');
 const { chat, getHistory, deleteSession, getSessions } = require('../controllers/aiSupport.controller');
 
+const aiChatLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 30,
+  keyGenerator: (req) => req.user.userId,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: 'You are sending messages too quickly. Please wait a moment.',
+  },
+});
+
 // Chat with AI — send message and get response
-router.post('/chat', authMiddleware, chat);
+router.post('/chat', authMiddleware, aiChatLimiter, chat);
 
 // Get all sessions for the current user
 router.get('/sessions', authMiddleware, getSessions);
