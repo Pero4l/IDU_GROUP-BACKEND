@@ -10,6 +10,7 @@ const compression = require("compression");
 const cookieParser = require("cookie-parser");
 const xss = require("xss");
 const rateLimit = require("express-rate-limit");
+const jwt = require("jsonwebtoken");
 const socketConfig = require("./config/socket");
 const { securityMiddleware } = require("./middleware/securityMiddleware");
 
@@ -42,12 +43,27 @@ app.use(cookieParser());
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: false, limit: "1mb" }));
 
-// Global rate limiter — protects all routes from DDoS / abuse
+// Global rate limiter — protects all routes from DDoS / abuse.
+// Keyed by user id when a valid JWT is present so that users behind a
+// shared IP (mobile carrier NAT, office Wi-Fi) don't exhaust each other's
+// budget. Guests fall back to their IP.
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 200,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: (req) => {
+    const authHeader = req.headers.authorization || "";
+    if (authHeader.startsWith("Bearer ")) {
+      try {
+        const decoded = jwt.verify(authHeader.slice(7), process.env.JWT_SECRET);
+        if (decoded.userId) return `user:${decoded.userId}`;
+      } catch (err) {
+        // invalid/expired token — fall through to IP; auth middleware handles it
+      }
+    }
+    return req.ip;
+  },
   message: {
     success: false,
     message: "Too many requests from this IP, please try again later.",

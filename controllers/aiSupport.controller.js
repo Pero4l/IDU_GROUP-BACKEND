@@ -2,6 +2,33 @@ const { AiSupport, Users } = require('../models');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
 
+// ─── OpenAI concurrency limiter ──────────────────────────────────────────────
+// A burst of chat messages from many users at once exhausts the account's
+// tokens-per-minute quota (OpenAI returns 429). Serialize calls so the
+// shared API key never spikes past its limit.
+const MAX_CONCURRENT_OPENAI = 2;
+let activeOpenAiRequests = 0;
+const openAiWaitQueue = [];
+
+function acquireOpenAiSlot() {
+  if (activeOpenAiRequests < MAX_CONCURRENT_OPENAI) {
+    activeOpenAiRequests++;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    openAiWaitQueue.push(resolve);
+  });
+}
+
+function releaseOpenAiSlot() {
+  activeOpenAiRequests--;
+  const next = openAiWaitQueue.shift();
+  if (next) {
+    activeOpenAiRequests++;
+    next();
+  }
+}
+
 // ─── RentULO Housing Expert System Prompt ───────────────────────────────────
 const SYSTEM_PROMPT = `You are RentULO AI Support — Nigeria's most knowledgeable housing and rental expert assistant for the RentULO platform. You are a specialist in real estate, property rental, tenancy law, and the Nigerian housing market.
 
@@ -167,36 +194,41 @@ async function chat(req, res) {
 
     const axios = require('axios');
     let openaiResponse;
-    const MAX_RETRIES = 3;
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        openaiResponse = await axios.post(
-          'https://api.openai.com/v1/chat/completions',
-          {
-            model: 'gpt-4o-mini',
-            messages,
-            max_tokens: 800,
-            temperature: 0.7,
-            top_p: 0.9,
-          },
-          {
-            headers: {
-              Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-              'Content-Type': 'application/json',
+    const MAX_RETRIES = 4;
+    await acquireOpenAiSlot();
+    try {
+      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          openaiResponse = await axios.post(
+            'https://api.openai.com/v1/chat/completions',
+            {
+              model: 'gpt-4o-mini',
+              messages,
+              max_tokens: 800,
+              temperature: 0.7,
+              top_p: 0.9,
             },
-            timeout: 30000,
+            {
+              headers: {
+                Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+                'Content-Type': 'application/json',
+              },
+              timeout: 30000,
+            }
+          );
+          break;
+        } catch (err) {
+          if (err.response?.status === 429 && attempt < MAX_RETRIES) {
+            const delay = Math.min(20000, Math.pow(2, attempt) * 2000) + Math.random() * 1000;
+            logger.warn(`OpenAI rate limited, retrying in ${Math.round(delay)}ms (attempt ${attempt}/${MAX_RETRIES})`);
+            await new Promise((r) => setTimeout(r, delay));
+            continue;
           }
-        );
-        break;
-      } catch (err) {
-        if (err.response?.status === 429 && attempt < MAX_RETRIES) {
-          const delay = Math.pow(2, attempt) * 1000;
-          logger.warn(`OpenAI rate limited, retrying in ${delay}ms (attempt ${attempt}/${MAX_RETRIES})`);
-          await new Promise((r) => setTimeout(r, delay));
-          continue;
+          throw err;
         }
-        throw err;
       }
+    } finally {
+      releaseOpenAiSlot();
     }
 
     const aiReply =
