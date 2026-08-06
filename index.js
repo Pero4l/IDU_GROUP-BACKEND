@@ -48,6 +48,10 @@ const globalLimiter = rateLimit({
   max: 200,
   standardHeaders: true,
   legacyHeaders: false,
+  // The wallet webhook gets its own dedicated limiter (see wallet.routes.js)
+  // with a much higher ceiling, so legitimate Flutterwave delivery is never
+  // throttled into being dropped.
+  skip: (req) => req.path === "/wallet/webhook",
   message: {
     success: false,
     message: "Too many requests from this IP, please try again later.",
