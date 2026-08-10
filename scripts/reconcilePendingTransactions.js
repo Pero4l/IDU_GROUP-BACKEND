@@ -172,9 +172,16 @@ async function main() {
   console.log('\nReconciliation complete.');
 }
 
-main()
-  .then(() => process.exit(0))
-  .catch((error) => {
-    console.error('Reconciliation crashed:', error);
-    process.exit(1);
-  });
+// Run directly only when invoked as a script (`npm run reconcile`). When this
+// file is required by the server (for the scheduled cron), `main` is exported
+// and driven externally so the process stays alive.
+if (require.main === module) {
+  main()
+    .then(() => process.exit(0))
+    .catch((error) => {
+      console.error('Reconciliation crashed:', error);
+      process.exit(1);
+    });
+}
+
+module.exports = { reconcilePendingTransactions: main };
