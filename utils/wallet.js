@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const { Wallet, WalletTransactions } = require('../models');
 const { withTransaction } = require('./rollback');
+const { toKobo, fromKobo, sumKobo } = require('./money');
 
 const ACCOUNT_PREFIX = 'RentULO-';
 
@@ -64,8 +65,12 @@ async function createWalletForUser(user, transaction) {
  * charged with nothing to show for it.
  */
 async function chargeMarketplacePayment({ payerUserId, landlordUserId, amount, commissionPercent, type, narration, applyEffects }) {
-  const roundedAmount = Math.round(Number(amount) * 100) / 100;
-  const pct = Math.min(100, Math.max(0, Number(commissionPercent)));
+  const amountKobo = toKobo(amount);
+  if (amountKobo <= 0) {
+    throw new Error('A valid amount is required');
+  }
+  const rawPct = Number(commissionPercent);
+  const pct = Number.isFinite(rawPct) ? Math.min(100, Math.max(0, rawPct)) : 0;
 
   return withTransaction(async (t) => {
     // Lock payer & landlord wallets in a fixed order (by user id) so two
@@ -87,24 +92,26 @@ async function chargeMarketplacePayment({ payerUserId, landlordUserId, amount, c
       err.code = 'WALLET_INACTIVE';
       throw err;
     }
-    if (Number(payerWallet.balance) < roundedAmount) {
+    if (toKobo(payerWallet.balance) < amountKobo) {
       throw new InsufficientBalanceError();
     }
 
     const landlordWallet = landlordUserId ? walletsByUser[landlordUserId] : null;
     const landlordIsPayable = !!landlordWallet && landlordWallet.status === 'ACTIVE' && landlordUserId !== payerUserId;
-    const share = landlordIsPayable ? Math.round((roundedAmount * (100 - pct) / 100) * 100) / 100 : 0;
-    const platformShare = roundedAmount - share;
+    // Exact kobo: the landlord's share is rounded to a kobo and the platform
+    // keeps the remainder, so split parts always sum to the charged amount.
+    const shareKobo = landlordIsPayable ? Math.round(amountKobo * (100 - pct) / 100) : 0;
+    const platformKobo = amountKobo - shareKobo;
 
-    payerWallet.balance = Number(payerWallet.balance) - roundedAmount;
+    payerWallet.balance = fromKobo(sumKobo(payerWallet.balance, -amountKobo));
     await payerWallet.save({ transaction: t });
 
-    if (landlordIsPayable && share > 0) {
-      landlordWallet.balance = Number(landlordWallet.balance) + share;
+    if (landlordIsPayable && shareKobo > 0) {
+      landlordWallet.balance = fromKobo(sumKobo(landlordWallet.balance, shareKobo));
       await landlordWallet.save({ transaction: t });
     }
 
-    const splitMeta = { commissionPercent: pct, landlordShare: share, platformShare };
+    const splitMeta = { commissionPercent: pct, landlordShare: shareKobo / 100, platformShare: platformKobo / 100 };
 
     await WalletTransactions.create({
       wallet_id: payerWallet.id,
@@ -112,7 +119,7 @@ async function chargeMarketplacePayment({ payerUserId, landlordUserId, amount, c
       tx_ref: `RENTULO-${type.replace(/\s+/g, '').toUpperCase()}-${crypto.randomUUID()}`,
       type,
       role: 'payer',
-      amount: roundedAmount,
+      amount: fromKobo(amountKobo),
       status: 'success',
       narration,
       from_account_number: payerWallet.accountNumber,
@@ -122,14 +129,14 @@ async function chargeMarketplacePayment({ payerUserId, landlordUserId, amount, c
       meta: splitMeta,
     }, { transaction: t });
 
-    if (landlordIsPayable && share > 0) {
+    if (landlordIsPayable && shareKobo > 0) {
       await WalletTransactions.create({
         wallet_id: landlordWallet.id,
         user_id: landlordUserId,
         tx_ref: `RENTULO-${type.replace(/\s+/g, '').toUpperCase()}-${crypto.randomUUID()}`,
         type,
         role: 'landlord',
-        amount: share,
+        amount: fromKobo(shareKobo),
         status: 'success',
         narration: `${narration} (received)`,
         from_account_number: payerWallet.accountNumber,
@@ -145,12 +152,12 @@ async function chargeMarketplacePayment({ payerUserId, landlordUserId, amount, c
     return {
       payerBalance: payerWallet.balance,
       landlordBalance: landlordIsPayable ? landlordWallet.balance : null,
-      landlordShare: share,
-      platformShare,
-      amount: roundedAmount,
+      landlordShare: shareKobo / 100,
+      platformShare: platformKobo / 100,
+      amount: amountKobo / 100,
       effects,
     };
-  }, { context: 'chargeMarketplacePayment', payerUserId, landlordUserId, type, amount: roundedAmount });
+  }, { context: 'chargeMarketplacePayment', payerUserId, landlordUserId, type, amount: fromKobo(amountKobo) });
 }
 
 module.exports = { generateUniqueAccountNumber, createWalletForUser, chargeMarketplacePayment, InsufficientBalanceError };

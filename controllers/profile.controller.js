@@ -70,7 +70,7 @@ async function updateProfile(req, res) {
     if (address !== undefined) user.address = address;
 
     // Check if profile is complete
-    const isCompleted = !!(user.phone_no && user.state && user.address);
+    const isCompleted = !!(user.phone_no && user.state && user.address );
     if (isCompleted) {
       user.is_verified = true;
     }

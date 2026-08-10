@@ -8,17 +8,24 @@ const {
   initializePayment,
   verifyTransactionById,
   initiateTransfer,
+  getTransferStatus,
   resolveBankCode,
   extractFlutterwaveError,
   shouldSimulateTransfer,
 } = require('../utils/flutterwave');
+const { toKobo, fromKobo, sumKobo } = require('../utils/money');
 
 function generateTxRef(prefix) {
   return `RENTULO-${prefix}-${crypto.randomUUID()}`;
 }
 
 function isValidAmount(amount) {
-  return typeof amount === 'number' && Number.isFinite(amount) && amount > 0;
+  // Strict: a finite positive number with at most 2 decimal places.
+  // Rejects strings, NaN, Infinity, scientific notation, and >2dp values.
+  return typeof amount === 'number' &&
+    Number.isFinite(amount) &&
+    amount > 0 &&
+    /^\d+(\.\d{1,2})?$/.test(String(amount));
 }
 
 // Constant-time comparison that never throws on mismatched lengths — the
@@ -104,7 +111,7 @@ async function initializeTopUp(req, res) {
       user_id,
       tx_ref,
       type: 'topup',
-      amount,
+      amount: fromKobo(toKobo(amount)),
       status: 'pending',
       narration: 'Wallet top-up',
       // Funding source is external (card/bank) and only known once Flutterwave
@@ -170,7 +177,7 @@ async function creditTopUpIfVerified(tx, flwTransactionId) {
     data.status === 'successful' &&
     data.tx_ref === tx.tx_ref &&
     data.currency === 'NGN' &&
-    Number(data.amount) >= Number(tx.amount);
+    toKobo(data.amount) >= toKobo(tx.amount);
 
   let didTransitionSuccess = false;
   let didTransitionFailed = false;
@@ -191,7 +198,7 @@ async function creditTopUpIfVerified(tx, flwTransactionId) {
     }
 
     const wallet = await Wallet.findOne({ where: { id: freshTx.wallet_id }, transaction: t, lock: t.LOCK.UPDATE });
-    wallet.balance = Number(wallet.balance) + Number(freshTx.amount);
+    wallet.balance = fromKobo(sumKobo(wallet.balance, freshTx.amount));
     await wallet.save({ transaction: t });
 
     freshTx.status = 'success';
@@ -371,13 +378,13 @@ async function withdraw(req, res) {
           err.status = 400;
           throw err;
         }
-        if (Number(w.balance) < Number(amount)) {
+        if (toKobo(w.balance) < toKobo(amount)) {
           const err = new Error('Insufficient balance');
           err.status = 400;
           throw err;
         }
 
-        w.balance = Number(w.balance) - Number(amount);
+        w.balance = fromKobo(sumKobo(w.balance, -amount));
         await w.save({ transaction: t });
 
         await WalletTransactions.create({
@@ -385,7 +392,7 @@ async function withdraw(req, res) {
           user_id,
           tx_ref,
           type: 'withdrawal',
-          amount,
+          amount: fromKobo(toKobo(amount)),
           status: 'pending',
           narration: `Withdrawal to ${profile.withdrawalBankName} - ${profile.withdrawalAccountNumber}`,
           from_account_number: w.accountNumber,
@@ -403,7 +410,14 @@ async function withdraw(req, res) {
 
     // Attempt the actual payout. Any failure here must refund the hold we just placed.
     try {
-      if (shouldSimulateTransfer()) {
+      const simulate = shouldSimulateTransfer() && process.env.NODE_ENV !== 'production';
+      if (shouldSimulateTransfer() && process.env.NODE_ENV === 'production') {
+        // Never let a stray env flag fake a payout on real funds — log loudly
+        // and proceed with the real transfer path instead.
+        logger.error('FLW_SIMULATE_TRANSFERS is set but NODE_ENV=production — ignoring it; using the real transfer path', { user_id, tx_ref });
+      }
+
+      if (simulate) {
         await WalletTransactions.update(
           {
             status: 'success',
@@ -466,7 +480,7 @@ async function withdraw(req, res) {
           if (!freshTx || freshTx.status !== 'pending') return;
 
           const w = await Wallet.findOne({ where: { id: freshTx.wallet_id }, transaction: t, lock: t.LOCK.UPDATE });
-          w.balance = Number(w.balance) + Number(freshTx.amount);
+          w.balance = fromKobo(sumKobo(w.balance, freshTx.amount));
           await w.save({ transaction: t });
 
           freshTx.status = 'failed';
@@ -538,6 +552,14 @@ async function transferToUser(req, res) {
       return res.status(400).json({ success: false, message: "You cannot transfer to your own wallet" });
     }
 
+    let accountName = recipientWallet.accountName;
+    if (!accountName) {
+      const recipientUser = await Users.findOne({ where: { id: recipientWallet.user_id } });
+      accountName = recipientUser ? recipientUser.full_name : 'Unknown User';
+    }
+
+    logger.info('Initiating wallet transfer', { user_id, accountNumber, amount });
+
     try {
       const result = await withTransaction(async (t) => {
         // Lock both wallets in a fixed order (by id) regardless of who is
@@ -559,14 +581,14 @@ async function transferToUser(req, res) {
           err.status = 400;
           throw err;
         }
-        if (Number(sender.balance) < Number(amount)) {
+        if (toKobo(sender.balance) < toKobo(amount)) {
           const err = new Error('Insufficient balance');
           err.status = 400;
           throw err;
         }
 
-        sender.balance = Number(sender.balance) - Number(amount);
-        recipient.balance = Number(recipient.balance) + Number(amount);
+        sender.balance = fromKobo(sumKobo(sender.balance, -amount));
+        recipient.balance = fromKobo(sumKobo(recipient.balance, amount));
         await sender.save({ transaction: t });
         await recipient.save({ transaction: t });
 
@@ -578,13 +600,13 @@ async function transferToUser(req, res) {
           user_id: sender.user_id,
           tx_ref: `RENTULO-XFER-${pairId}-OUT`,
           type: 'transfer_out',
-          amount,
+          amount: fromKobo(toKobo(amount)),
           status: 'success',
-          narration: `Transfer to ${recipient.accountName} (${recipient.accountNumber})`,
+          narration: `Transfer to ${accountName} (${recipient.accountNumber})`,
           from_account_number: sender.accountNumber,
           from_account_name: sender.accountName,
           to_account_number: recipient.accountNumber,
-          to_account_name: recipient.accountName,
+          to_account_name: accountName,
         }, { transaction: t });
 
         await WalletTransactions.create({
@@ -592,13 +614,13 @@ async function transferToUser(req, res) {
           user_id: recipient.user_id,
           tx_ref: `RENTULO-XFER-${pairId}-IN`,
           type: 'transfer_in',
-          amount,
+          amount: fromKobo(toKobo(amount)),
           status: 'success',
-          narration: `Transfer from ${sender.accountName} (${sender.accountNumber})`,
+          narration: `Transfer from ${sender.accountName} to ${accountName} (${recipient.accountNumber})`,
           from_account_number: sender.accountNumber,
           from_account_name: sender.accountName,
           to_account_number: recipient.accountNumber,
-          to_account_name: recipient.accountName,
+          to_account_name: accountName,
         }, { transaction: t });
 
         return { balance: sender.balance };
@@ -645,24 +667,13 @@ async function handleWebhook(req, res) {
         await creditTopUpIfVerified(tx, data.id);
       }
     } else if (event.event === 'transfer.completed' && data) {
-      await withTransaction(async (t) => {
-        const tx = await WalletTransactions.findOne({ where: { tx_ref: data.reference, type: 'withdrawal' }, transaction: t, lock: t.LOCK.UPDATE });
-        if (!tx || tx.status !== 'pending') return;
-
-        if (data.status === 'SUCCESSFUL') {
-          tx.status = 'success';
-          tx.meta = data;
-          await tx.save({ transaction: t });
-        } else if (data.status === 'FAILED') {
-          const wallet = await Wallet.findOne({ where: { id: tx.wallet_id }, transaction: t, lock: t.LOCK.UPDATE });
-          wallet.balance = Number(wallet.balance) + Number(tx.amount);
-          await wallet.save({ transaction: t });
-
-          tx.status = 'failed';
-          tx.meta = data;
-          await tx.save({ transaction: t });
-        }
-      }, { context: 'webhookTransferCompleted', tx_ref: data.reference });
+      // Never settle a withdrawal from the webhook body alone — a forged or
+      // replayed event (compromised secret hash) must not be able to mark a
+      // payout success or trigger a refund. Re-verify with Flutterwave first.
+      const tx = await WalletTransactions.findOne({ where: { tx_ref: data.reference, type: 'withdrawal' } });
+      if (tx && tx.status === 'pending') {
+        await settleWithdrawalFromWebhook(tx, data);
+      }
     }
 
     return res.status(200).json({ success: true });
@@ -671,6 +682,92 @@ async function handleWebhook(req, res) {
     // Still 200 — Flutterwave retries aggressively on non-2xx, and we've logged for manual follow-up.
     return res.status(200).json({ success: false });
   }
+}
+
+/**
+ * Finalizes a pending withdrawal based on Flutterwave's authoritative transfer
+ * status, cross-checked against the webhook payload. Returns false if the
+ * transfer cannot be confirmed, leaving the row pending for reconciliation.
+ */
+async function settleWithdrawalFromWebhook(tx, webhookData) {
+  let transfer;
+  try {
+    const res = await getTransferStatus(tx.flw_ref);
+    if (res.status !== 'success' || !res.data) {
+      throw new Error(res.message || 'Transfer lookup failed');
+    }
+    transfer = res.data;
+  } catch (error) {
+    const flwError = extractFlutterwaveError(error);
+    if (flwError.message && /not found/i.test(flwError.message)) {
+      // The transfer doesn't exist on the Flutterwave account holding this
+      // key — it was never paid out, so the debit hold must be reversed.
+      logger.warn('Withdrawal webhook: transfer not found at Flutterwave — refunding hold', {
+        tx_ref: tx.tx_ref, flw_ref: tx.flw_ref,
+      });
+      return refundPendingWithdrawal(tx, { notFound: true, message: flwError.message });
+    }
+    logger.error('Withdrawal webhook: could not verify transfer with Flutterwave — left pending for reconciliation', {
+      tx_ref: tx.tx_ref, flw_ref: tx.flw_ref, error: flwError.message,
+    });
+    return false;
+  }
+
+  const flwStatus = transfer.status;
+
+  if (flwStatus === 'SUCCESSFUL') {
+    // Cross-check the payload: reference, transfer id, currency and amount
+    // must all match our row before we accept the payout as genuine.
+    const payloadOk = webhookData &&
+      String(webhookData.reference) === tx.tx_ref &&
+      (webhookData.id == null || String(webhookData.id) === String(tx.flw_ref)) &&
+      webhookData.currency === 'NGN' &&
+      toKobo(webhookData.amount) >= toKobo(tx.amount);
+    if (!payloadOk) {
+      logger.error('Withdrawal webhook: payload mismatch on successful transfer — leaving pending', {
+        tx_ref: tx.tx_ref, flw_ref: tx.flw_ref,
+      });
+      return false;
+    }
+    await withTransaction(async (t) => {
+      const fresh = await WalletTransactions.findOne({ where: { id: tx.id }, transaction: t, lock: t.LOCK.UPDATE });
+      if (!fresh || fresh.status !== 'pending') return;
+      fresh.status = 'success';
+      fresh.meta = transfer;
+      await fresh.save({ transaction: t });
+    }, { context: 'webhookTransferSuccess', tx_ref: tx.tx_ref });
+    return true;
+  }
+
+  if (flwStatus === 'FAILED') {
+    logger.warn('Withdrawal webhook: transfer failed at Flutterwave — refunding hold', {
+      tx_ref: tx.tx_ref, flw_ref: tx.flw_ref,
+    });
+    return refundPendingWithdrawal(tx, transfer);
+  }
+
+  // NEW / PENDING / PROCESSING — not settled on Flutterwave's side yet.
+  logger.info('Withdrawal webhook: transfer still in progress at Flutterwave — left pending', {
+    tx_ref: tx.tx_ref, flw_ref: tx.flw_ref, status: flwStatus,
+  });
+  return false;
+}
+
+/** Reverses a pending withdrawal's debit hold and marks it failed (exact kobo). */
+async function refundPendingWithdrawal(tx, reason) {
+  return withTransaction(async (t) => {
+    const fresh = await WalletTransactions.findOne({ where: { id: tx.id }, transaction: t, lock: t.LOCK.UPDATE });
+    if (!fresh || fresh.status !== 'pending') return fresh;
+
+    const wallet = await Wallet.findOne({ where: { id: fresh.wallet_id }, transaction: t, lock: t.LOCK.UPDATE });
+    wallet.balance = fromKobo(sumKobo(wallet.balance, fresh.amount));
+    await wallet.save({ transaction: t });
+
+    fresh.status = 'failed';
+    fresh.meta = reason;
+    await fresh.save({ transaction: t });
+    return fresh;
+  }, { context: 'webhookTransferRefund', tx_ref: tx.tx_ref });
 }
 
 module.exports = {

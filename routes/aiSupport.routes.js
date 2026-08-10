@@ -7,7 +7,9 @@ const { chat, getHistory, deleteSession, getSessions } = require('../controllers
 const aiChatLimiter = rateLimit({
   windowMs: 1 * 60 * 1000,
   max: 30,
-  keyGenerator: (req) => req.user?.userId || req.ip,
+  // IP fallback goes through ipKeyGenerator so IPv6 addresses are normalised
+  // (prevents IPv6 users from bypassing the limit).
+  keyGenerator: (req) => req.user?.userId || rateLimit.ipKeyGenerator(req.ip),
   standardHeaders: true,
   legacyHeaders: false,
   message: {
