@@ -159,7 +159,7 @@ async function verifyRegistration(req, res) {
           email: pending.email,
           password: pending.password,
           country,
-          is_verified: true,
+          is_verified: false,
         },
         { transaction: t }
       );
