@@ -42,4 +42,51 @@ function createPin(req, res) {
 }
 
 
-function
+function updatePin(req, res) {
+    const { oldPin, newPin } = req.body;
+    const userId = req.user.id;
+
+    
+    const existingPin = await Pins.findOne({ where: { user_id: userId } });
+    const isOldPinValid = existingPin && await bcrypt.compare(oldPin, existingPin.pin);
+    if (!isOldPinValid) {
+        return res.status(400).json({ message: "Invalid old pin." });
+    }
+
+    if (!newPin || newPin.length !== 4 || !/^\d+$/.test(newPin)) {
+        return res.status(400).json({ message: "New pin must be a 4-digit number." });
+    }
+    if (/[A-Z]/.test(password) || /[a-z]/.test(newPin)){
+        return res.status(400).json({ message: "New pin must not contain letters." });
+    }
+
+    await Pins.findOne({ where: { user_id: userId } })
+        .then(async (existingPin) => {
+            if (!existingPin) {
+                return res.status(404).json({ message: "No existing pin found for this user." });
+            }
+
+            const hashedPin = await bcrypt.hash(newPin, 10);
+
+            existingPin.pin = hashedPin;
+            await existingPin.save();
+
+            
+            await Notifications.create({
+                user_id: userId,
+                message: "Your pin has been updated successfully.",
+            });
+
+            return res.status(200).json({ message: "Pin updated successfully.", pin: existingPin });
+        })
+        .catch((error) => {
+            console.error("Error updating pin:", error);
+            return res.status(500).json({ message: "Internal server error." });
+        });
+
+}
+
+module.exports = {
+    createPin,
+    updatePin,
+};
