@@ -169,15 +169,42 @@ async function initializeTopUp(req, res) {
  * payload alone) and credits the wallet exactly once.
  */
 async function creditTopUpIfVerified(tx, flwTransactionId) {
-  const verified = await verifyTransactionById(flwTransactionId);
+  let verified;
+  try {
+    verified = await verifyTransactionById(flwTransactionId);
+  } catch (error) {
+    // Transient Flutterwave API error (network timeout, rate limit, etc.)
+    // — leave the transaction pending so the webhook retry or reconciliation
+    // cron can pick it up later. Marking it failed here would permanently
+    // lose the user's money.
+    logger.warn('Flutterwave verify call failed — leaving pending for retry', {
+      tx_ref: tx.tx_ref, flwTransactionId, error: error.message,
+    });
+    return null;
+  }
+
   const data = verified.data;
 
-  const isGenuine = verified.status === 'success' &&
+  // If Flutterwave's API itself returned an error status (not a definitive
+  // charge outcome), treat it as transient and leave pending — same as above.
+  if (verified.status !== 'success') {
+    logger.warn('Flutterwave verify returned non-success status — leaving pending', {
+      tx_ref: tx.tx_ref, flwTransactionId, flwStatus: verified.status, message: verified.message,
+    });
+    return null;
+  }
+
+  const isGenuine =
     data &&
     data.status === 'successful' &&
     data.tx_ref === tx.tx_ref &&
     data.currency === 'NGN' &&
     toKobo(data.amount) >= toKobo(tx.amount);
+
+  // Definitive charge failure (e.g. data.status === 'failed' or 'abandoned')
+  // — safe to mark as failed. Only reached when Flutterwave definitively
+  // tells us the charge did not succeed.
+  const isDefinitiveFailure = data && data.status && data.status !== 'successful';
 
   let didTransitionSuccess = false;
   let didTransitionFailed = false;
@@ -188,12 +215,21 @@ async function creditTopUpIfVerified(tx, flwTransactionId) {
       return freshTx; // already processed — idempotent no-op
     }
 
-    if (!isGenuine) {
+    if (!isGenuine && isDefinitiveFailure) {
       freshTx.status = 'failed';
       freshTx.flw_ref = data ? String(data.id) : freshTx.flw_ref;
       freshTx.meta = data || null;
       await freshTx.save({ transaction: t });
       didTransitionFailed = true;
+      return freshTx;
+    }
+
+    if (!isGenuine) {
+      // Ambiguous state — Flutterwave returned 200 OK but no definitive
+      // charge status. Leave pending for reconciliation to re-check.
+      logger.warn('Charge verification ambiguous — leaving pending', {
+        tx_ref: tx.tx_ref, flwTransactionId, dataStatus: data?.status,
+      });
       return freshTx;
     }
 
@@ -325,7 +361,9 @@ async function verifyTopUpCallback(req, res) {
     }
 
     const finalTx = await creditTopUpIfVerified(tx, transaction_id);
-    return res.redirect(finalTx.status === 'success' ? successUrl : failureUrl);
+    // null means the verification was transient — redirect to success since the
+    // user likely paid and the wallet will be credited by webhook/reconciliation.
+    return res.redirect(!finalTx || finalTx.status === 'success' ? successUrl : failureUrl);
   } catch (error) {
     logger.error('Error in verifyTopUpCallback', {
       error: error.response ? JSON.stringify(error.response.data) : error.message,
@@ -655,6 +693,11 @@ async function handleWebhook(req, res) {
   try {
     const signature = req.headers['verif-hash'];
     if (!process.env.FLW_SECRET_HASH || !safeEqual(signature, process.env.FLW_SECRET_HASH)) {
+      logger.warn('Webhook signature verification failed', {
+        hasHash: !!process.env.FLW_SECRET_HASH,
+        hasSignature: !!signature,
+        ip: req.ip,
+      });
       return res.status(401).end();
     }
 
@@ -679,8 +722,9 @@ async function handleWebhook(req, res) {
     return res.status(200).json({ success: true });
   } catch (error) {
     logger.error('Error handling Flutterwave webhook', { error: error.message });
-    // Still 200 — Flutterwave retries aggressively on non-2xx, and we've logged for manual follow-up.
-    return res.status(200).json({ success: false });
+    // Return 500 so Flutterwave retries. The endpoint is idempotent (checks
+    // status inside a locked transaction) so retries are safe.
+    return res.status(500).json({ success: false });
   }
 }
 
