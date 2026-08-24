@@ -32,9 +32,28 @@ function fromKobo(kobo) {
   return `${neg ? '-' : ''}${whole}.${frac}`;
 }
 
-/** Sum of several amounts (any format), returned as integer kobo. */
+/**
+ * Sum of several NAIRA amounts (DECIMAL string, number, etc.), returned as
+ * integer kobo. Every argument is parsed with toKobo, so an argument that is
+ * already kobo would be scaled by 100 a second time — use addKobo for those.
+ */
 function sumKobo(...values) {
   return values.reduce((total, v) => total + toKobo(v), 0);
 }
 
-module.exports = { toKobo, fromKobo, sumKobo };
+/**
+ * Sum of values that are ALREADY integer kobo. Nothing is parsed or scaled.
+ * Mixing the two unit domains is the one mistake these helpers can't absorb
+ * silently, so a non-integer (i.e. a naira decimal that belongs in sumKobo)
+ * throws here instead of quietly becoming 100x the intended amount.
+ */
+function addKobo(...koboValues) {
+  return koboValues.reduce((total, k) => {
+    if (!Number.isSafeInteger(k)) {
+      throw new TypeError(`addKobo expects integer kobo, received ${JSON.stringify(k)}`);
+    }
+    return total + k;
+  }, 0);
+}
+
+module.exports = { toKobo, fromKobo, sumKobo, addKobo };
