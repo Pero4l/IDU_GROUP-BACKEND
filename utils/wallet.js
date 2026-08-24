@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const { Wallet, WalletTransactions } = require('../models');
 const { withTransaction } = require('./rollback');
-const { toKobo, fromKobo, sumKobo } = require('./money');
+const { toKobo, fromKobo, addKobo } = require('./money');
 
 const ACCOUNT_PREFIX = 'RentULO-';
 
@@ -48,6 +48,25 @@ async function createWalletForUser(user, transaction) {
 }
 
 /**
+ * Applies a kobo delta to a wallet's naira balance and saves it.
+ *
+ * The read and the write both go through the kobo helpers, and the delta stays
+ * in the kobo domain end to end, so the stored DECIMAL naira value and the
+ * integer kobo arithmetic never get mixed up. A debit that would drive the
+ * balance below zero throws instead of writing, which aborts the surrounding
+ * transaction rather than persisting an impossible balance.
+ */
+async function applyKoboDelta(wallet, deltaKobo, transaction) {
+  const nextKobo = addKobo(toKobo(wallet.balance), deltaKobo);
+  if (nextKobo < 0) {
+    throw new InsufficientBalanceError();
+  }
+  wallet.balance = fromKobo(nextKobo);
+  await wallet.save({ transaction });
+  return nextKobo;
+}
+
+/**
  * Debits a payer's wallet for a marketplace payment (lock fee, rent, or
  * inspection fee) and splits it between the landlord and the platform.
  * `commissionPercent` is the % the platform keeps — the rest goes to the
@@ -66,7 +85,10 @@ async function createWalletForUser(user, transaction) {
  */
 async function chargeMarketplacePayment({ payerUserId, landlordUserId, amount, commissionPercent, type, narration, applyEffects }) {
   const amountKobo = toKobo(amount);
-  if (amountKobo <= 0) {
+  // Non-numeric input parses to NaN, and `NaN <= 0` is false — so the sign
+  // check alone would let it through and only fail later, deeper in. Reject it
+  // here so callers get a validation error rather than a 500.
+  if (!Number.isSafeInteger(amountKobo) || amountKobo <= 0) {
     throw new Error('A valid amount is required');
   }
   const rawPct = Number(commissionPercent);
@@ -103,15 +125,13 @@ async function chargeMarketplacePayment({ payerUserId, landlordUserId, amount, c
     const shareKobo = landlordIsPayable ? Math.round(amountKobo * (100 - pct) / 100) : 0;
     const platformKobo = amountKobo - shareKobo;
 
-    payerWallet.balance = fromKobo(sumKobo(payerWallet.balance, -amountKobo));
-    await payerWallet.save({ transaction: t });
+    await applyKoboDelta(payerWallet, -amountKobo, t);
 
     if (landlordIsPayable && shareKobo > 0) {
-      landlordWallet.balance = fromKobo(sumKobo(landlordWallet.balance, shareKobo));
-      await landlordWallet.save({ transaction: t });
+      await applyKoboDelta(landlordWallet, shareKobo, t);
     }
 
-    const splitMeta = { commissionPercent: pct, landlordShare: shareKobo / 100, platformShare: platformKobo / 100 };
+    const splitMeta ={ commissionPercent: pct, landlordShare: shareKobo / 100, platformShare: platformKobo / 100 };
 
     await WalletTransactions.create({
       wallet_id: payerWallet.id,
