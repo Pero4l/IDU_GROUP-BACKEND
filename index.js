@@ -138,6 +138,8 @@ const testimonialRoutes = require("./routes/testimonials.routes");
 const aiSupportRoute = require("./routes/aiSupport.routes");
 const walletRoute = require("./routes/wallet.routes");
 const pinRoutes = require("./routes/pin.routes");
+const transactionRoute = require("./routes/transaction.routes");
+
 
 app.get("/", (req, res) => {
   res.status(200).json({
@@ -161,6 +163,8 @@ app.use("/api/testimonials", testimonialRoutes);
 app.use("/ai-support", aiSupportRoute);
 app.use("/wallet", walletRoute);
 app.use("/pin", pinRoutes);
+app.use("/admin/transactions", transactionRoute);
+
 
 // 404 handler
 app.use((req, res) => {
