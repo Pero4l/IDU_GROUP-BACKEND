@@ -66,38 +66,34 @@ if (!caPath || !fs.existsSync(caPath)) {
   );
 }
 
+const getDbConfig = (maxPool = 10) => {
+  const baseConfig = {
+    dialect: 'postgres',
+    dialectOptions: { ssl, connectionTimeoutMillis: 30000 },
+    pool: {
+      max: maxPool,
+      min: 0,
+      acquire: 60000,
+      idle: 10000
+    }
+  };
+
+  if (process.env.DATABASE_URL) {
+    baseConfig.use_env_variable = 'DATABASE_URL';
+  } else {
+    baseConfig.username = process.env.DATABASE_USER || process.env.DB_USER;
+    baseConfig.password = process.env.DATABASE_PASSWORD || process.env.DB_PASSWORD;
+    baseConfig.database = process.env.DATABASE_NAME || process.env.DB_NAME;
+    baseConfig.host = process.env.DATABASE_HOST || process.env.DB_HOST;
+    baseConfig.port = process.env.DATABASE_PORT || process.env.DB_PORT || 5432;
+  }
+
+  return baseConfig;
+};
+
 module.exports = {
-  development: {
-    use_env_variable: 'DATABASE_URL',
-    dialect: 'postgres',
-    // The TLS handshake to this host has been observed taking up to ~14s;
-    // the default connect timeout is shorter than that and was causing
-    // intermittent ETIMEDOUT failures on otherwise-healthy connections.
-    dialectOptions: { ssl, connectionTimeoutMillis: 30000 },
-    pool: {
-      max: 5,
-      min: 0,
-      acquire: 60000,
-      idle: 10000
-    }
-  },
-  test: {
-    use_env_variable: 'DATABASE_URL',
-    dialect: 'postgres',
-  },
-  production: {
-    use_env_variable: 'DATABASE_URL',
-    dialect: 'postgres',
-    // The TLS handshake to this host has been observed taking up to ~14s;
-    // the default connect timeout is shorter than that and was causing
-    // intermittent ETIMEDOUT failures on otherwise-healthy connections.
-    dialectOptions: { ssl, connectionTimeoutMillis: 30000 },
-    pool: {
-      max: 10,
-      min: 0,
-      acquire: 60000,
-      idle: 10000
-    }
-  },
+  development: getDbConfig(5),
+  test: getDbConfig(5),
+  production: getDbConfig(10),
 };
 
