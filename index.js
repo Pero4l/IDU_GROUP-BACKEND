@@ -23,8 +23,14 @@ socketConfig.init(server);
 app.set("trust proxy", 1);
 
 // HTTPS enforcement (for platforms like Render/Heroku behind a proxy)
+// Excludes root GET / health checks so cloud provider health checks return 200 OK
 app.use((req, res, next) => {
-  if (req.header("x-forwarded-proto") !== "https" && process.env.NODE_ENV === "production") {
+  if (
+    process.env.NODE_ENV === "production" &&
+    req.path !== "/" &&
+    req.header("x-forwarded-proto") &&
+    req.header("x-forwarded-proto") !== "https"
+  ) {
     return res.redirect(301, `https://${req.header("host")}${req.url}`);
   }
   next();
@@ -62,7 +68,7 @@ const globalLimiter = rateLimit({
         // invalid/expired token — fall through to IP; auth middleware handles it
       }
     }
-    return req.ip;
+    return rateLimit.ipKeyGenerator(req);
   },
   // The wallet webhook gets its own dedicated limiter (see wallet.routes.js)
   // with a much higher ceiling, so legitimate Flutterwave delivery is never
@@ -192,8 +198,8 @@ app.use((err, req, res, next) => {
   });
 });
 
-// DB CONNECTION
-const PORT = process.env.PORT;
+// DB CONNECTION & PORT SETTING
+const PORT = process.env.PORT || 8000;
 
 // ─────────────────────────────────────────────────────────────
 // Scheduled reconciliation — safety net for wallet transactions
@@ -228,16 +234,27 @@ function startReconcileCron() {
   console.log(`Reconciliation cron scheduled: ${schedule}`);
 }
 
-db.sequelize
-  .authenticate()
-  .then(() => {
-    server.listen(PORT, () => {
-      console.log(
-        `Database connected successfully and Server running on PORT:${PORT}`,
-      );
-    });
-    startReconcileCron();
-  })
-  .catch((e) => {
-    console.log(`Database connection failed:`, e);
-  });
+// Start HTTP server immediately to satisfy platform health checks ($PORT binding)
+server.listen(PORT, () => {
+  console.log(`Server listening and running on PORT:${PORT}`);
+});
+
+// Authenticate DB asynchronously
+async function connectDatabase(retries = 5, delay = 3000) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      await db.sequelize.authenticate();
+      console.log("Database connected successfully");
+      startReconcileCron();
+      return;
+    } catch (e) {
+      console.error(`Database connection attempt ${i + 1} failed:`, e.message);
+      if (i < retries - 1) {
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+  }
+  console.error("Critical: Database could not connect after maximum retries.");
+}
+
+connectDatabase();
