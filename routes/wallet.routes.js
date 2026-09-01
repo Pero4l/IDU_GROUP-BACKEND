@@ -6,6 +6,7 @@ const {
   getWalletTransactions,
   initializeTopUp,
   verifyTopUpCallback,
+  verifyTopUpStatus,
   withdraw,
   transferToUser,
   handleWebhook,
@@ -61,6 +62,7 @@ router.get("/", authMiddleware, getWallet);
 router.get("/transactions", authMiddleware, getWalletTransactions);
 router.post("/topup/initialize", authMiddleware, topUpLimiter, initializeTopUp);
 router.get("/topup/verify-callback", verifyTopUpCallback);
+router.get("/topup/verify/:tx_ref?", authMiddleware, verifyTopUpStatus);
 router.post("/withdraw", authMiddleware, withdrawLimiter, withdraw);
 router.post("/transfer", authMiddleware, transferLimiter, transferToUser);
 router.post("/webhook", webhookLimiter, handleWebhook);

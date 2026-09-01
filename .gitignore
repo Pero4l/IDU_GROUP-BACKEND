@@ -20,4 +20,6 @@ ca.pem
 ca(1).pem
 /ca(1).pem
 
+/scripts/reconcilePendingTransactions.js 
 /scripts/backfillWallets.js
+/scripts/recoverFailedTopUps.js

@@ -71,10 +71,29 @@ async function getWallet(req, res) {
 async function getWalletTransactions(req, res) {
   try {
     const user_id = req.user.userId;
-    const transactions = await WalletTransactions.findAll({
+    let transactions = await WalletTransactions.findAll({
       where: { user_id },
       order: [['createdAt', 'DESC']],
     });
+
+    // Auto-reconcile any pending top-ups for this user with Flutterwave
+    const pendingTopups = transactions.filter(t => t.type === 'topup' && t.status === 'pending');
+    if (pendingTopups.length > 0) {
+      let updated = false;
+      for (const pendingTx of pendingTopups) {
+        const result = await creditTopUpIfVerified(pendingTx);
+        if (result && result.status !== 'pending') {
+          updated = true;
+        }
+      }
+      if (updated) {
+        transactions = await WalletTransactions.findAll({
+          where: { user_id },
+          order: [['createdAt', 'DESC']],
+        });
+      }
+    }
+
     return res.status(200).json({ success: true, data: transactions });
   } catch (error) {
     logger.error('Error fetching wallet transactions', { error: error.message, userId: req.user?.userId });
@@ -167,44 +186,75 @@ async function initializeTopUp(req, res) {
 /**
  * Re-verifies a charge with Flutterwave (never trusts the caller/webhook
  * payload alone) and credits the wallet exactly once.
+ * Supports lookup by transactionId or fallback to tx_ref reference verification.
  */
 async function creditTopUpIfVerified(tx, flwTransactionId) {
   let verified;
   try {
-    verified = await verifyTransactionById(flwTransactionId);
+    if (flwTransactionId) {
+      verified = await verifyTransactionById(flwTransactionId);
+    } else {
+      verified = await verifyTransactionByRef(tx.tx_ref);
+    }
   } catch (error) {
-    // Transient Flutterwave API error (network timeout, rate limit, etc.)
-    // — leave the transaction pending so the webhook retry or reconciliation
-    // cron can pick it up later. Marking it failed here would permanently
-    // lose the user's money.
-    logger.warn('Flutterwave verify call failed — leaving pending for retry', {
-      tx_ref: tx.tx_ref, flwTransactionId, error: error.message,
-    });
-    return null;
+    // If lookup by ID failed (or wasn't provided), try lookup by reference as fallback
+    if (flwTransactionId) {
+      try {
+        logger.warn('Flutterwave verify by transactionId failed, falling back to verifyByRef', {
+          tx_ref: tx.tx_ref, flwTransactionId, error: error.message,
+        });
+        verified = await verifyTransactionByRef(tx.tx_ref);
+      } catch (refError) {
+        const message = refError?.response?.data?.message || refError?.message || '';
+        if (/no transaction was found|not found/i.test(message)) {
+          logger.warn('Flutterwave verify call: transaction not found at Flutterwave yet', {
+            tx_ref: tx.tx_ref, message,
+          });
+        } else {
+          logger.warn('Flutterwave verify call failed — leaving pending for retry', {
+            tx_ref: tx.tx_ref, error: refError.message,
+          });
+        }
+        return null;
+      }
+    } else {
+      const message = error?.response?.data?.message || error?.message || '';
+      if (/no transaction was found|not found/i.test(message)) {
+        logger.warn('Flutterwave verify call: transaction not found at Flutterwave yet', {
+          tx_ref: tx.tx_ref, message,
+        });
+      } else {
+        logger.warn('Flutterwave verify call failed — leaving pending for retry', {
+          tx_ref: tx.tx_ref, error: error.message,
+        });
+      }
+      return null;
+    }
   }
 
-  const data = verified.data;
+  const data = verified?.data;
 
   // If Flutterwave's API itself returned an error status (not a definitive
-  // charge outcome), treat it as transient and leave pending — same as above.
-  if (verified.status !== 'success') {
+  // charge outcome), treat it as transient and leave pending.
+  if (verified?.status !== 'success' || !data) {
     logger.warn('Flutterwave verify returned non-success status — leaving pending', {
-      tx_ref: tx.tx_ref, flwTransactionId, flwStatus: verified.status, message: verified.message,
+      tx_ref: tx.tx_ref, flwTransactionId, flwStatus: verified?.status, message: verified?.message,
     });
     return null;
   }
 
   const isGenuine =
     data &&
-    data.status === 'successful' &&
+    typeof data.status === 'string' &&
+    data.status.toLowerCase() === 'successful' &&
     data.tx_ref === tx.tx_ref &&
     data.currency === 'NGN' &&
     toKobo(data.amount) >= toKobo(tx.amount);
 
-  // Definitive charge failure (e.g. data.status === 'failed' or 'abandoned')
-  // — safe to mark as failed. Only reached when Flutterwave definitively
-  // tells us the charge did not succeed.
-  const isDefinitiveFailure = data && data.status && data.status !== 'successful';
+  // Definitive charge failure — safe to mark as failed ONLY when Flutterwave
+  // explicitly reports failed/abandoned.
+  const isDefinitiveFailure = data && typeof data.status === 'string' &&
+    ['failed', 'abandoned'].includes(data.status.toLowerCase());
 
   let didTransitionSuccess = false;
   let didTransitionFailed = false;
@@ -341,13 +391,15 @@ async function verifyTopUpCallback(req, res) {
   const failureUrl = process.env.FLW_FAILURE_URL || "https://rentulo.ng/tenant/wallet";
 
   try {
-    const { tx_ref, transaction_id, status } = req.query;
+    const rawTxRef = req.query.tx_ref || req.query.txref || req.query.reference;
+    const rawFlwId = req.query.transaction_id || req.query.id || req.query.flw_ref || req.query.tx_id;
+    const status = req.query.status ? String(req.query.status).toLowerCase() : null;
 
-    if (!tx_ref || status === 'cancelled') {
+    if (!rawTxRef || status === 'cancelled') {
       return res.redirect(failureUrl);
     }
 
-    const tx = await WalletTransactions.findOne({ where: { tx_ref, type: 'topup' } });
+    const tx = await WalletTransactions.findOne({ where: { tx_ref: rawTxRef, type: 'topup' } });
     if (!tx) {
       return res.redirect(failureUrl);
     }
@@ -356,19 +408,85 @@ async function verifyTopUpCallback(req, res) {
       return res.redirect(successUrl);
     }
 
-    if (!transaction_id) {
-      return res.redirect(failureUrl);
-    }
-
-    const finalTx = await creditTopUpIfVerified(tx, transaction_id);
-    // null means the verification was transient — redirect to success since the
-    // user likely paid and the wallet will be credited by webhook/reconciliation.
-    return res.redirect(!finalTx || finalTx.status === 'success' ? successUrl : failureUrl);
+    const finalTx = await creditTopUpIfVerified(tx, rawFlwId);
+    // Redirect to success unless the verification gave a DEFINITIVE, genuine
+    // failure. A null result (transient Flutterwave error / in progress) or a row still
+    // 'pending' means the payment may be processing — don't show a failure screen.
+    const definitelyFailed = finalTx && finalTx.status === 'failed';
+    return res.redirect(definitelyFailed ? failureUrl : successUrl);
   } catch (error) {
     logger.error('Error in verifyTopUpCallback', {
       error: error.response ? JSON.stringify(error.response.data) : error.message,
     });
     return res.redirect(failureUrl);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// GET /wallet/topup/verify/:tx_ref — REST API endpoint for mobile/frontend app
+// ─────────────────────────────────────────────────────────────
+async function verifyTopUpStatus(req, res) {
+  try {
+    const user_id = req.user.userId;
+    const tx_ref = req.params.tx_ref || req.query.tx_ref;
+
+    if (!tx_ref) {
+      return res.status(400).json({ success: false, message: "Transaction reference is required" });
+    }
+
+    let tx = await WalletTransactions.findOne({ where: { tx_ref, user_id, type: 'topup' } });
+    if (!tx) {
+      return res.status(404).json({ success: false, message: "Top-up transaction not found" });
+    }
+
+    if (tx.status === 'pending') {
+      const rawFlwId = req.query.transaction_id || req.query.id || req.query.flw_ref;
+      await creditTopUpIfVerified(tx, rawFlwId);
+      tx = await WalletTransactions.findOne({ where: { id: tx.id } });
+    }
+
+    const wallet = await Wallet.findOne({ where: { user_id } });
+
+    if (tx.status === 'success') {
+      return res.status(200).json({
+        success: true,
+        message: "Top-up confirmed successfully",
+        data: {
+          status: 'success',
+          amount: tx.amount,
+          tx_ref: tx.tx_ref,
+          balance: wallet ? wallet.balance : undefined,
+          transaction: tx,
+        },
+      });
+    }
+
+    if (tx.status === 'failed') {
+      return res.status(200).json({
+        success: false,
+        message: "Top-up failed or was rejected",
+        data: {
+          status: 'failed',
+          amount: tx.amount,
+          tx_ref: tx.tx_ref,
+          transaction: tx,
+        },
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Top-up is pending confirmation from Flutterwave",
+      data: {
+        status: 'pending',
+        amount: tx.amount,
+        tx_ref: tx.tx_ref,
+        transaction: tx,
+      },
+    });
+  } catch (error) {
+    logger.error('Error verifying top-up status', { error: error.message, userId: req.user?.userId });
+    return res.status(500).json({ success: false, message: "Server error during top-up verification" });
   }
 }
 
@@ -819,6 +937,7 @@ module.exports = {
   getWalletTransactions,
   initializeTopUp,
   verifyTopUpCallback,
+  verifyTopUpStatus,
   withdraw,
   transferToUser,
   handleWebhook,
