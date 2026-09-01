@@ -90,10 +90,24 @@ async function settleTopUp(tx) {
     // credit the wallet exactly once.
     console.log(`[TOP:SUCCESS] ${tx.tx_ref} (flw ${charge.id}) — crediting wallet`);
     if (!DRY_RUN) await markTopUpSuccess(tx, charge);
-  } else {
+    return;
+  }
+
+  // Only a DEFINITIVE failure (charge explicitly failed/abandoned) may be
+  // marked failed. Any intermediate status (pending/new/processing) means
+  // Flutterwave is still handling the charge — it may have been debited but
+  // not settled yet. Marking it failed here would permanently lose the user's
+  // money, so leave it pending for the next reconciliation/webhook pass.
+  const isDefinitiveFailure = typeof charge?.status === 'string' &&
+    ['failed', 'abandoned'].includes(charge.status.toLowerCase());
+
+  if (isDefinitiveFailure) {
     console.log(`[TOP:FAILED] ${tx.tx_ref} — charge ${charge.status}, marking failed`);
     if (!DRY_RUN) await markTopUpFailed(tx, charge);
+    return;
   }
+
+  console.log(`[TOP:PENDING] ${tx.tx_ref} — charge ${charge.status || 'unknown'}, not settled yet; leaving pending`);
 }
 
 async function markWithdrawalSuccess(tx, transfer) {
