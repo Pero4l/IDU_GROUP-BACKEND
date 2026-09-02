@@ -107,18 +107,34 @@ async function getWalletTransactions(req, res) {
 async function initializeTopUp(req, res) {
   let pendingTx = null;
   try {
-    const user_id = req.user.userId;
-    const userEmail = req.user.email;
+    const user_id = req.user?.userId || req.user?.id;
+    if (!user_id) {
+      return res.status(401).json({ success: false, message: "User authentication required" });
+    }
+
     const { amount } = req.body;
 
     if (!isValidAmount(amount)) {
       return res.status(400).json({ success: false, message: "A valid amount is required" });
     }
 
-    const wallet = await Wallet.findOne({ where: { user_id } });
-    if (!wallet) {
-      return res.status(404).json({ success: false, message: "Wallet not found" });
+    const user = await Users.findByPk(user_id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User account not found" });
     }
+
+    const userEmail = req.user?.email || user.email;
+    const userName = req.user?.currentUser || user.full_name;
+
+    if (!userEmail) {
+      return res.status(400).json({ success: false, message: "User email is required for payment initialization" });
+    }
+
+    let wallet = await Wallet.findOne({ where: { user_id } });
+    if (!wallet) {
+      wallet = await createWalletForUser(user);
+    }
+
     if (wallet.status !== 'ACTIVE') {
       return res.status(400).json({ success: false, message: "Wallet is not active" });
     }
@@ -133,9 +149,7 @@ async function initializeTopUp(req, res) {
       amount: fromKobo(toKobo(amount)),
       status: 'pending',
       narration: 'Wallet top-up',
-      // Funding source is external (card/bank) and only known once Flutterwave
-      // confirms the charge — filled in by creditTopUpIfVerified.
-      from_account_name: req.user.currentUser || null,
+      from_account_name: userName || null,
       to_account_number: wallet.accountNumber,
       to_account_name: wallet.accountName,
     });
@@ -143,23 +157,31 @@ async function initializeTopUp(req, res) {
     const host = req.get('host');
     const protocol = req.protocol;
     const defaultCallback = `${protocol}://${host}/wallet/topup/verify-callback`;
-    const redirect_url = process.env.FLW_CALLBACK_URL || defaultCallback;
+    
+    // Ensure redirect_url points to backend callback route so Flutterwave callback reaches the server
+    let redirect_url = process.env.FLW_CALLBACK_URL || defaultCallback;
+    if (redirect_url.includes('rentulo.ng/wallet/topup/verify-callback') || redirect_url.includes('tenant/wallet')) {
+      redirect_url = defaultCallback;
+    }
 
     const flwResponse = await initializePayment({
       tx_ref,
       amount,
       email: userEmail,
-      name: wallet.accountName,
+      name: userName || wallet.accountName,
       redirect_url,
       meta: { user_id, wallet_id: wallet.id, type: 'topup' },
     });
 
-    if (flwResponse.status !== 'success') {
+    if (flwResponse.status !== 'success' || !flwResponse.data?.link) {
       logger.error('Flutterwave initialize failed', { tx_ref, response: flwResponse });
       pendingTx.status = 'failed';
       pendingTx.meta = flwResponse;
       await pendingTx.save();
-      return res.status(502).json({ success: false, message: "Could not start payment. Please try again." });
+      return res.status(502).json({
+        success: false,
+        message: flwResponse.message || "Could not start payment. Please try again."
+      });
     }
 
     return res.status(200).json({
@@ -169,17 +191,20 @@ async function initializeTopUp(req, res) {
       tx_ref,
     });
   } catch (error) {
+    const errorMsg = error.response?.data?.message || error.message;
     logger.error('Error initializing top-up', {
       error: error.response ? JSON.stringify(error.response.data) : error.message,
-      userId: req.user?.userId,
+      userId: req.user?.userId || req.user?.id,
     });
-    // A row was already opened for this attempt — don't leave it pending forever.
     if (pendingTx && pendingTx.status === 'pending') {
       pendingTx.status = 'failed';
       pendingTx.meta = { error: error.response ? error.response.data : error.message };
       await pendingTx.save().catch(() => {});
     }
-    return res.status(500).json({ success: false, message: "Server error during payment initialization" });
+    return res.status(500).json({
+      success: false,
+      message: errorMsg || "Server error during payment initialization"
+    });
   }
 }
 
@@ -387,8 +412,22 @@ async function creditTopUpIfVerified(tx, flwTransactionId) {
 // GET /wallet/topup/verify-callback — browser redirect after checkout
 // ─────────────────────────────────────────────────────────────
 async function verifyTopUpCallback(req, res) {
-  const successUrl = process.env.FLW_REDIRECT_URL || "https://rentulo.ng/tenant/wallet";
-  const failureUrl = process.env.FLW_FAILURE_URL || "https://rentulo.ng/tenant/wallet";
+  const defaultFrontendUrl = "https://rentulo.ng/tenant/wallet";
+  const successUrlBase = process.env.FLW_REDIRECT_URL || defaultFrontendUrl;
+  const failureUrlBase = process.env.FLW_FAILURE_URL || defaultFrontendUrl;
+
+  const buildRedirectUrl = (baseUrl, params) => {
+    try {
+      const urlObj = new URL(baseUrl);
+      Object.entries(params).forEach(([k, v]) => {
+        if (v !== undefined && v !== null) urlObj.searchParams.set(k, v);
+      });
+      return urlObj.toString();
+    } catch (_) {
+      const sep = baseUrl.includes('?') ? '&' : '?';
+      return `${baseUrl}${sep}status=${params.status || 'processed'}&tx_ref=${params.tx_ref || ''}`;
+    }
+  };
 
   try {
     const rawTxRef = req.query.tx_ref || req.query.txref || req.query.reference;
@@ -396,29 +435,30 @@ async function verifyTopUpCallback(req, res) {
     const status = req.query.status ? String(req.query.status).toLowerCase() : null;
 
     if (!rawTxRef || status === 'cancelled') {
-      return res.redirect(failureUrl);
+      return res.redirect(buildRedirectUrl(failureUrlBase, { status: 'cancelled', tx_ref: rawTxRef }));
     }
 
     const tx = await WalletTransactions.findOne({ where: { tx_ref: rawTxRef, type: 'topup' } });
     if (!tx) {
-      return res.redirect(failureUrl);
+      return res.redirect(buildRedirectUrl(failureUrlBase, { status: 'not_found', tx_ref: rawTxRef }));
     }
 
     if (tx.status === 'success') {
-      return res.redirect(successUrl);
+      return res.redirect(buildRedirectUrl(successUrlBase, { status: 'success', tx_ref: rawTxRef, amount: tx.amount }));
     }
 
     const finalTx = await creditTopUpIfVerified(tx, rawFlwId);
-    // Redirect to success unless the verification gave a DEFINITIVE, genuine
-    // failure. A null result (transient Flutterwave error / in progress) or a row still
-    // 'pending' means the payment may be processing — don't show a failure screen.
     const definitelyFailed = finalTx && finalTx.status === 'failed';
-    return res.redirect(definitelyFailed ? failureUrl : successUrl);
+    const redirectUrl = definitelyFailed
+      ? buildRedirectUrl(failureUrlBase, { status: 'failed', tx_ref: rawTxRef })
+      : buildRedirectUrl(successUrlBase, { status: 'success', tx_ref: rawTxRef, amount: tx.amount });
+
+    return res.redirect(redirectUrl);
   } catch (error) {
     logger.error('Error in verifyTopUpCallback', {
       error: error.response ? JSON.stringify(error.response.data) : error.message,
     });
-    return res.redirect(failureUrl);
+    return res.redirect(buildRedirectUrl(failureUrlBase, { status: 'error', message: 'Verification error' }));
   }
 }
 
