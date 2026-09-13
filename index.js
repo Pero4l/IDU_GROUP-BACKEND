@@ -145,6 +145,7 @@ const aiSupportRoute = require("./routes/aiSupport.routes");
 const walletRoute = require("./routes/wallet.routes");
 const pinRoutes = require("./routes/pin.routes");
 const transactionRoute = require("./routes/transaction.routes");
+const supportRoute = require("./routes/support.routes");
 
 
 app.get("/", (req, res) => {
@@ -170,6 +171,7 @@ app.use("/ai-support", aiSupportRoute);
 app.use("/wallet", walletRoute);
 app.use("/pin", pinRoutes);
 app.use("/admin/transactions", transactionRoute);
+app.use("/", supportRoute);
 
 
 // 404 handler
