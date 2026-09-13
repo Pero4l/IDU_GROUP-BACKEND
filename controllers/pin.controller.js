@@ -1,22 +1,27 @@
 const { Pins, Users, Notifications } = require("../models");
 const bcrypt = require("bcrypt");
+const logger = require("../utils/logger");
+
+const PIN_PATTERN = /^\d{4}$/;
+
+// The JWT carries `userId` (see users.controller.js login) — `req.user.id`
+// does not exist. Centralising the lookup here keeps both handlers consistent.
+function isValidPinFormat(pin) {
+  return typeof pin === "string" && PIN_PATTERN.test(pin);
+}
 
 async function createPin(req, res) {
     const { pin } = req.body;
-    const userId = req.user.id;
+    const userId = req.user.userId;
 
-    
-    if (!pin || pin.length !== 4 || !/^\d+$/.test(pin)) {
-        return res.status(400).json({ message: "Pin must be a 4-digit number." });
-    }
-    if (/[A-Z]/.test(pin) || /[a-z]/.test(pin)){
-        return res.status(400).json({ message: "Pin must not contain letters." });
+    if (!isValidPinFormat(pin)) {
+        return res.status(400).json({ success: false, message: "Pin must be a 4-digit number." });
     }
 
     try {
         const existingPin = await Pins.findOne({ where: { user_id: userId } });
         if (existingPin) {
-            return res.status(400).json({ message: "Pin already exists for this user." });
+            return res.status(400).json({ success: false, message: "Pin already exists for this user." });
         }
 
         const hashedPin = await bcrypt.hash(pin, 10);
@@ -26,58 +31,56 @@ async function createPin(req, res) {
             pin: hashedPin,
         });
 
-        
         await Notifications.create({
             user_id: userId,
-            message: "Your pin has been created successfully.",
+            type: "system",
+            notification: "Your transaction pin has been created successfully.",
+            is_read: false,
         });
 
-        return res.status(201).json({ message: "Pin created successfully.", pin: newPin });
+        return res.status(201).json({ success: true, message: "Pin created successfully.", pin: { id: newPin.id, user_id: newPin.user_id } });
     } catch (error) {
-        console.error("Error creating pin:", error);
-        return res.status(500).json({ message: "Internal server error." });
+        logger.error("Error creating pin:", { error: error.message, userId });
+        return res.status(500).json({ success: false, message: "Internal server error." });
     }
 }
 
 
 async function updatePin(req, res) {
     const { oldPin, newPin } = req.body;
-    const userId = req.user.id;
+    const userId = req.user.userId;
+
+    if (!isValidPinFormat(newPin)) {
+        return res.status(400).json({ success: false, message: "New pin must be a 4-digit number." });
+    }
 
     try {
         const existingPin = await Pins.findOne({ where: { user_id: userId } });
-        const isOldPinValid = existingPin && await bcrypt.compare(oldPin, existingPin.pin);
+        if (!existingPin) {
+            return res.status(404).json({ success: false, message: "No existing pin found for this user." });
+        }
+
+        const isOldPinValid = await bcrypt.compare(oldPin, existingPin.pin);
         if (!isOldPinValid) {
-            return res.status(400).json({ message: "Invalid old pin." });
-        }
-
-        if (!newPin || newPin.length !== 4 || !/^\d+$/.test(newPin)) {
-            return res.status(400).json({ message: "New pin must be a 4-digit number." });
-        }
-        if (/[A-Z]/.test(newPin) || /[a-z]/.test(newPin)){
-            return res.status(400).json({ message: "New pin must not contain letters." });
-        }
-
-        const pinRecord = await Pins.findOne({ where: { user_id: userId } });
-        if (!pinRecord) {
-            return res.status(404).json({ message: "No existing pin found for this user." });
+            return res.status(400).json({ success: false, message: "Invalid old pin." });
         }
 
         const hashedPin = await bcrypt.hash(newPin, 10);
 
-        pinRecord.pin = hashedPin;
-        await pinRecord.save();
+        existingPin.pin = hashedPin;
+        await existingPin.save();
 
-        
         await Notifications.create({
             user_id: userId,
-            message: "Your pin has been updated successfully.",
+            type: "system",
+            notification: "Your transaction pin has been updated successfully.",
+            is_read: false,
         });
 
-        return res.status(200).json({ message: "Pin updated successfully.", pin: pinRecord });
+        return res.status(200).json({ success: true, message: "Pin updated successfully.", pin: { id: existingPin.id, user_id: existingPin.user_id } });
     } catch (error) {
-        console.error("Error updating pin:", error);
-        return res.status(500).json({ message: "Internal server error." });
+        logger.error("Error updating pin:", { error: error.message, userId });
+        return res.status(500).json({ success: false, message: "Internal server error." });
     }
 }
 

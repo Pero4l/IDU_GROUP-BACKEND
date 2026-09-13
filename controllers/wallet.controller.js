@@ -1,5 +1,6 @@
 const crypto = require('crypto');
-const { Wallet, WalletTransactions, Profile, Users } = require('../models');
+const bcrypt = require('bcrypt');
+const { Wallet, WalletTransactions, Profile, Users, Pins } = require('../models');
 const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
 const { buildPropertyEmailHtml } = require('../utils/emailTemplates');
 const { withTransaction } = require('../utils/rollback');
@@ -26,6 +27,33 @@ function isValidAmount(amount) {
     Number.isFinite(amount) &&
     amount > 0 &&
     /^\d+(\.\d{1,2})?$/.test(String(amount));
+}
+
+// ─────────────────────────────────────────────
+// Transaction PIN verification
+// ─────────────────────────────────────────────
+const PIN_PATTERN = /^\d{4}$/;
+
+// Verifies the user's 4-digit transaction PIN before money leaves their
+// wallet. Returns null on success, or { status, message } on failure so the
+// caller can respond with the right HTTP code. PINs are stored bcrypt-hashed
+// (see pin.controller.js), so we always compare against the hash.
+async function verifyWalletPin(user_id, pin) {
+  if (typeof pin !== 'string' || !PIN_PATTERN.test(pin)) {
+    return { status: 400, message: "A valid 4-digit transaction pin is required." };
+  }
+  const pinRecord = await Pins.findOne({ where: { user_id } });
+  if (!pinRecord || !pinRecord.pin) {
+    return {
+      status: 403,
+      message: "You have not set a transaction pin. Please create one before withdrawing.",
+    };
+  }
+  const matches = await bcrypt.compare(pin, pinRecord.pin);
+  if (!matches) {
+    return { status: 403, message: "Incorrect transaction pin." };
+  }
+  return null;
 }
 
 // Constant-time comparison that never throws on mismatched lengths — the
@@ -536,10 +564,20 @@ async function verifyTopUpStatus(req, res) {
 async function withdraw(req, res) {
   try {
     const user_id = req.user.userId;
-    const { amount } = req.body;
+    const { amount, pin } = req.body;
 
     if (!isValidAmount(amount)) {
       return res.status(400).json({ success: false, message: "A valid amount is required" });
+    }
+
+    // Money is leaving the wallet — a valid transaction PIN must accompany the request.
+    const pinError = await verifyWalletPin(user_id, pin);
+    if (pinError) {
+      logger.warn('Withdrawal blocked: PIN check failed', {
+        user_id,
+        reason: pinError.message,
+      });
+      return res.status(pinError.status).json({ success: false, message: pinError.message });
     }
 
     const profile = await Profile.findOne({ where: { user_id } });
