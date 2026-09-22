@@ -149,7 +149,7 @@ async function getMyTickets(req, res) {
     const safePage = Math.max(parseInt(page, 10) || 1, 1);
     const offset = (safePage - 1) * safeLimit;
 
-    const where = [];
+    const where = ['t.user_id = :user_id'];
     const replacements = { user_id, limit: safeLimit, offset };
     if (status) {
       where.push('t.status = :status');
