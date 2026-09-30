@@ -9,6 +9,8 @@
     "dev": "nodemon index.js",
     "reconcile": "node scripts/reconcilePendingTransactions.js",
     "reconcile:dry-run": "node scripts/reconcilePendingTransactions.js --dry-run",
+    "recover:failed-topups": "node scripts/recoverFailedTopUps.js",
+    "recover:failed-topups:dry-run": "node scripts/recoverFailedTopUps.js --dry-run",
     "mg": " npx sequelize-cli db:migrate",
     "mg:undo": "npx sequelize-cli db:migrate:undo",
     "mg:undo:all": "npx sequelize-cli db:migrate:undo:all"

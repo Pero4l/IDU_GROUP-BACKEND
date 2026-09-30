@@ -3,7 +3,7 @@ require('dotenv').config();
 
 const { sequelize, Wallet, WalletTransactions } = require('../models');
 const { withTransaction } = require('../utils/rollback');
-const { getTransferStatus, verifyTransactionByRef } = require('../utils/flutterwave');
+const { getTransferStatus, verifyTransactionByRef, canMarkChargeMissing } = require('../utils/flutterwave');
 const { fromKobo, sumKobo } = require('../utils/money');
 const logger = require('../utils/logger');
 
@@ -70,8 +70,19 @@ async function settleTopUp(tx) {
   } catch (error) {
     const message = extractApiMessage(error);
     if (/no transaction was found|not found/i.test(message)) {
-      // The user opened the checkout but never completed the charge — it
-      // never reached Flutterwave, so nothing was paid and nothing to credit.
+      // A charge only exists in the Flutterwave account that created it. If
+      // this process is holding a key from a DIFFERENT environment (e.g. a
+      // local TEST key pointed at the production database), "not found" only
+      // means "not ours to judge" — failing the row here would permanently
+      // drop money the user's bank has already debited.
+      if (!canMarkChargeMissing(tx)) {
+        logger.warn('Top-up not visible with the configured Flutterwave key — left pending (unverified environment)', {
+          tx_ref: tx.tx_ref, txEnv: tx.meta?.flwEnv || null,
+        });
+        return;
+      }
+      // The checkout was opened but never completed on THIS account — nothing
+      // was collected, so the row can safely be failed.
       console.log(`[TOP:ABANDONED] ${tx.tx_ref} — no charge at Flutterwave, marking failed`);
       if (!DRY_RUN) await markTopUpFailed(tx, { abandoned: true, message });
       return;

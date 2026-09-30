@@ -8,12 +8,15 @@ const logger = require('../utils/logger');
 const {
   initializePayment,
   verifyTransactionById,
+  verifyTransactionByRef,
   initiateTransfer,
   getTransferStatus,
   resolveBankCode,
   extractFlutterwaveError,
   shouldSimulateTransfer,
+  getFlwEnvironment,
 } = require('../utils/flutterwave');
+const { createWalletForUser } = require('../utils/wallet');
 const { toKobo, fromKobo, sumKobo } = require('../utils/money');
 
 function generateTxRef(prefix) {
@@ -180,6 +183,9 @@ async function initializeTopUp(req, res) {
       from_account_name: userName || null,
       to_account_number: wallet.accountNumber,
       to_account_name: wallet.accountName,
+      // Records which Flutterwave account (test/live) created this charge, so
+      // a check made with the WRONG key can never mark it failed.
+      meta: { flwEnv: getFlwEnvironment() },
     });
 
     const host = req.get('host');
@@ -204,7 +210,7 @@ async function initializeTopUp(req, res) {
     if (flwResponse.status !== 'success' || !flwResponse.data?.link) {
       logger.error('Flutterwave initialize failed', { tx_ref, response: flwResponse });
       pendingTx.status = 'failed';
-      pendingTx.meta = flwResponse;
+      pendingTx.meta = { ...(flwResponse || {}), flwEnv: pendingTx.meta?.flwEnv || getFlwEnvironment() };
       await pendingTx.save();
       return res.status(502).json({
         success: false,
@@ -225,8 +231,14 @@ async function initializeTopUp(req, res) {
       userId: req.user?.userId || req.user?.id,
     });
     if (pendingTx && pendingTx.status === 'pending') {
-      pendingTx.status = 'failed';
-      pendingTx.meta = { error: error.response ? error.response.data : error.message };
+      // Leave the row PENDING instead of failing it: a timeout here can still
+      // mean Flutterwave created the checkout and the user's bank already
+      // debited them. The webhook, the verify endpoints and the reconcile
+      // cron will settle it once Flutterwave confirms the real outcome.
+      pendingTx.meta = {
+        error: error.response ? error.response.data : error.message,
+        flwEnv: pendingTx.meta?.flwEnv || getFlwEnvironment(),
+      };
       await pendingTx.save().catch(() => {});
     }
     return res.status(500).json({
@@ -476,10 +488,18 @@ async function verifyTopUpCallback(req, res) {
     }
 
     const finalTx = await creditTopUpIfVerified(tx, rawFlwId);
-    const definitelyFailed = finalTx && finalTx.status === 'failed';
-    const redirectUrl = definitelyFailed
-      ? buildRedirectUrl(failureUrlBase, { status: 'failed', tx_ref: rawTxRef })
-      : buildRedirectUrl(successUrlBase, { status: 'success', tx_ref: rawTxRef, amount: tx.amount });
+    const currentStatus = finalTx ? finalTx.status : tx.status;
+    let redirectUrl;
+    if (currentStatus === 'success') {
+      redirectUrl = buildRedirectUrl(successUrlBase, { status: 'success', tx_ref: rawTxRef, amount: tx.amount });
+    } else if (currentStatus === 'failed') {
+      redirectUrl = buildRedirectUrl(failureUrlBase, { status: 'failed', tx_ref: rawTxRef });
+    } else {
+      // Still pending at Flutterwave — do NOT tell the app it succeeded.
+      // Send it to the wallet page with status=pending so it keeps polling
+      // GET /wallet/topup/verify/:tx_ref until the charge is confirmed.
+      redirectUrl = buildRedirectUrl(successUrlBase, { status: 'pending', tx_ref: rawTxRef, amount: tx.amount });
+    }
 
     return res.redirect(redirectUrl);
   } catch (error) {
@@ -903,8 +923,24 @@ async function handleWebhook(req, res) {
     if (event.event === 'charge.completed' && data) {
       const tx = await WalletTransactions.findOne({ where: { tx_ref: data.tx_ref, type: 'topup' } });
       if (tx) {
-        await creditTopUpIfVerified(tx, data.id);
+        const settled = await creditTopUpIfVerified(tx, data.id);
+        if (settled && settled.status === 'success') {
+          return res.status(200).json({ success: true });
+        }
+        if (settled && settled.status === 'failed') {
+          // Settled as failed — nothing to credit, no point retrying.
+          return res.status(200).json({ success: true });
+        }
+        // Could not confirm with Flutterwave (transient API/network error).
+        // Return non-2xx so Flutterwave redelivers this event later instead
+        // of the debit being silently lost.
+        logger.warn('Webhook: charge could not be verified — asking Flutterwave to retry', { tx_ref: tx.tx_ref });
+        return res.status(500).json({ success: false, message: 'Verification pending, retry' });
       }
+      // tx_ref not ours (row is always created before checkout starts) —
+      // acknowledge so Flutterwave doesn't retry an event we can never settle.
+      logger.warn('Webhook: charge.completed for unknown tx_ref', { tx_ref: data.tx_ref });
+      return res.status(200).json({ success: true });
     } else if (event.event === 'transfer.completed' && data) {
       // Never settle a withdrawal from the webhook body alone — a forged or
       // replayed event (compromised secret hash) must not be able to mark a

@@ -22,5 +22,5 @@ ca(1).pem
 
 /scripts/reconcilePendingTransactions.js 
 /scripts/backfillWallets.js
-/scripts/recoverFailedTopUps.js
 /scripts/reconcilePendingTransactions.js
+reconcilePendingTransactions.js
