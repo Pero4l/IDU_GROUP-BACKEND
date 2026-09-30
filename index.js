@@ -207,16 +207,14 @@ const PORT = process.env.PORT || 8000;
 // Scheduled reconciliation — safety net for wallet transactions
 // stuck in 'pending' when a Flutterwave webhook is missed. Runs
 // the same idempotent reconcile logic as `npm run reconcile`.
-// Enabled by default in production (override with
-// RECONCILE_CRON_ENABLED=false / schedule via RECONCILE_CRON_SCHEDULE).
+// Enabled by default (disable with RECONCILE_CRON_ENABLED=false; schedule
+// via RECONCILE_CRON_SCHEDULE).
 // ─────────────────────────────────────────────────────────────
 const cron = require("node-cron");
 const { reconcilePendingTransactions } = require("./scripts/reconcilePendingTransactions");
 
 function startReconcileCron() {
-  const enabled =
-    process.env.RECONCILE_CRON_ENABLED === "true" ||
-    (process.env.NODE_ENV === "production" && process.env.RECONCILE_CRON_ENABLED !== "false");
+  const enabled = process.env.RECONCILE_CRON_ENABLED !== 'false';
   if (!enabled) return;
 
   const schedule = process.env.RECONCILE_CRON_SCHEDULE || "*/3 * * * *";
