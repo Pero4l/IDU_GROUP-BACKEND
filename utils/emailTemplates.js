@@ -19,6 +19,7 @@ const PAYMENT_TYPE_LABELS = {
   rent_payment: 'Rent Payment',
   inspection_fee: 'Inspection Fee',
   topup: 'Wallet Top-up',
+  coupon_bonus: 'Coupon Bonus',
 };
 
 /**
