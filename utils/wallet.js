@@ -180,4 +180,4 @@ async function chargeMarketplacePayment({ payerUserId, landlordUserId, amount, c
   }, { context: 'chargeMarketplacePayment', payerUserId, landlordUserId, type, amount: fromKobo(amountKobo) });
 }
 
-module.exports = { generateUniqueAccountNumber, createWalletForUser, chargeMarketplacePayment, InsufficientBalanceError };
+module.exports = { generateUniqueAccountNumber, createWalletForUser, chargeMarketplacePayment, applyKoboDelta, InsufficientBalanceError };

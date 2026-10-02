@@ -10,6 +10,9 @@ const {
   getAnalytics, suspendUser, unsuspendUser,
   getWaitlist, getOutboundIp
 } = require('../controllers/superAdmin.controller');
+const {
+  createCoupon, listCoupons, getCoupon, updateCoupon, deleteCoupon
+} = require('../controllers/coupon.controller');
 
 
 // Protected Admin Endpoints
@@ -40,5 +43,13 @@ router.get('/waitlist', authMiddleware, requireSuperAdmin, getWaitlist);
 
 // Diagnostics — outbound IP for whitelisting with payment providers (e.g. Flutterwave transfers)
 router.get('/outbound-ip', authMiddleware, requireSuperAdmin, getOutboundIp);
+
+// Coupons — only admins can create/manage them; users redeem via POST /wallet/coupons/redeem
+router.post('/coupons', authMiddleware, requireSuperAdmin, createCoupon);
+router.get('/coupons', authMiddleware, requireSuperAdmin, listCoupons);
+router.get('/coupons/:id', authMiddleware, requireSuperAdmin, getCoupon);
+router.patch('/coupons/:id', authMiddleware, requireSuperAdmin, updateCoupon);
+router.put('/coupons/:id', authMiddleware, requireSuperAdmin, updateCoupon);
+router.delete('/coupons/:id', authMiddleware, requireSuperAdmin, deleteCoupon);
 
 module.exports = router;

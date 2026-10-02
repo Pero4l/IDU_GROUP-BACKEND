@@ -11,6 +11,7 @@ const {
   transferToUser,
   handleWebhook,
 } = require("../controllers/wallet.controller");
+const { redeemCoupon } = require("../controllers/coupon.controller");
 const { authMiddleware } = require("../middleware/authUserMiddleware");
 
 // Tighter per-user limits on money movement — the global limiter (200/15min
@@ -46,6 +47,17 @@ const transferLimiter = rateLimit({
   message: { success: false, message: "Too many transfer attempts, please try again later." },
 });
 
+// Coupon codes are guessable strings — keep redemption attempts per user low
+// so a bot can't brute-force its way to free bonuses.
+const couponLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  keyGenerator: byUser,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: "Too many coupon attempts, please try again later." },
+});
+
 // Generous burst allowance for Flutterwave's webhook delivery (the global
 // limiter is skipped for this path in index.js). Keyed by IP since the
 // webhook is unauthenticated — signature verification still gates it.
@@ -66,6 +78,7 @@ router.get("/topup/verify", authMiddleware, verifyTopUpStatus);
 router.get("/topup/verify/:tx_ref", authMiddleware, verifyTopUpStatus);
 router.post("/withdraw", authMiddleware, withdrawLimiter, withdraw);
 router.post("/transfer", authMiddleware, transferLimiter, transferToUser);
+router.post("/coupons/redeem", authMiddleware, couponLimiter, redeemCoupon);
 router.post("/webhook", webhookLimiter, handleWebhook);
 
 module.exports = router;

@@ -38,7 +38,8 @@ module.exports = (sequelize, DataTypes) => {
         'lock house',
         'house rent',
         'inspection fee',
-        'refund_payment'
+        'refund_payment',
+        'bonus'
       ),
       allowNull: false,
     },
