@@ -101,6 +101,10 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.BOOLEAN,
         defaultValue: false,
       },
+      commission_percent: {
+        type: DataTypes.DECIMAL(5, 2),
+        allowNull: true,
+      },
     },
     {
       sequelize,

@@ -292,6 +292,44 @@ async function getAnalytics(req, res) {
   }
 }
 
+async function updateLandlordCommission(req, res) {
+  try {
+    const { id } = req.params;
+    const { commission_percent } = req.body;
+
+    if (commission_percent === undefined || commission_percent === null) {
+      return res.status(400).json({ success: false, message: "commission_percent is required" });
+    }
+
+    const pct = Number(commission_percent);
+    if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+      return res.status(400).json({ success: false, message: "commission_percent must be between 0 and 100" });
+    }
+
+    const user = await Users.findByPk(id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    if (user.role !== 'landlord') {
+      return res.status(400).json({ success: false, message: "Only landlords can have commission percentages assigned" });
+    }
+
+    user.commission_percent = pct;
+    await user.save();
+
+    const { password, otpCode, otpExpiresAt, ...safeUser } = user.toJSON();
+    return res.status(200).json({ 
+      success: true, 
+      message: "Landlord commission percentage updated successfully", 
+      data: { full_name: safeUser.full_name, commission_percent: safeUser.commission_percent } 
+    });
+  } catch (error) {
+    console.error("Super Admin - updateLandlordCommission error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
 async function suspendUser(req, res) {
   try {
     const { id } = req.params;
@@ -373,5 +411,6 @@ module.exports = {
   suspendUser,
   unsuspendUser,
   getWaitlist,
-  getOutboundIp
+  getOutboundIp,
+  updateLandlordCommission
 };
