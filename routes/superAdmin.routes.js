@@ -2,13 +2,14 @@ const express = require('express');
 const router = express.Router();
 const { authMiddleware } = require('../middleware/authUserMiddleware');
 const { requireSuperAdmin } = require('../middleware/superAdminMiddleware');
-const { 
+const {
   getAllUsers, toggleUserStatus, deleteUser,
   getAllRentals, deleteRental, getLockedHouses,
   getAllReports, updateReportStatus,
   getAllConversations, getConversationMessages,
   getAnalytics, suspendUser, unsuspendUser,
-  getWaitlist, getOutboundIp
+  getWaitlist, getOutboundIp,
+  updateLandlordCommission
 } = require('../controllers/superAdmin.controller');
 const {
   createCoupon, listCoupons, getCoupon, updateCoupon, deleteCoupon
@@ -21,6 +22,7 @@ router.get('/users', authMiddleware, requireSuperAdmin, getAllUsers);
 router.put('/users/:id/status', authMiddleware, requireSuperAdmin, toggleUserStatus);
 router.put('/users/:id/suspend', authMiddleware, requireSuperAdmin, suspendUser);
 router.put('/users/:id/unsuspend', authMiddleware, requireSuperAdmin, unsuspendUser);
+router.put('/users/:id/commission', authMiddleware, requireSuperAdmin, updateLandlordCommission);
 router.delete('/users/:id', authMiddleware, requireSuperAdmin, deleteUser);
 
 // Rentals Oversight

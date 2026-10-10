@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { Wallet, WalletTransactions } = require('../models');
+const { Wallet, WalletTransactions, Users } = require('../models');
 const { withTransaction } = require('./rollback');
 const { toKobo, fromKobo, addKobo } = require('./money');
 
@@ -92,7 +92,17 @@ async function chargeMarketplacePayment({ payerUserId, landlordUserId, amount, c
     throw new Error('A valid amount is required');
   }
   const rawPct = Number(commissionPercent);
-  const pct = Number.isFinite(rawPct) ? Math.min(100, Math.max(0, rawPct)) : 0;
+  let pct = Number.isFinite(rawPct) ? Math.min(100, Math.max(0, rawPct)) : 0;
+
+  if (landlordUserId) {
+    const landlordUser = await Users.findByPk(landlordUserId, { transaction: t, lock: t.LOCK.UPDATE });
+    if (landlordUser && landlordUser.commission_percent !== null && landlordUser.commission_percent !== undefined) {
+      const landlordPct = Number(landlordUser.commission_percent);
+      if (Number.isFinite(landlordPct) && landlordPct >= 0 && landlordPct <= 100) {
+        pct = landlordPct;
+      }
+    }
+  }
 
   return withTransaction(async (t) => {
     // Lock payer & landlord wallets in a fixed order (by user id) so two
