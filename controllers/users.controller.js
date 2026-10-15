@@ -345,7 +345,8 @@ async function forgotPassword(req, res) {
         .json({ success: false, message: "Email is required" });
     }
 
-    const user = await Users.findOne({ where: { email } });
+    const normalizedEmail = email.toLowerCase().trim();
+    const user = await Users.findOne({ where: { email: normalizedEmail } });
     if (!user) {
       // Return success even if user not found to prevent email enumeration
       return res.status(404).json({
@@ -408,7 +409,8 @@ async function confirmOtp(req, res) {
         .json({ success: false, message: "Email and OTP code are required" });
     }
 
-    const user = await Users.findOne({ where: { email } });
+    const normalizedEmail = email.toLowerCase().trim();
+    const user = await Users.findOne({ where: { email: normalizedEmail } });
     if (!user) {
       // Return generic message to prevent email enumeration
       return res
@@ -474,7 +476,8 @@ async function resetPassword(req, res) {
         .json({ success: false, message: "Password must contain a number" });
     }
 
-    const user = await Users.findOne({ where: { email } });
+    const normalizedEmail = email.toLowerCase().trim();
+    const user = await Users.findOne({ where: { email: normalizedEmail } });
     if (!user) {
       // Return generic message to prevent email enumeration
       return res
