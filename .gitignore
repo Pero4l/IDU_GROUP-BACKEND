@@ -24,3 +24,5 @@ ca(1).pem
 /scripts/backfillWallets.js
 /scripts/reconcilePendingTransactions.js
 reconcilePendingTransactions.js
+postman-collection-production.json
+postman-tests-production.js
