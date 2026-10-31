@@ -39,4 +39,7 @@ const rentalUpload = multer({
   },
 });
 
-module.exports = { imageUpload, rentalUpload };
+// Shortlet uploads: images + videos, validated per field (same rules as rentals)
+const shortletUpload = rentalUpload;
+
+module.exports = { imageUpload, rentalUpload, shortletUpload };

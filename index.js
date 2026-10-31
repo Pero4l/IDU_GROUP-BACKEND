@@ -130,6 +130,7 @@ const db = require("./models");
 
 const userAuth = require("./routes/user.routes");
 const rentalsRoute = require("./routes/rental.routes");
+const shortletRoute = require("./routes/shortlet.routes");
 const notificationRoute = require("./routes/notification.routes");
 const counts = require("./routes/allCount.routes");
 const progressRoute = require("./routes/progress.routes");
@@ -156,6 +157,7 @@ app.get("/", (req, res) => {
 
 app.use("/auth", userAuth);
 app.use("/rental", rentalsRoute);
+app.use("/shortlet", shortletRoute);
 app.use("/notification", notificationRoute);
 app.use("/counts", counts);
 app.use("/progress", progressRoute);

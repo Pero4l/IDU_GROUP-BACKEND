@@ -78,14 +78,23 @@ const getDbConfig = (maxPool = 10) => {
     }
   };
 
-  if (process.env.DATABASE_URL) {
+  const useEnvUrl = !!process.env.DATABASE_URL;
+
+  if (useEnvUrl) {
     baseConfig.use_env_variable = 'DATABASE_URL';
   } else {
+    // PostgreSQL 15+ no longer auto-grants CREATE on the default "public" schema
+    // to non-owners, so local dev databases are created in a dedicated schema the
+    // app user owns (e.g. `rentulo`). Set DB_SCHEMA to override; defaults to public.
+    const dbSchema = process.env.DB_SCHEMA || 'public';
     baseConfig.username = process.env.DATABASE_USER || process.env.DB_USER;
     baseConfig.password = process.env.DATABASE_PASSWORD || process.env.DB_PASSWORD;
     baseConfig.database = process.env.DATABASE_NAME || process.env.DB_NAME;
     baseConfig.host = process.env.DATABASE_HOST || process.env.DB_HOST;
     baseConfig.port = process.env.DATABASE_PORT || process.env.DB_PORT || 5432;
+    baseConfig.schema = dbSchema;
+    baseConfig.searchPath = dbSchema;
+    baseConfig.dialectOptions.prependSearchPath = true;
   }
 
   return baseConfig;
