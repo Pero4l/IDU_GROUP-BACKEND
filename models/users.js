@@ -68,6 +68,11 @@ module.exports = (sequelize, DataTypes) => {
         foreignKey: "sender_id",
         as: "supportReplies",
       });
+
+      // Shortlet belongs to ONE User (landlord/agent)
+      Users.hasMany(models.Shortlets, {
+        foreignKey: "UserId",
+      });
     }
   }
   Users.init(

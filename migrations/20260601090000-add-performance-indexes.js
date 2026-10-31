@@ -22,7 +22,7 @@ module.exports = {
     await queryInterface.addIndex('Messages', ['conversation_id'], { name: 'messages_conversation_id_idx' });
 
     // 6. Transactions table indexes
-    await queryInterface.addIndex('Transactions', ['reference'], { name: 'transactions_reference_idx' });
+    await queryInterface.addIndex('transactions', ['reference'], { name: 'transactions_reference_idx' });
   },
   
   async down(queryInterface, Sequelize) {
@@ -34,6 +34,6 @@ module.exports = {
     await queryInterface.removeIndex('Conversations', 'conversations_tenant_id_idx');
     await queryInterface.removeIndex('Conversations', 'conversations_landlord_id_idx');
     await queryInterface.removeIndex('Messages', 'messages_conversation_id_idx');
-    await queryInterface.removeIndex('Transactions', 'transactions_reference_idx');
+    await queryInterface.removeIndex('transactions', 'transactions_reference_idx');
   }
 };
