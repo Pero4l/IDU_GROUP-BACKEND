@@ -75,17 +75,14 @@ module.exports = {
       amenities: {
         type: Sequelize.JSON,
         allowNull: false,
-        defaultValue: Sequelize.literal('[]'),
       },
       images: {
         type: Sequelize.JSON,
         allowNull: false,
-        defaultValue: Sequelize.literal('[]'),
       },
       videos: {
         type: Sequelize.JSON,
         allowNull: true,
-        defaultValue: Sequelize.literal('[]'),
       },
       coverImage: {
         type: Sequelize.STRING,
