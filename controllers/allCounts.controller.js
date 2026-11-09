@@ -1,12 +1,13 @@
-const {Users, Rentals} = require('../models');
+const { Users, Rentals, Shortlets } = require('../models');
 
 async function getAllCounts(req, res) {
   
   
   try {
-    const [userCount, rentalCount, totalLandlords, totalTenants] = await Promise.all([
+    const [userCount, rentalCount, shortletCount, totalLandlords, totalTenants] = await Promise.all([
       Users.count(),
       Rentals.count(),
+      Shortlets.count(),
       Users.count({ where: { role: 'landlord' } }),
       Users.count({ where: { role: 'tenant' } })
     ]);
@@ -17,7 +18,10 @@ async function getAllCounts(req, res) {
       success: true,
       data: {
         totalUsers: userCount,
-        totalListings: rentalCount,
+        // Total listings = long-term rentals + shortlets
+        totalListings: rentalCount + shortletCount,
+        totalRentals: rentalCount,
+        totalShortlets: shortletCount,
         totalLandlords: totalLandlords,
         totalTenants: totalTenants
       },

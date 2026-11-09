@@ -1,5 +1,5 @@
 const axios = require('axios');
-const { Users, Rentals, Reports, Progress, Conversations, Messages, WalletTransactions, Waitlist } = require('../models');
+const { Users, Rentals, Shortlets, Reports, Progress, Conversations, Messages, WalletTransactions, Waitlist } = require('../models');
 
 const MARKETPLACE_PAYMENT_TYPES = ['lock house', 'house rent', 'inspection fee'];
 
@@ -197,6 +197,7 @@ async function getAnalytics(req, res) {
       landlordsCount,
       adminsCount,
       totalRentals,
+      totalShortlets,
       totalLikes,
       totalLocks,
       totalBookings,
@@ -213,6 +214,7 @@ async function getAnalytics(req, res) {
       Users.count({ where: { role: 'landlord' } }),
       Users.count({ where: { role: 'admin' } }),
       Rentals.count(),
+      Shortlets.count(),
       Progress.count({ where: { liked: true } }),
       Progress.count({ where: { locked: true } }),
       Progress.count({ where: { booked: true } }),
@@ -261,6 +263,14 @@ async function getAnalytics(req, res) {
         },
         rentals: {
           total: totalRentals
+        },
+        shortlets: {
+          total: totalShortlets
+        },
+        listings: {
+          total: totalRentals + totalShortlets,
+          rentals: totalRentals,
+          shortlets: totalShortlets
         },
         interactions: {
           likes: totalLikes,
