@@ -7,9 +7,10 @@ const { getLocationMiddleware } = require('../middleware/getLocationMiddleware')
 const { requireProfileCompletion } = require('../middleware/requireProfileCompletion');
 const { addShortlet, seeAllShortlets, seeRecentShortlets, getShortlet, updateShortlet, deleteShortlet, searchShortlets } = require('../controllers/shortlet.controller');
 
-// Define expected file fields and max counts for shortlet images and videos
+// Field caps match the controller rules (10 images alone, or 4 images + 2 videos).
+// The old caps (6 images) made multer reject 7-10 image uploads the controller allows.
 const shortletUploadFields = upload.fields([
-  { name: 'images', maxCount: 6 },
+  { name: 'images', maxCount: 10 },
   { name: 'videos', maxCount: 2 }
 ]);
 

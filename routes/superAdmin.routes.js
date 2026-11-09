@@ -11,6 +11,9 @@ const {
   getWaitlist, getOutboundIp,
   updateLandlordCommission
 } = require('../controllers/superAdmin.controller');
+const { deleteShortlet, adminGetAllShortlets } = require('../controllers/shortlet.controller');
+// Use the rental controller's delete so the owner gets notified and admin deletes are logged
+const { deleteRental: deleteAnyRental } = require('../controllers/rental.controller');
 const {
   createCoupon, listCoupons, getCoupon, updateCoupon, deleteCoupon
 } = require('../controllers/coupon.controller');
@@ -27,7 +30,11 @@ router.delete('/users/:id', authMiddleware, requireSuperAdmin, deleteUser);
 
 // Rentals Oversight
 router.get('/rentals', authMiddleware, requireSuperAdmin, getAllRentals);
-router.delete('/rentals/:id', authMiddleware, requireSuperAdmin, deleteRental);
+router.delete('/rentals/:id', authMiddleware, requireSuperAdmin, deleteAnyRental);
+
+// Shortlets Oversight
+router.get('/shortlets', authMiddleware, requireSuperAdmin, adminGetAllShortlets);
+router.delete('/shortlets/:id', authMiddleware, requireSuperAdmin, deleteShortlet);
 
 // Progress oversight (locked houses)
 router.get('/rentals/locked', authMiddleware, requireSuperAdmin, getLockedHouses);

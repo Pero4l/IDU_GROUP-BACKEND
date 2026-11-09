@@ -277,35 +277,49 @@ async function updateRental(req, res) {
 async function deleteRental(req, res) {
   try {
     const { id } = req.params;
+    const requesterId = req.user.userId;
 
-    const rental = await Rentals.findByPk(id);
+    // Non-UUID ids would make Postgres throw (500) — treat as not found
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+    const rental = isUUID ? await Rentals.findByPk(id) : null;
     if (!rental) {
       return res.status(404).json({ success: false, message: "Rental not found" });
     }
-    if (rental.UserId !== req.user.userId || (req.user.role !== 'landlord' && req.user.role !== 'agent')) {
+
+    // Owner (landlord) or a super admin may delete
+    const isOwner = rental.UserId === requesterId && req.user.role === 'landlord';
+    let isAdmin = req.adminUser?.is_superadmin === true;
+    if (!isOwner && !isAdmin) {
+      const requester = await Users.findByPk(requesterId, { attributes: ['id', 'is_superadmin'] });
+      isAdmin = requester?.is_superadmin === true;
+    }
+    if (!isOwner && !isAdmin) {
       return res.status(403).json({ success: false, message: "You are not authorized to delete this rental" });
     }
 
     const rentalTitle = rental.title;
-    const landlordId  = req.user.userId;
+    const ownerId = rental.UserId;
 
-    // Wrap destroy inside transaction so any follow-up DB write failure
-    // rolls the delete back (rental stays in DB, user is notified to retry)
     await withTransaction(async (t) => {
       await rental.destroy({ transaction: t });
-    }, { context: 'deleteRental', rentalId: id, userId: landlordId });
+    }, { context: 'deleteRental', rentalId: id, userId: requesterId, byAdmin: !isOwner });
 
-    logger.info('Rental deleted', { rentalId: id, title: rentalTitle, userId: landlordId });
+    logger.info('Rental deleted', { rentalId: id, title: rentalTitle, ownerId, deletedBy: requesterId, byAdmin: !isOwner });
 
-    // Non-critical side-effects
-    const landlord = await Users.findByPk(landlordId);
-    await logAndEmailUser(landlordId, landlord?.email, "Rental Deleted", `Your rental "${rentalTitle}" has been deleted.`);
-    await notifySuperAdmins(`Rental "${rentalTitle}" was deleted by ${landlord?.full_name ?? landlordId}`, "rental");
+    // Non-critical side-effects — always notify the actual owner
+    const owner = await Users.findByPk(ownerId, { attributes: ['id', 'email', 'full_name'] });
+    if (isOwner) {
+      await logAndEmailUser(ownerId, owner?.email, "Rental Deleted", `Your rental "${rentalTitle}" has been deleted.`);
+      await notifySuperAdmins(`Rental "${rentalTitle}" was deleted by ${owner?.full_name ?? ownerId}`, "rental");
+    } else {
+      await logAndEmailUser(ownerId, owner?.email, "Rental Removed", `Your rental "${rentalTitle}" was removed by an administrator.`);
+      await notifySuperAdmins(`Rental "${rentalTitle}" (owner: ${owner?.full_name ?? ownerId}) was deleted by an admin`, "rental");
+    }
 
     return res.status(200).json({ success: true, message: "Rental deleted successfully" });
   } catch (error) {
     logger.error('Error deleting rental', { error: error.message, userId: req.user?.userId });
-    return res.status(500).json({ success: false, message: "Server error", error: error.message });
+    return res.status(500).json({ success: false, message: "Server error" });
   }
 }
 

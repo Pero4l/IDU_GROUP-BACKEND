@@ -94,17 +94,20 @@ async function chargeMarketplacePayment({ payerUserId, landlordUserId, amount, c
   const rawPct = Number(commissionPercent);
   let pct = Number.isFinite(rawPct) ? Math.min(100, Math.max(0, rawPct)) : 0;
 
-  if (landlordUserId) {
-    const landlordUser = await Users.findByPk(landlordUserId, { transaction: t, lock: t.LOCK.UPDATE });
-    if (landlordUser && landlordUser.commission_percent !== null && landlordUser.commission_percent !== undefined) {
-      const landlordPct = Number(landlordUser.commission_percent);
-      if (Number.isFinite(landlordPct) && landlordPct >= 0 && landlordPct <= 100) {
-        pct = landlordPct;
+  return withTransaction(async (t) => {
+    // A per-landlord commission set by a super admin overrides the platform
+    // default. Read it inside the transaction (previously this ran before the
+    // transaction existed and threw "t is not defined" on every payment).
+    if (landlordUserId) {
+      const landlordUser = await Users.findByPk(landlordUserId, { attributes: ['id', 'commission_percent'], transaction: t });
+      if (landlordUser && landlordUser.commission_percent !== null && landlordUser.commission_percent !== undefined) {
+        const landlordPct = Number(landlordUser.commission_percent);
+        if (Number.isFinite(landlordPct) && landlordPct >= 0 && landlordPct <= 100) {
+          pct = landlordPct;
+        }
       }
     }
-  }
 
-  return withTransaction(async (t) => {
     // Lock payer & landlord wallets in a fixed order (by user id) so two
     // marketplace payments crossing the same pair of users can't deadlock.
     const userIds = [...new Set([payerUserId, landlordUserId].filter(Boolean))].sort();

@@ -16,6 +16,15 @@ module.exports = (sequelize, DataTypes) => {
   }
 
   Shortlets.init({
+    // The table's PK is a UUID (see migration). Without this Sequelize assumes
+    // an INTEGER auto-increment id, so `shortlet.id` is null inside the
+    // beforeCreate hook and id typing is wrong everywhere else.
+    id: {
+      type: DataTypes.UUID,
+      defaultValue: DataTypes.UUIDV4,
+      primaryKey: true,
+      allowNull: false,
+    },
     rentalModel: {
       type: DataTypes.ENUM('entire_place', 'private_room', 'shared_room', 'hotel'),
       allowNull: false,
