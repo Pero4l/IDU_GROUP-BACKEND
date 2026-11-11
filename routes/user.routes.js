@@ -16,11 +16,13 @@ const {
 } = require("../controllers/users.controller");
 const { loginMiddleware } = require("../middleware/loginMiddleware");
 const { authMiddleware } = require("../middleware/authUserMiddleware");
+const { requireSuperAdmin } = require("../middleware/superAdminMiddleware");
 const { loginLimiter, otpLimiter, otpRequestLimiter } = require("../middleware/rateLimiter");
 
 router.post("/register", otpRequestLimiter, register);
 router.post("/verify-registration", otpLimiter, verifyRegistration);
-router.post("/register-admin", authMiddleware, otpRequestLimiter, registerAdmin);
+// Only an existing super admin may create another admin account
+router.post("/register-admin", authMiddleware, requireSuperAdmin, otpRequestLimiter, registerAdmin);
 router.post("/verify-admin", otpLimiter, verifyAdmin);
 router.post("/login", loginLimiter, loginMiddleware, login);
 router.post("/google-auth", googleAuth);
