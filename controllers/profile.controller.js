@@ -137,9 +137,10 @@ async function getUserProfile(req, res) {
   try {
     const { id } = req.params;
 
-    // 1. Fetch user (no password / email)
+    // 1. Fetch user (no password / email / OTP — this endpoint is readable by
+    // any logged-in user, so OTP fields would allow password-reset takeover)
     const user = await Users.findByPk(id, {
-      attributes: { exclude: ['password', 'email'] },
+      attributes: { exclude: ['password', 'email', 'otpCode', 'otpExpiresAt'] },
       include: [{ model: Profile }]
     });
 

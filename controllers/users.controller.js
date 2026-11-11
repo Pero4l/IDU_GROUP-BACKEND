@@ -737,7 +737,10 @@ async function registerAdmin(req, res) {
     }
 
     const existingUser = await Users.findOne({ where: { email } });
-    if (existingUser && existingUser.is_active) {
+    // Only an unfinished admin registration (inactive admin row) may be
+    // overwritten. Any other existing account — including a suspended
+    // tenant/landlord (is_active: false) — must never be converted to admin.
+    if (existingUser && (existingUser.is_active || existingUser.role !== "admin")) {
       return res
         .status(400)
         .json({ success: false, message: "User already exists" });
