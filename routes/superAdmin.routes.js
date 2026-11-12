@@ -13,8 +13,9 @@ const {
 } = require('../controllers/superAdmin.controller');
 const {
   deleteShortlet, adminGetAllShortlets, adminListDepositClaims, adminResolveDepositClaim,
-  adminListShortletBookings, adminGetShortletBooking,
+  adminListShortletBookings, adminGetShortletBooking, adminListCancellations,
 } = require('../controllers/shortlet.controller');
+const { getCancellationPolicySettings, updateCancellationPolicySettings } = require('../controllers/shortletPolicy.controller');
 // Use the rental controller's delete so the owner gets notified and admin deletes are logged
 const { deleteRental: deleteAnyRental } = require('../controllers/rental.controller');
 const {
@@ -43,8 +44,13 @@ router.delete('/shortlets/:id', authMiddleware, requireSuperAdmin, deleteShortle
 // (deposit-claims must stay above /:bookingId so it isn't read as an id)
 router.get('/shortlet-bookings', authMiddleware, requireSuperAdmin, adminListShortletBookings);
 router.get('/shortlet-bookings/deposit-claims', authMiddleware, requireSuperAdmin, adminListDepositClaims);
+router.get('/shortlet-bookings/cancellations', authMiddleware, requireSuperAdmin, adminListCancellations);
 router.get('/shortlet-bookings/:bookingId', authMiddleware, requireSuperAdmin, adminGetShortletBooking);
 router.put('/shortlet-bookings/:bookingId/deposit-claim', authMiddleware, requireSuperAdmin, adminResolveDepositClaim);
+
+// Shortlet cancellation policy (versioned; applies to new bookings only)
+router.get('/shortlet-settings/cancellation-policy', authMiddleware, requireSuperAdmin, getCancellationPolicySettings);
+router.put('/shortlet-settings/cancellation-policy', authMiddleware, requireSuperAdmin, updateCancellationPolicySettings);
 
 // Progress oversight (locked houses)
 router.get('/rentals/locked', authMiddleware, requireSuperAdmin, getLockedHouses);

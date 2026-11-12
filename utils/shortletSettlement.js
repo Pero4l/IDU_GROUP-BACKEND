@@ -27,6 +27,7 @@ const { ShortletBookings, Wallet, WalletTransactions, Users } = require('../mode
 const { withTransaction } = require('./rollback');
 const { applyKoboDelta } = require('./wallet');
 const { createHostDebt, recoverHostDebt, hostsWithOpenDebts } = require('./hostDebt');
+const { preCheckInPercent, describeStandardPolicy } = require('./cancellationPolicy');
 const { toKobo, fromKobo } = require('./money');
 const logger = require('./logger');
 
@@ -38,10 +39,11 @@ const MID_STAY_GUEST_BUFFER_MS = 24 * HOUR_MS;  // guest pays for the next 24h w
 const LAGOS_OFFSET = '+01:00';                  // WAT, no daylight saving
 
 class BookingActionError extends Error {
-  constructor(status, message, code) {
+  constructor(status, message, code, details) {
     super(message);
     this.status = status;
     this.code = code;
+    this.details = details; // extra fields merged into the error response
   }
 }
 
@@ -150,16 +152,18 @@ function splitKobo(baseKobo, commissionPercent) {
 
 // ── Wallet moves (inside a transaction) ──
 // creditWallet returns the wallet, or null if the user has no active wallet.
-async function creditWallet({ userId, amountKobo, type, role = null, narration, fromName, meta }, t) {
+async function creditWallet({ userId, amountKobo, type, role = null, narration, fromName, meta, refs }, t) {
   if (!userId || amountKobo <= 0) return null;
   const wallet = await Wallet.findOne({ where: { user_id: userId }, transaction: t, lock: t.LOCK.UPDATE });
   if (!wallet || wallet.status !== 'ACTIVE') return null;
 
   await applyKoboDelta(wallet, amountKobo, t);
+  const tx_ref = `RENTULO-${type.replace(/[\s_]+/g, '').toUpperCase()}-${crypto.randomUUID()}`;
+  if (Array.isArray(refs)) refs.push(tx_ref);
   await WalletTransactions.create({
     wallet_id: wallet.id,
     user_id: userId,
-    tx_ref: `RENTULO-${type.replace(/[\s_]+/g, '').toUpperCase()}-${crypto.randomUUID()}`,
+    tx_ref,
     type,
     role,
     amount: fromKobo(amountKobo),
@@ -175,16 +179,18 @@ async function creditWallet({ userId, amountKobo, type, role = null, narration, 
 
 // debitWallet throws InsufficientBalanceError (nothing written) if the user
 // can't cover it, and returns null if they have no active wallet.
-async function debitWallet({ userId, amountKobo, type, role = 'payer', narration, meta }, t) {
+async function debitWallet({ userId, amountKobo, type, role = 'payer', narration, meta, refs }, t) {
   if (!userId || amountKobo <= 0) return null;
   const wallet = await Wallet.findOne({ where: { user_id: userId }, transaction: t, lock: t.LOCK.UPDATE });
   if (!wallet || wallet.status !== 'ACTIVE') return null;
 
   await applyKoboDelta(wallet, -amountKobo, t);
+  const tx_ref = `RENTULO-${type.replace(/[\s_]+/g, '').toUpperCase()}-${crypto.randomUUID()}`;
+  if (Array.isArray(refs)) refs.push(tx_ref);
   await WalletTransactions.create({
     wallet_id: wallet.id,
     user_id: userId,
-    tx_ref: `RENTULO-${type.replace(/[\s_]+/g, '').toUpperCase()}-${crypto.randomUUID()}`,
+    tx_ref,
     type,
     role,
     amount: fromKobo(amountKobo),
@@ -291,7 +297,45 @@ async function releaseDeposit(bookingId, now = new Date()) {
 // ─────────────────────────────────────────────
 // Cancellation terms — what happens if `cancelledBy` cancels at `now`
 // ─────────────────────────────────────────────
-function cancellationTerms(booking, cancelledBy, now = new Date()) {
+//
+// Two engines:
+//  - 'standard' bookings (the RentULO policy): rules come from the booking's
+//    own cancellation_policy_snapshot, so admin changes never affect it.
+//      before check-in, guest → grace period, else the matching window %
+//      during the stay, guest → early check-out: the guest picks the day they
+//        leave; each unused night is refunded in full only if the listing
+//        allows it AND the guest gave at least `noticeHours` before that
+//        night's check-out time. Nights already used are never refunded.
+//  - legacy bookings (flexible/moderate/firm/strict): unchanged maths.
+// A host cancelling is always a full refund of everything not yet used.
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+function isValidDateOnly(v) {
+  if (typeof v !== 'string' || !DATE_RE.test(v)) return false;
+  const d = new Date(`${v}T00:00:00Z`);
+  return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
+}
+const daysBetween = (a, b) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / DAY_MS);
+const round2 = (n) => Math.round(n * 100) / 100;
+
+// The days a guest can choose to leave on, if they check out early now.
+// Earliest: today if it's still before today's check-out time, otherwise
+// tomorrow — and never before the first night has been used.
+// Latest: the day before their original check-out.
+function checkOutDateRange(booking, now = new Date()) {
+  const today = todayInLagos(now);
+  const base = now < lagosDateTime(today, booking.check_out_time) ? today : addDays(today, 1);
+  const firstPossible = addDays(booking.check_in, 1);
+  const earliest = base > firstPossible ? base : firstPossible;
+  const latest = addDays(booking.check_out, -1);
+  return { earliest, latest, available: earliest <= latest };
+}
+
+function isStandardBooking(booking) {
+  return booking.cancellation_policy === 'standard' && !!booking.cancellation_policy_snapshot?.rules;
+}
+
+function cancellationTerms(booking, cancelledBy, now = new Date(), { checkOutDate } = {}) {
   if (booking.status !== 'confirmed') {
     throw new BookingActionError(400, 'Only confirmed bookings can be cancelled', 'NOT_CANCELLABLE');
   }
@@ -301,67 +345,164 @@ function cancellationTerms(booking, cancelledBy, now = new Date()) {
     throw new BookingActionError(400, 'This stay has already ended and can no longer be cancelled', 'STAY_ENDED');
   }
 
-  const policyName = POLICIES[booking.cancellation_policy] ? booking.cancellation_policy : 'flexible';
-  const policy = POLICIES[policyName];
+  const standard = isStandardBooking(booking);
+  const snapshot = standard ? booking.cancellation_policy_snapshot : null;
+  const policyName = standard ? 'standard' : (POLICIES[booking.cancellation_policy] ? booking.cancellation_policy : 'flexible');
+  const legacy = POLICIES[policyName];
   const nights = Number(booking.nights);
   const nightKobo = toKobo(booking.price_per_night);
   const nightsKobo = nightKobo * nights;
   const cleaningKobo = toKobo(booking.cleaning_fee);
   const depositHeld = booking.deposit_status === 'held';
   const depositKobo = depositHeld ? toKobo(booking.security_deposit) : 0;
+  const bookedAt = new Date(booking.createdAt || now);
+  const hoursBefore = (inAt - now) / HOUR_MS;
+  const hoursSinceBooking = (now - bookedAt) / HOUR_MS;
 
-  let stage, nightsRefundKobo, cleaningRefundKobo, depositRefundNowKobo, usedNights = null, actualCheckOut = null;
+  let stage, rule, refundPercent, nightsRefundKobo, cleaningRefundKobo, depositRefundNowKobo;
+  let usedNights = null, chargedNights = null, refundedNights = null, actualCheckOut = null;
+  let noticeHours = null, earlyCheckoutRefundable = null, checkOutDateOptions = null;
 
   if (now < inAt) {
     stage = 'before_check_in';
-    nightsRefundKobo = cancelledBy === 'host'
-      ? nightsKobo
-      : policy.refundNights({
-        hoursBefore: (inAt - now) / HOUR_MS,
-        hoursSinceBooking: (now - new Date(booking.createdAt || now)) / HOUR_MS,
-        nightsKobo,
-        nightKobo,
-      });
-    cleaningRefundKobo = cleaningKobo;
-    depositRefundNowKobo = depositKobo;
+    if (cancelledBy === 'host') {
+      rule = 'host_cancelled';
+      refundPercent = 100;
+      nightsRefundKobo = nightsKobo;
+    } else if (standard) {
+      const r = preCheckInPercent(snapshot.rules, { hoursBefore, hoursSinceBooking });
+      rule = r.rule; // 'grace_period' | 'cancellation_window'
+      refundPercent = r.percent;
+      nightsRefundKobo = Math.round(nightsKobo * r.percent / 100);
+    } else {
+      rule = 'legacy_policy';
+      nightsRefundKobo = legacy.refundNights({ hoursBefore, hoursSinceBooking, nightsKobo, nightKobo });
+      refundPercent = nightsKobo ? round2(nightsRefundKobo * 100 / nightsKobo) : 0;
+    }
+    cleaningRefundKobo = cleaningKobo;   // no cleaning service provided yet
+    depositRefundNowKobo = depositKobo;  // no stay, nothing to claim
   } else {
     stage = 'during_stay';
-    // Guests pay for the night in progress plus the next 24h; a host ending
-    // the stay only keeps the nights that have started.
-    const effectiveEnd = now.getTime() + (cancelledBy === 'guest' ? MID_STAY_GUEST_BUFFER_MS : 0);
-    usedNights = Math.min(nights, Math.max(1, Math.ceil((effectiveEnd - inAt.getTime()) / DAY_MS)));
-    const unusedKobo = (nights - usedNights) * nightKobo;
-    const pct = cancelledBy === 'host' ? 100 : policy.midStayPercent;
-    nightsRefundKobo = Math.round(unusedKobo * pct / 100);
-    cleaningRefundKobo = 0;
-    depositRefundNowKobo = 0; // stays held for the claim window
-    actualCheckOut = addDays(booking.check_in, usedNights);
+    if (cancelledBy === 'host') {
+      // Host ending the stay keeps only the nights that have started.
+      rule = 'host_cancelled';
+      usedNights = Math.min(nights, Math.max(1, Math.ceil((now.getTime() - inAt.getTime()) / DAY_MS)));
+      chargedNights = usedNights;
+      refundedNights = nights - usedNights;
+      nightsRefundKobo = refundedNights * nightKobo;
+      refundPercent = 100;
+      actualCheckOut = addDays(booking.check_in, usedNights);
+    } else if (standard) {
+      rule = 'early_checkout';
+      noticeHours = Number(snapshot.rules.earlyCheckout?.noticeHours ?? 24);
+      earlyCheckoutRefundable = !!snapshot.earlyCheckoutRefundable;
+      const range = checkOutDateRange(booking, now);
+      checkOutDateOptions = { earliest: range.earliest, latest: range.latest };
+      if (!range.available) {
+        throw new BookingActionError(400, `Your stay ends on ${booking.check_out}, so there are no nights left to cancel.`, 'NO_UNUSED_NIGHTS');
+      }
+      const dep = checkOutDate === undefined || checkOutDate === null || checkOutDate === '' ? range.earliest : checkOutDate;
+      if (!isValidDateOnly(dep)) {
+        throw new BookingActionError(400, 'checkOutDate must be a date in YYYY-MM-DD format', 'INVALID_CHECKOUT_DATE');
+      }
+      if (dep < range.earliest) {
+        throw new BookingActionError(400, `The earliest you can check out is ${range.earliest}`, 'INVALID_CHECKOUT_DATE');
+      }
+      if (dep > range.latest) {
+        throw new BookingActionError(400, `checkOutDate must be before your original check-out date (${booking.check_out})`, 'INVALID_CHECKOUT_DATE');
+      }
+      usedNights = daysBetween(booking.check_in, dep);
+      // Unused nights are the dates from the new departure day up to the
+      // original check-out. Each is refundable only with enough notice,
+      // measured to that night's check-out time.
+      const unused = [];
+      for (let i = usedNights; i < nights; i++) unused.push(addDays(booking.check_in, i));
+      const refundable = earlyCheckoutRefundable
+        ? unused.filter((d) => now.getTime() <= lagosDateTime(d, booking.check_out_time).getTime() - noticeHours * HOUR_MS)
+        : [];
+      refundedNights = refundable.length;
+      chargedNights = nights - refundedNights;
+      nightsRefundKobo = refundedNights * nightKobo;
+      refundPercent = earlyCheckoutRefundable ? 100 : 0;
+      actualCheckOut = dep;
+    } else {
+      // Legacy guest early check-out: night in progress + next 24h count as used.
+      rule = 'legacy_policy';
+      const effectiveEnd = now.getTime() + MID_STAY_GUEST_BUFFER_MS;
+      usedNights = Math.min(nights, Math.max(1, Math.ceil((effectiveEnd - inAt.getTime()) / DAY_MS)));
+      chargedNights = usedNights;
+      refundPercent = legacy.midStayPercent;
+      nightsRefundKobo = Math.round((nights - usedNights) * nightKobo * refundPercent / 100);
+      refundedNights = nights - usedNights;
+      actualCheckOut = addDays(booking.check_in, usedNights);
+    }
+    cleaningRefundKobo = 0;   // the stay started: cleaning is needed anyway
+    depositRefundNowKobo = 0; // held for the 48h claim window after they leave
   }
 
   const refundKobo = nightsRefundKobo + cleaningRefundKobo + depositRefundNowKobo;
   const retainedKobo = nightsKobo + cleaningKobo - nightsRefundKobo - cleaningRefundKobo;
   const { hostKobo, platformKobo } = splitKobo(retainedKobo, booking.commission_percent);
 
+  const freeCancellationUntil = standard
+    ? describeStandardPolicy(snapshot.rules, { checkInAt: inAt, bookedAt, earlyCheckoutRefundable: snapshot.earlyCheckoutRefundable, now: bookedAt }).freeCancellationUntil
+    : describePolicy(policyName, { checkIn: booking.check_in, checkInTime: booking.check_in_time, bookedAt }).freeCancellationUntil;
+
   return {
     policy: policyName,
+    policyVersion: standard ? (snapshot.version ?? booking.cancellation_policy_version ?? null) : null,
     stage,
+    rule,
     cancelledBy,
+    refundPercent,
+    hoursBeforeCheckIn: round2(hoursBefore),
     fullRefund: retainedKobo === 0,
     refundKobo,
     refundAmount: fromKobo(refundKobo),
     nonRefundableAmount: fromKobo(retainedKobo),
     depositHeldForClaims: stage === 'during_stay' && depositHeld,
     usedNights,
+    chargedNights,
+    refundedNights,
     actualCheckOut,
+    noticeHours,
+    earlyCheckoutRefundable,
+    checkOutDateOptions,
     hostKobo,
     platformKobo,
     retainedKobo,
     nightsRefundKobo,
     cleaningRefundKobo,
     depositRefundNowKobo,
-    freeCancellationUntil: describePolicy(policyName, {
-      checkIn: booking.check_in, checkInTime: booking.check_in_time, bookedAt: new Date(booking.createdAt || now),
-    }).freeCancellationUntil,
+    freeCancellationUntil,
+  };
+}
+
+// The guest/host-facing view of the terms (cancel dialog, REFUND_CHANGED).
+function presentTerms(terms, booking) {
+  return {
+    canCancel: true,
+    policy: terms.policy,
+    policyVersion: terms.policyVersion,
+    stage: terms.stage,
+    rule: terms.rule,
+    refundPercent: terms.refundPercent,
+    hoursBeforeCheckIn: terms.hoursBeforeCheckIn,
+    refundAmount: terms.refundAmount,
+    nonRefundableAmount: terms.nonRefundableAmount,
+    breakdown: {
+      nightsRefund: fromKobo(terms.nightsRefundKobo),
+      cleaningFeeRefund: fromKobo(terms.cleaningRefundKobo),
+      securityDepositRefund: fromKobo(terms.depositRefundNowKobo),
+      securityDepositHeldForClaims: terms.depositHeldForClaims ? fromKobo(toKobo(booking.security_deposit)) : '0.00',
+    },
+    nights: { total: Number(booking.nights), used: terms.usedNights, charged: terms.chargedNights, refunded: terms.refundedNights },
+    actualCheckOut: terms.actualCheckOut,
+    checkOutDateOptions: terms.checkOutDateOptions,
+    noticeHours: terms.noticeHours,
+    earlyCheckoutRefundable: terms.earlyCheckoutRefundable,
+    depositHeldForClaims: terms.depositHeldForClaims,
+    freeCancellationUntil: terms.freeCancellationUntil,
   };
 }
 
@@ -369,7 +510,7 @@ function cancellationTerms(booking, cancelledBy, now = new Date()) {
 // Cancel — refund the guest and settle the host's share (works before
 // check-in and during the stay)
 // ─────────────────────────────────────────────
-async function cancelBooking({ bookingId, actorUserId, reason, now = new Date() }) {
+async function cancelBooking({ bookingId, actorUserId, reason, checkOutDate, expectedRefundAmount, now = new Date() }) {
   return withTransaction(async (t) => {
     const booking = await lockBooking(bookingId, t);
     if (!booking) throw new BookingActionError(404, 'Booking not found', 'NOT_FOUND');
@@ -379,15 +520,29 @@ async function cancelBooking({ bookingId, actorUserId, reason, now = new Date() 
     else if (booking.host_id && booking.host_id === actorUserId) cancelledBy = 'host';
     else throw new BookingActionError(403, 'You are not allowed to cancel this booking', 'FORBIDDEN');
 
-    const terms = cancellationTerms(booking, cancelledBy, now);
+    const terms = cancellationTerms(booking, cancelledBy, now, { checkOutDate });
 
-    // The host may already have been paid (24h after check-in). Work out how
-    // their total changes: usually a clawback for refunded nights.
+    // The guest confirmed a specific amount. If time moved them into another
+    // window (or anything else changed it), stop and show the new figures.
+    if (expectedRefundAmount !== undefined && expectedRefundAmount !== null && expectedRefundAmount !== '') {
+      if (!/^\d+(\.\d{1,2})?$/.test(String(expectedRefundAmount).trim())) {
+        throw new BookingActionError(400, 'expectedRefundAmount must be an amount like "27000.00"', 'INVALID_EXPECTED_REFUND');
+      }
+      if (toKobo(expectedRefundAmount) !== terms.refundKobo) {
+        throw new BookingActionError(409, 'The refund for this cancellation has changed since it was shown to you. Please review the new amount and confirm again.',
+          'REFUND_CHANGED', { cancellation: presentTerms(terms, booking) });
+      }
+    }
+
+    // The host may already have been paid (24h after check-in). Compare the
+    // host's correct total with what they already have — one absolute
+    // comparison, so nothing can be deducted twice.
     const alreadyPaidKobo = booking.payout_status === 'paid' ? toKobo(booking.host_payout) : 0;
     const deltaKobo = terms.hostKobo - alreadyPaidKobo;
 
+    const refs = [];
+    let debtKobo = 0, debtId = null, takenBackKobo = 0;
     // Lock wallets in a fixed order (by user id) to avoid deadlocks.
-    let debtKobo = 0;
     const steps = [
       { id: booking.user_id, run: async () => {
         const w = await creditWallet({
@@ -395,9 +550,10 @@ async function cancelBooking({ bookingId, actorUserId, reason, now = new Date() 
           amountKobo: terms.refundKobo,
           type: 'refund_payment',
           narration: terms.stage === 'during_stay'
-            ? `Refund for unused nights (stay ended early on ${terms.actualCheckOut})`
+            ? `Refund for unused nights (checked out early on ${terms.actualCheckOut})`
             : `Refund for cancelled shortlet booking (${booking.check_in} to ${booking.check_out})`,
-          meta: { booking_id: booking.id, reason: 'cancellation', cancelled_by: cancelledBy, stage: terms.stage },
+          meta: { booking_id: booking.id, reason: 'cancellation', cancelled_by: cancelledBy, stage: terms.stage, rule: terms.rule },
+          refs,
         }, t);
         if (terms.refundKobo > 0 && !w) {
           throw new BookingActionError(400, 'The guest wallet is not available for a refund. Please contact support.', 'WALLET_UNAVAILABLE');
@@ -412,6 +568,7 @@ async function cancelBooking({ bookingId, actorUserId, reason, now = new Date() 
             role: 'landlord',
             narration: `Shortlet cancellation payout (non-refundable part) from ${booking.check_in}`,
             meta: { booking_id: booking.id, commissionPercent: Number(booking.commission_percent) },
+            refs,
           }, t);
           return w ? deltaKobo : 0;
         }
@@ -424,26 +581,28 @@ async function cancelBooking({ bookingId, actorUserId, reason, now = new Date() 
             ? await Wallet.findOne({ where: { user_id: booking.host_id }, transaction: t, lock: t.LOCK.UPDATE })
             : null;
           const availableKobo = hostWallet && hostWallet.status === 'ACTIVE' ? Math.max(0, toKobo(hostWallet.balance)) : 0;
-          const takeKobo = Math.min(availableKobo, needKobo);
-          if (takeKobo > 0) {
+          takenBackKobo = Math.min(availableKobo, needKobo);
+          if (takenBackKobo > 0) {
             await debitWallet({
               userId: booking.host_id,
-              amountKobo: takeKobo,
+              amountKobo: takenBackKobo,
               type: 'shortlet booking',
               role: 'payer',
               narration: `Returned to guest: refunded nights for the stay from ${booking.check_in}`,
               meta: { booking_id: booking.id, reason: 'cancellation_clawback', cancelled_by: cancelledBy },
+              refs,
             }, t);
           }
-          const oweKobo = needKobo - takeKobo;
+          const oweKobo = needKobo - takenBackKobo;
           if (oweKobo > 0 && booking.host_id) {
-            await createHostDebt({
+            const debt = await createHostDebt({
               hostId: booking.host_id,
               bookingId: booking.id,
               amountKobo: oweKobo,
               reason: `Refund for unused nights (stay from ${booking.check_in} ended early)`,
             }, t);
             debtKobo = oweKobo;
+            debtId = debt?.id || null;
           }
           return deltaKobo;
         }
@@ -460,11 +619,12 @@ async function cancelBooking({ bookingId, actorUserId, reason, now = new Date() 
       logger.warn('Host share of cancelled booking not credited: host has no active wallet', { booking_id: booking.id });
     }
     const hostFinalKobo = alreadyPaidKobo + hostChangeKobo;
+    const cleanReason = reason ? String(reason).slice(0, 1000) : null;
 
     booking.status = 'cancelled';
     booking.cancelled_at = now;
     booking.cancelled_by = cancelledBy;
-    booking.cancellation_reason = reason ? String(reason).slice(0, 1000) : null;
+    booking.cancellation_reason = cleanReason;
     booking.refunded_amount = fromKobo(toKobo(booking.refunded_amount) + terms.refundKobo);
     booking.host_payout = fromKobo(hostFinalKobo);
     booking.platform_fee = fromKobo(terms.retainedKobo - hostFinalKobo);
@@ -479,6 +639,44 @@ async function cancelBooking({ bookingId, actorUserId, reason, now = new Date() 
     } else if (booking.deposit_status === 'held') {
       booking.deposit_status = 'refunded';
     }
+
+    // Audit record — written in the same transaction as the money.
+    booking.cancellation_details = {
+      cancelledBy,
+      cancelledByUserId: actorUserId,
+      cancelledAt: now,
+      reason: cleanReason,
+      policy: terms.policy,
+      policyVersion: terms.policyVersion,
+      stage: terms.stage,
+      rule: terms.rule,
+      hoursBeforeCheckIn: terms.hoursBeforeCheckIn,
+      refundPercent: terms.refundPercent,
+      nights: { total: Number(booking.nights), used: terms.usedNights, charged: terms.chargedNights, refunded: terms.refundedNights },
+      actualCheckOut: terms.actualCheckOut,
+      noticeHours: terms.noticeHours,
+      earlyCheckoutRefundable: terms.earlyCheckoutRefundable,
+      commissionPercent: Number(booking.commission_percent),
+      amounts: {
+        originalTotal: booking.total_amount,
+        accommodation: fromKobo(toKobo(booking.price_per_night) * Number(booking.nights)),
+        cleaningFee: booking.cleaning_fee,
+        securityDeposit: booking.security_deposit,
+        nightsRefund: fromKobo(terms.nightsRefundKobo),
+        cleaningFeeRefund: fromKobo(terms.cleaningRefundKobo),
+        securityDepositRefund: fromKobo(terms.depositRefundNowKobo),
+        securityDepositHeldForClaims: terms.depositHeldForClaims ? booking.security_deposit : '0.00',
+        totalRefund: fromKobo(terms.refundKobo),
+        retained: fromKobo(terms.retainedKobo),
+        hostShare: fromKobo(hostFinalKobo),
+        platformShare: fromKobo(terms.retainedKobo - hostFinalKobo),
+        alreadyPaidToHost: fromKobo(alreadyPaidKobo),
+        takenBackFromHost: fromKobo(takenBackKobo),
+        hostDebtCreated: fromKobo(debtKobo),
+      },
+      hostDebtId: debtId,
+      transactionRefs: refs,
+    };
     await booking.save({ transaction: t });
 
     return { booking, cancelledBy, terms, debtKobo };
@@ -683,6 +881,9 @@ module.exports = {
   getShortletCommissionPercent,
   splitKobo,
   cancellationTerms,
+  presentTerms,
+  checkOutDateRange,
+  isStandardBooking,
   payoutBooking,
   completeBooking,
   releaseDeposit,

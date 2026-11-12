@@ -10,6 +10,7 @@ const {
   addShortlet, seeAllShortlets, seeRecentShortlets, getShortlet, updateShortlet, deleteShortlet, searchShortlets,
   getShortletAvailability, quoteShortlet, bookShortlet,
   getMyShortletBookings, getHostShortletBookings, getShortletBooking, cancelShortletBooking, claimShortletDeposit,
+  getCancellationPreview,
 } = require('../controllers/shortlet.controller');
 
 // Field caps match the controller rules (10 images alone, or 4 images + 2 videos).
@@ -32,6 +33,7 @@ router.post('/book', authMiddleware, isVerifiedMiddleware, bookShortlet);  // ch
 router.get('/bookings', authMiddleware, getMyShortletBookings);            // guest's trips
 router.get('/host/bookings', authMiddleware, getHostShortletBookings);     // host's reservations
 router.get('/bookings/:bookingId', authMiddleware, getShortletBooking);    // guest or host
+router.get('/bookings/:bookingId/cancellation', authMiddleware, getCancellationPreview); // cancel dialog: policy + exact refund
 router.post('/bookings/:bookingId/cancel', authMiddleware, cancelShortletBooking);          // before check-in, or end a stay early
 router.post('/bookings/:bookingId/deposit-claim', authMiddleware, depositClaimPhotos, claimShortletDeposit); // host claims the deposit (multipart, 1–5 photos)
 

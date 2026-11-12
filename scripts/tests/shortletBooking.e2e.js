@@ -233,8 +233,8 @@ async function main() {
   const late = r.body.data;
   const hostBefore = await bal(host);
   r = await call(guest, 'POST', `/shortlet/bookings/${late.id}/cancel`, {});
-  check('late cancel (<24h) keeps first night: refund ₦17,000', r.status === 200 && r.body.refundAmount === '17000.00', r);
-  check('host gets 80% of first night (₦8,000) immediately', (await bal(host)) - hostBefore === 8000, { delta: (await bal(host)) - hostBefore });
+  check('late cancel (<72h, standard policy): no nights back, cleaning + deposit refunded = ₦7,000', r.status === 200 && r.body.refundAmount === '7000.00', r);
+  check('host gets 80% of the 2 nights kept (₦16,000) immediately', (await bal(host)) - hostBefore === 16000, { delta: (await bal(host)) - hostBefore });
 
   r = await call(host, 'POST', `/shortlet/bookings/${b2.id}/cancel`, { reason: 'Maintenance' });
   check('host cancels → guest always gets a full refund', r.status === 200 && r.body.refundAmount === '27000.00', r);
@@ -314,7 +314,7 @@ async function main() {
     const rr = await book(guest, d(150), d(152));
     const race = rr.body.data;
     await ShortletBookings.update({
-      check_in: d(-4), check_out: d(-2), payout_due_at: at(-3, '14:00:00'), deposit_refund_due_at: new Date(at(-2, '11:00:00').getTime() + 48 * 3600e3),
+      check_in: d(-4), check_out: d(-2), payout_due_at: at(-3, '14:00:00'), deposit_refund_due_at: new Date(Date.now() + 24 * 3600e3), // window still open, whatever the time of day
     }, { where: { id: race.id } });
     await settlement.runShortletSettlement();
     const destroyed0 = global.__cloudinary.destroyed.length;
@@ -418,8 +418,8 @@ async function main() {
   r = await book(guest, d(50), d(55));
   const m1 = r.body.data; // 5 × 10,000 + 2,000 + 5,000 = 57,000
   let g0 = await bal(guest), h0 = await bal(host);
-  let res = await settlement.cancelBooking({ bookingId: m1.id, actorUserId: guest.id, now: at(50, '20:00:00') });
-  check('6h into the stay: nights 1–2 used (incl. next 24h), 3 nights refunded = ₦30,000', res.terms.stage === 'during_stay' && res.terms.usedNights === 2 && res.terms.refundAmount === '30000.00', res.terms);
+  let res = await settlement.cancelBooking({ bookingId: m1.id, actorUserId: guest.id, now: at(50, '20:00:00'), checkOutDate: d(52) });
+  check('leaving on day 3 with enough notice: nights 1–2 used, 3 nights refunded = ₦30,000', res.terms.stage === 'during_stay' && res.terms.usedNights === 2 && res.terms.refundAmount === '30000.00', res.terms);
   check('cleaning fee not refunded mid-stay; deposit stays held', res.terms.cleaningRefundKobo === 0 && res.booking.deposit_status === 'held');
   check('guest +₦30,000; host gets 80% of the 2 nights + cleaning = ₦17,600', (await bal(guest)) - g0 === 30000 && (await bal(host)) - h0 === 17600);
   check('actual_check_out = night 2 ends', res.booking.actual_check_out === d(52));
@@ -439,7 +439,7 @@ async function main() {
   const m2 = r.body.data;
   await settlement.runShortletSettlement(at(71, '15:00:00'));
   g0 = await bal(guest); h0 = await bal(host);
-  res = await settlement.cancelBooking({ bookingId: m2.id, actorUserId: guest.id, now: at(72, '10:00:00') });
+  res = await settlement.cancelBooking({ bookingId: m2.id, actorUserId: guest.id, now: at(72, '10:00:00'), checkOutDate: d(73) });
   check('after payout: 3 nights used, 2 refunded (₦20,000)', res.terms.usedNights === 3 && res.terms.refundAmount === '20000.00', res.terms);
   check('host pays back ₦16,000 (had ₦41,600, now entitled to ₦25,600)', h0 - (await bal(host)) === 16000 && res.booking.host_payout === '25600.00', { delta: h0 - (await bal(host)) });
   check('guest +₦20,000', (await bal(guest)) - g0 === 20000);
@@ -450,7 +450,7 @@ async function main() {
   await settlement.runShortletSettlement(at(81, '15:00:00'));
   await setBal(host, 6000);
   g0 = await bal(guest);
-  res = await settlement.cancelBooking({ bookingId: m3.id, actorUserId: guest.id, now: at(82, '10:00:00') });
+  res = await settlement.cancelBooking({ bookingId: m3.id, actorUserId: guest.id, now: at(82, '10:00:00'), checkOutDate: d(83) });
   check('host short of the ₦16,000 clawback: guest STILL refunded ₦20,000 right away', res.booking.status === 'cancelled' && (await bal(guest)) - g0 === 20000, res.terms);
   check('host pays what they have (₦6,000 → ₦0), the other ₦10,000 becomes a debt', (await bal(host)) === 0 && res.debtKobo === 1000000, res.debtKobo);
   let debt = await db.HostDebts.findOne({ where: { booking_id: m3.id } });
@@ -502,30 +502,123 @@ async function main() {
   r = await call(guest, 'POST', `/shortlet/bookings/${live.id}/cancel`, { reason: 'Family emergency' });
   check('POST cancel during the stay works and matches the preview', r.status === 200 && r.body.refundAmount === preview && !!r.body.data.actual_check_out, r.body);
 
-  console.log('\n8c. Cancellation policies');
-  r = await call(host, 'PUT', `/shortlet/update/${sl.id}`, { cancellationPolicy: 'super-strict' });
-  check('invalid policy rejected', r.status === 400 && /cancellationPolicy must be one of/.test(r.body.message), r.body);
-  r = await call(host, 'PUT', `/shortlet/update/${sl.id}`, { cancellationPolicy: 'strict' });
-  check('host sets Strict', r.status === 200 && r.body.data.cancellationPolicy === 'strict', r.body.data?.cancellationPolicy);
+  console.log('\n8c. RentULO standard cancellation policy');
+  await setBal(guest, 900000);
+  // ── Admin settings (versioned) ──
+  r = await call(admin, 'GET', '/admin/shortlet-settings/cancellation-policy');
+  check('admin reads the policy: current version, rules, summary, history', r.status === 200 && r.body.data.current.version >= 1
+    && JSON.stringify(r.body.data.current.rules.preCheckIn.tiers.map((t) => t.minHoursBefore)) === '[168,72,0]' && /Free cancellation within 24 hours/.test(r.body.data.summary) && r.body.data.history.length >= 1, r.body);
+  const v0 = r.body.data.current.version;
+  const defaultRules = r.body.data.current.rules;
+  r = await call(guest, 'GET', '/admin/shortlet-settings/cancellation-policy');
+  check('non-admin cannot read or change it', r.status === 403);
+  r = await call(admin, 'PUT', '/admin/shortlet-settings/cancellation-policy', { rules: { ...defaultRules, preCheckIn: { tiers: [{ minHoursBefore: 168, nightsRefundPercent: 100 }, { minHoursBefore: 72, nightsRefundPercent: 50 }] } } });
+  check('a policy with a gap (no 0-hour window) → 400 INVALID_POLICY', r.status === 400 && r.body.code === 'INVALID_POLICY' && r.body.errors.some((e) => /0 hours/.test(e)), r.body);
+  r = await call(admin, 'PUT', '/admin/shortlet-settings/cancellation-policy', { rules: { ...defaultRules, earlyCheckout: { noticeHours: 'a day' } } });
+  check('bad notice hours → 400', r.status === 400, r.body);
+
+  // ── Quote shows the policy with this stay's real deadlines ──
   r = await call(guest, 'GET', `/shortlet/quote/${sl.id}?checkIn=${d(120)}&checkOut=${d(122)}`);
-  check('quote shows the Strict policy', r.body.data.cancellationPolicy.policy === 'strict' && r.body.data.cancellationPolicy.label === 'Strict', r.body.data.cancellationPolicy);
+  const cp = r.body.data.cancellationPolicy;
+  check('quote shows the RentULO policy with real deadlines and the early check-out terms', cp.policy === 'standard'
+    && new Date(cp.windows[0].until).getTime() === at(120, '14:00:00').getTime() - 168 * 3600e3
+    && new Date(cp.windows[1].until).getTime() === at(120, '14:00:00').getTime() - 72 * 3600e3
+    && cp.earlyCheckout.unusedNightsRefundable === true && cp.earlyCheckout.noticeHours === 24 && cp.gracePeriod?.until, cp);
   r = await book(guest, d(120), d(122));
   const p1 = r.body.data;
-  check('booking snapshots the policy', p1.cancellation_policy === 'strict');
-  await call(host, 'PUT', `/shortlet/update/${sl.id}`, { cancellationPolicy: 'moderate' });
-  r = await call(guest, 'GET', `/shortlet/bookings/${p1.id}`);
-  check('changing the listing later does not change the booking', r.body.data.cancellation_policy === 'strict' && r.body.data.cancellation.policy === 'strict');
-  r = await call(guest, 'GET', `/shortlet/bookings/${p1.id}`);
-  check('Strict, just booked, >14 days out → full refund now', r.body.data.cancellation.refundAmount === '27000.00', r.body.data.cancellation);
-  g0 = await bal(guest);
-  res = await settlement.cancelBooking({ bookingId: p1.id, actorUserId: guest.id, now: at(115, '14:00:00') });
-  check('Strict, 5 days before: no refund of nights, cleaning + deposit back (₦7,000)', res.terms.refundAmount === '7000.00' && (await bal(guest)) - g0 === 7000, res.terms);
+  const p1row = await ShortletBookings.findByPk(p1.id);
+  check('booking saves the policy: standard + version + full rules snapshot', p1row.cancellation_policy === 'standard' && p1row.cancellation_policy_version === v0
+    && p1row.cancellation_policy_snapshot.rules.preCheckIn.tiers.length === 3 && p1row.cancellation_policy_snapshot.earlyCheckoutRefundable === true, p1row.toJSON());
+
+  // ── Admin changes the policy → only new bookings get it ──
+  const tighter = { preCheckIn: { tiers: [{ minHoursBefore: 240, nightsRefundPercent: 100 }, { minHoursBefore: 0, nightsRefundPercent: 25 }] },
+    gracePeriod: { enabled: false, withinHoursOfBooking: 24, minHoursBeforeCheckIn: 72 }, earlyCheckout: { noticeHours: 48 } };
+  r = await call(admin, 'PUT', '/admin/shortlet-settings/cancellation-policy', { rules: tighter, note: 'Test: tighter policy' });
+  check('admin saves a new version (with who/when)', r.status === 200 && r.body.data.current.version === v0 + 1 && r.body.data.current.changedBy?.id === admin.id && r.body.data.current.note === 'Test: tighter policy', r.body);
+  r = await call(admin, 'GET', '/admin/shortlet-settings/cancellation-policy');
+  check('history keeps every version, newest first', r.body.data.history[0].version === v0 + 1 && r.body.data.history[1].version === v0, r.body.data.history.map((h) => h.version));
   r = await book(guest, d(130), d(133));
   const p2 = r.body.data;
-  check('new booking gets Moderate', p2.cancellation_policy === 'moderate');
+  check('new booking gets the new version', (await ShortletBookings.findByPk(p2.id)).cancellation_policy_version === v0 + 1);
+  res = await settlement.cancelBooking({ bookingId: p1.id, actorUserId: guest.id, now: at(115, '14:00:00') });
+  check('old booking keeps ITS rules: 120h before → 50% (₦10,000) + cleaning + deposit = ₦17,000', res.terms.refundAmount === '17000.00' && res.terms.refundPercent === 50 && res.terms.policyVersion === v0, res.terms);
   res = await settlement.cancelBooking({ bookingId: p2.id, actorUserId: guest.id, now: at(128, '14:00:00') });
-  check('Moderate, 2 days before: first night kept, 50% of the rest + cleaning + deposit (₦17,000)', res.terms.refundAmount === '17000.00', res.terms);
-  await call(host, 'PUT', `/shortlet/update/${sl.id}`, { cancellationPolicy: 'flexible' });
+  check('new booking uses the new rules: 48h before → 25% (₦7,500) + ₦7,000 = ₦14,500', res.terms.refundAmount === '14500.00' && res.terms.refundPercent === 25 && res.terms.policyVersion === v0 + 1, res.terms);
+  r = await call(admin, 'PUT', '/admin/shortlet-settings/cancellation-policy', { rules: defaultRules, note: 'Restore default (test)' });
+  check('admin restores the default as a new version', r.status === 200 && r.body.data.current.version === v0 + 2, r.body);
+
+  // ── Guest cancel flow over HTTP: preview → confirm (grace period) ──
+  r = await book(guest, d(5), d(7));
+  const p3 = r.body.data;
+  r = await call(guest, 'GET', `/shortlet/bookings/${p3.id}/cancellation`);
+  const pv = r.body.data;
+  check('preview: grace period applies (just booked, 5 days out) → 100%, ₦27,000, nothing kept', r.status === 200 && pv.cancellation.rule === 'grace_period'
+    && pv.cancellation.refundPercent === 100 && pv.cancellation.refundAmount === '27000.00' && pv.cancellation.nonRefundableAmount === '0.00' && pv.expectedRefundAmount === '27000.00', pv);
+  check('preview: breakdown + the policy with deadlines', pv.cancellation.breakdown.nightsRefund === '20000.00' && pv.cancellation.breakdown.cleaningFeeRefund === '2000.00'
+    && pv.cancellation.breakdown.securityDepositRefund === '5000.00' && pv.policy.windows.length === 3 && pv.policy.gracePeriod.until, pv);
+  r = await call(guest3, 'GET', `/shortlet/bookings/${p3.id}/cancellation`);
+  check("strangers can't preview someone else's cancellation", r.status === 404);
+  r = await call(guest, 'POST', `/shortlet/bookings/${p3.id}/cancel`, { expectedRefundAmount: '20000.00' });
+  check('confirming a different amount than the current one → 409 REFUND_CHANGED with the new figures', r.status === 409 && r.body.code === 'REFUND_CHANGED' && r.body.cancellation?.refundAmount === '27000.00', r.body);
+  check('…and nothing was cancelled', (await ShortletBookings.findByPk(p3.id)).status === 'confirmed');
+  g0 = await bal(guest);
+  r = await call(guest, 'POST', `/shortlet/bookings/${p3.id}/cancel`, { expectedRefundAmount: pv.expectedRefundAmount, reason: 'Change of plans' });
+  check('confirm with the previewed amount → cancelled, ₦27,000 refunded', r.status === 200 && r.body.refundAmount === '27000.00' && (await bal(guest)) - g0 === 27000, r.body);
+  const det = r.body.data.cancellation_details;
+  check('audit record: who, when, why, rule, %, amounts', det.cancelledBy === 'guest' && det.cancelledByUserId === guest.id && det.reason === 'Change of plans'
+    && det.rule === 'grace_period' && det.refundPercent === 100 && det.amounts.totalRefund === '27000.00' && det.amounts.retained === '0.00' && !!det.cancelledAt, det);
+  check('guest view hides the host/platform split', det.amounts.hostShare === undefined && det.amounts.platformShare === undefined && det.commissionPercent === undefined, det.amounts);
+  const refRows = await WalletTransactions.findAll({ where: { tx_ref: { [Op.in]: det.transactionRefs } } });
+  check('every transaction reference in the record exists in the ledger', det.transactionRefs.length === 1 && refRows.length === 1 && refRows[0].type === 'refund_payment' && refRows[0].amount === '27000.00', det.transactionRefs);
+  r = await call(guest, 'POST', `/shortlet/bookings/${p3.id}/cancel`, {});
+  check('cancelling twice → 400 NOT_CANCELLABLE (no double refund)', r.status === 400 && r.body.code === 'NOT_CANCELLABLE' && (await bal(guest)) - g0 === 27000, r.body);
+  r = await call(host, 'GET', `/shortlet/bookings/${p3.id}`);
+  check('host view of the record shows their share but not the platform cut', r.body.data.cancellation_details.amounts.hostShare === '0.00' && r.body.data.cancellation_details.amounts.platformShare === undefined, r.body.data.cancellation_details);
+
+  // ── Legacy bookings keep their old policy maths ──
+  r = await book(guest, d(180), d(182));
+  const p4 = r.body.data;
+  await ShortletBookings.update({ cancellation_policy: 'strict', cancellation_policy_snapshot: null, cancellation_policy_version: null }, { where: { id: p4.id } });
+  res = await settlement.cancelBooking({ bookingId: p4.id, actorUserId: guest.id, now: at(175, '14:00:00') });
+  check('a pre-existing Strict booking still uses Strict (5 days out → ₦7,000)', res.terms.rule === 'legacy_policy' && res.terms.refundAmount === '7000.00', res.terms);
+
+  // ── Early check-out: the host's refundable / non-refundable choice ──
+  r = await call(host, 'PUT', `/shortlet/update/${sl.id}`, { earlyCheckoutRefundable: false });
+  check('host marks the listing non-refundable after check-in', r.status === 200 && r.body.data.earlyCheckoutRefundable === false, r.body.data?.earlyCheckoutRefundable);
+  r = await call(guest, 'GET', `/shortlet/quote/${sl.id}?checkIn=${d(185)}&checkOut=${d(188)}`);
+  check('quote shows "non-refundable after check-in"', r.body.data.cancellationPolicy.earlyCheckout.unusedNightsRefundable === false && /non-refundable/.test(r.body.data.cancellationPolicy.earlyCheckout.summary), r.body.data.cancellationPolicy.earlyCheckout);
+  r = await book(guest, d(185), d(188));
+  const p5 = r.body.data;
+  await call(host, 'PUT', `/shortlet/update/${sl.id}`, { earlyCheckoutRefundable: true });
+  h0 = await bal(host); g0 = await bal(guest);
+  res = await settlement.cancelBooking({ bookingId: p5.id, actorUserId: guest.id, now: at(186, '09:00:00'), checkOutDate: d(187) });
+  check('the booking keeps "non-refundable" even after the host switched back → ₦0 for unused nights', res.terms.refundAmount === '0.00' && res.terms.earlyCheckoutRefundable === false && (await bal(guest)) === g0, res.terms);
+  check('host keeps their share of all 3 nights + cleaning (₦25,600), deposit held for claims', (await bal(host)) - h0 === 25600 && res.booking.deposit_status === 'held', { delta: (await bal(host)) - h0 });
+
+  // ── Early check-out notice (Option A): only nights beyond the notice period ──
+  r = await book(guest, d(190), d(195));
+  const p6 = r.body.data;
+  res = await settlement.cancelBooking({ bookingId: p6.id, actorUserId: guest.id, now: at(192, '08:00:00'), checkOutDate: d(192) });
+  check('5 nights, leaving on night 3 with 3h notice: night 3 charged, nights 4–5 refunded (₦20,000)', res.terms.usedNights === 2 && res.terms.chargedNights === 3 && res.terms.refundedNights === 2 && res.terms.refundAmount === '20000.00', res.terms);
+  check('record shows nights used / charged / refunded and the notice period', res.booking.cancellation_details.nights.charged === 3 && res.booking.cancellation_details.noticeHours === 24 && res.booking.cancellation_details.rule === 'early_checkout');
+  r = await book(guest, d(196), d(199));
+  const p7 = r.body.data;
+  err = await settlement.cancelBooking({ bookingId: p7.id, actorUserId: guest.id, now: at(197, '09:00:00'), checkOutDate: d(199) }).catch((e) => e);
+  check('checkOutDate on/after the original check-out → 400 INVALID_CHECKOUT_DATE', err.code === 'INVALID_CHECKOUT_DATE', err.message);
+
+  // ── Admin cancellations report ──
+  r = await call(admin, 'GET', `/admin/shortlet-bookings/cancellations?cancelled_by=guest&shortlet_id=${sl.id}&limit=100`);
+  const row = r.body.data?.find((x) => x.booking_id === p3.id);
+  check('admin report: guest, host, original amount, date, %, refunded, retained, reason, who', r.status === 200 && row && row.guest?.id === guest.id && row.host?.id === host.id
+    && row.originalAmount === '27000.00' && !!row.cancelledAt && row.refundPercent === 100 && row.refundedAmount === '27000.00' && row.retainedAmount === '0.00'
+    && row.reason === 'Change of plans' && row.cancelledByUser?.id === guest.id && row.rule === 'grace_period' && row.transactionRefs.length === 1, row);
+  check('report only has guest cancellations when filtered', r.body.data.every((x) => x.cancelledBy === 'guest'));
+  r = await call(admin, 'GET', `/admin/shortlet-bookings/cancellations?from=${ymd(new Date())}&to=${ymd(new Date())}&limit=100`);
+  check('date filter (today) includes today\'s cancellation', r.status === 200 && r.body.data.some((x) => x.booking_id === p3.id), r.body.count);
+  r = await call(admin, 'GET', '/admin/shortlet-bookings/cancellations?from=12-11-2026');
+  check('bad date → 400', r.status === 400, r.body);
+  r = await call(guest, 'GET', '/admin/shortlet-bookings/cancellations');
+  check('non-admin → 403', r.status === 403);
 
   console.log('\n9. Commission source (admin per-landlord value only)');
   await Users.update({ commission_percent: 50 }, { where: { id: host.id } });

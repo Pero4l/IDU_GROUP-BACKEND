@@ -636,6 +636,10 @@ async function main() {
   check('all users, no password/otp', r.status === 200 && r.body.data.some((u) => u.id === tenant.id) && r.body.data.every((u) => u.password === undefined && u.otpCode === undefined), r.body.count);
   r = await api('PUT', `/admin/users/${landlord.id}/commission`, { as: superAdmin, body: { commission_percent: 15.5 } });
   check('set shortlet commission', r.status === 200 && r.body.message === 'Landlord shortlet commission percentage updated successfully' && Number(r.body.data.commission_percent) === 15.5, r.body);
+  r = await api('GET', '/admin/users', { as: superAdmin });
+  const llRow = r.body.data.find((u) => u.id === landlord.id);
+  check('GET /admin/users returns the saved commission_percent as a number (15.5) after refresh', llRow?.commission_percent === 15.5, llRow?.commission_percent);
+  check('…and null for users with none set', r.body.data.find((u) => u.id === tenant.id)?.commission_percent === null);
   r = await api('PUT', `/admin/users/${tenant.id}/commission`, { as: superAdmin, body: { commission_percent: 10 } });
   check('commission for a tenant → 400', r.status === 400 && r.body.message === 'Only landlords can have commission percentages assigned', r.body);
   r = await api('PUT', `/admin/users/${googleUser.id}/status`, { as: superAdmin });
@@ -708,13 +712,11 @@ async function main() {
 
   // ═══ 18. Shortlets (listing management; booking has its own suite) ═══
   section('18. Shortlet Management');
-  const slFields = { title: `Lekki Loft ${runId}`, description: 'Cosy loft', propertyType: 'loft', rentalModel: 'entire_place', pricePerNight: '15000', address: '3 Admiralty Way', city: 'Lagos', area: 'Lekki', availableFrom: new Date().toISOString().slice(0, 10), availableTo: '2031-01-01', amenities: '["wifi","ac"]', cleaningFee: '2000', securityDeposit: '5000', cancellationPolicy: 'moderate' };
+  const slFields = { title: `Lekki Loft ${runId}`, description: 'Cosy loft', propertyType: 'loft', rentalModel: 'entire_place', pricePerNight: '15000', address: '3 Admiralty Way', city: 'Lagos', area: 'Lekki', availableFrom: new Date().toISOString().slice(0, 10), availableTo: '2031-01-01', amenities: '["wifi","ac"]', cleaningFee: '2000', securityDeposit: '5000', earlyCheckoutRefundable: 'false' };
   r = await api('POST', '/shortlet/post', { as: tenant, form: multipart(slFields, { images: [file()] }) });
   check('tenant cannot add a shortlet → 403', r.status === 403 && r.body.message === 'Only landlords can add shortlets', r.body);
-  r = await api('POST', '/shortlet/post', { as: landlord, form: multipart({ ...slFields, cancellationPolicy: 'bogus' }, { images: [file()] }) });
-  check('invalid policy → 400', r.status === 400 && /cancellationPolicy must be one of/.test(r.body.message), r.body);
   r = await api('POST', '/shortlet/post', { as: landlord, form: multipart(slFields, { images: [file(), file()] }) });
-  check('landlord adds a shortlet → 201', r.status === 201 && r.body.message === 'Short let property added successfully' && r.body.data.cancellationPolicy === 'moderate', r.body);
+  check('landlord adds a shortlet → 201, early check-out set to non-refundable', r.status === 201 && r.body.message === 'Short let property added successfully' && r.body.data.earlyCheckoutRefundable === false, r.body);
   const sl = r.body.data;
   r = await api('GET', '/shortlet/all', { as: tenant });
   check('all shortlets', r.status === 200 && r.body.data.some((x) => x.id === sl.id), r.body);
@@ -734,11 +736,11 @@ async function main() {
   const checkIn = new Date(Date.now() + 10 * 86400e3).toISOString().slice(0, 10);
   const checkOut = new Date(Date.now() + 12 * 86400e3).toISOString().slice(0, 10);
   r = await api('POST', '/shortlet/book', { as: tenant, body: { shortlet_id: sl.id, checkIn, checkOut, guests: 1, pin: '4321' } });
-  check('book the shortlet (2 nights = ₦43,000)', r.status === 201 && r.body.data.total_amount === '43000.00' && r.body.data.cancellation_policy === 'moderate', r.body);
+  check('book the shortlet (2 nights = ₦43,000) under the RentULO standard policy', r.status === 201 && r.body.data.total_amount === '43000.00' && r.body.data.cancellation_policy === 'standard', r.body);
   r = await api('DELETE', `/shortlet/delete/${sl.id}`, { as: landlord });
   check('delete with an upcoming booking → 409', r.status === 409, r.body);
   r = await api('POST', `/shortlet/bookings/${(await db.ShortletBookings.findOne({ where: { shortlet_id: sl.id } })).id}/cancel`, { as: tenant, body: {} });
-  check('guest cancels 10 days ahead under Moderate → full refund', r.status === 200 && r.body.refundAmount === '43000.00', r.body);
+  check('guest cancels 10 days ahead (≥168h) → full refund', r.status === 200 && r.body.refundAmount === '43000.00', r.body);
   r = await api('DELETE', `/admin/shortlets/${sl.slug}`, { as: superAdmin });
   check('admin deletes the shortlet (by slug)', r.status === 200 && r.body.message === 'Short let deleted successfully', r.body);
 
