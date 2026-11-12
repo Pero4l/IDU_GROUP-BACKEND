@@ -12,6 +12,10 @@ module.exports = (sequelize, DataTypes) => {
       Shortlets.belongsTo(models.Users, {
         foreignKey: "UserId",
       });
+      Shortlets.hasMany(models.ShortletBookings, {
+        foreignKey: "shortlet_id",
+        as: "bookings",
+      });
     }
   }
 
@@ -164,6 +168,11 @@ module.exports = (sequelize, DataTypes) => {
     houseRules: {
       type: DataTypes.TEXT,
       allowNull: true,
+    },
+    cancellationPolicy: {
+      type: DataTypes.ENUM('flexible', 'moderate', 'firm', 'strict'),
+      allowNull: false,
+      defaultValue: 'flexible',
     },
     status: {
       type: DataTypes.ENUM('available', 'rented', 'pending', 'locked'),

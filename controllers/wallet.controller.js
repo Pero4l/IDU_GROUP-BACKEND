@@ -1,6 +1,6 @@
 const crypto = require('crypto');
-const bcrypt = require('bcrypt');
-const { Wallet, WalletTransactions, Profile, Users, Pins } = require('../models');
+const { Wallet, WalletTransactions, Profile, Users } = require('../models');
+const { verifyTransactionPin } = require('../utils/pin');
 const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
 const { buildPropertyEmailHtml } = require('../utils/emailTemplates');
 const { withTransaction } = require('../utils/rollback');
@@ -32,32 +32,9 @@ function isValidAmount(amount) {
     /^\d+(\.\d{1,2})?$/.test(String(amount));
 }
 
-// ─────────────────────────────────────────────
-// Transaction PIN verification
-// ─────────────────────────────────────────────
-const PIN_PATTERN = /^\d{4}$/;
-
-// Verifies the user's 4-digit transaction PIN before money leaves their
-// wallet. Returns null on success, or { status, message } on failure so the
-// caller can respond with the right HTTP code. PINs are stored bcrypt-hashed
-// (see pin.controller.js), so we always compare against the hash.
-async function verifyWalletPin(user_id, pin) {
-  if (typeof pin !== 'string' || !PIN_PATTERN.test(pin)) {
-    return { status: 400, message: "A valid 4-digit transaction pin is required." };
-  }
-  const pinRecord = await Pins.findOne({ where: { user_id } });
-  if (!pinRecord || !pinRecord.pin) {
-    return {
-      status: 403,
-      message: "You have not set a transaction pin. Please create one before withdrawing.",
-    };
-  }
-  const matches = await bcrypt.compare(pin, pinRecord.pin);
-  if (!matches) {
-    return { status: 403, message: "Incorrect transaction pin." };
-  }
-  return null;
-}
+// Transaction PIN verification lives in utils/pin.js so every money-moving
+// flow (withdrawals, shortlet bookings, ...) enforces it the same way.
+const verifyWalletPin = (user_id, pin) => verifyTransactionPin(user_id, pin, 'withdrawing');
 
 // Constant-time comparison that never throws on mismatched lengths — the
 // signature header is attacker-controlled, so an arbitrary-length string
@@ -597,7 +574,7 @@ async function withdraw(req, res) {
         user_id,
         reason: pinError.message,
       });
-      return res.status(pinError.status).json({ success: false, message: pinError.message });
+      return res.status(pinError.status).json({ success: false, code: pinError.code, message: pinError.message });
     }
 
     const profile = await Profile.findOne({ where: { user_id } });
@@ -783,13 +760,20 @@ async function withdraw(req, res) {
 async function transferToUser(req, res) {
   try {
     const user_id = req.user.userId;
-    const { accountNumber, amount } = req.body;
+    const { accountNumber, amount, pin } = req.body;
 
     if (!accountNumber) {
       return res.status(400).json({ success: false, message: "Recipient accountNumber is required" });
     }
     if (!isValidAmount(amount)) {
       return res.status(400).json({ success: false, message: "A valid amount is required" });
+    }
+
+    // Money is leaving the wallet — same PIN rule as withdrawals and bookings.
+    const pinError = await verifyTransactionPin(user_id, pin, 'transferring');
+    if (pinError) {
+      logger.warn('Transfer blocked: PIN check failed', { user_id, reason: pinError.code });
+      return res.status(pinError.status).json({ success: false, code: pinError.code, message: pinError.message });
     }
 
     const senderWallet = await Wallet.findOne({ where: { user_id } });

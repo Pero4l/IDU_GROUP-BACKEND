@@ -49,11 +49,19 @@ async function updateProfile(req, res) {
       phone_no,
       state,
       address,
+      gender,
       withdrawalBankName,
       withdrawalAccountNumber,
       withdrawalAccountName,
     } = req.body;
     
+    // Gender can be set (or corrected) here. Google sign-in users have none,
+    // and it's required by the profile-completion check on rental/shortlet routes.
+    const GENDERS = ['male', 'female', 'others'];
+    if (gender !== undefined && !GENDERS.includes(gender)) {
+      return res.status(400).json({ success: false, message: "gender must be one of: male, female, others" });
+    }
+
     let profile = await Profile.findOne({ where: { user_id: userId } });
     if (!profile) {
       return res.status(404).json({ success: false, message: "Profile not found" });
@@ -68,6 +76,7 @@ async function updateProfile(req, res) {
     if (phone_no !== undefined) user.phone_no = phone_no;
     if (state !== undefined) user.state = state;
     if (address !== undefined) user.address = address;
+    if (gender !== undefined) user.gender = gender;
 
     // Check if profile is complete
     const isCompleted = !!(user.phone_no && user.state && user.address );
@@ -115,7 +124,10 @@ async function updateProfile(req, res) {
         ? "Profile updated and verified successfully." 
         : "Profile updated successfully.",
       user: {
-        is_verified: user.is_verified
+        is_verified: user.is_verified,
+        gender: user.gender,
+        // true when every field the rental/shortlet routes require is set
+        profileComplete: !!(user.phone_no && user.gender && user.state && user.address)
       }
     });
 
@@ -184,7 +196,7 @@ async function getUserProfile(req, res) {
           },
         ],
       });
-      responseData.lockedHouses = lockedProgress.map((p) => p.Rentals).filter(Boolean);
+      responseData.lockedHouses = lockedProgress.map((p) => p.Rental).filter(Boolean);
 
       // Upcoming inspections (today or in the future)
       const upcomingInspections = await Inspections.findAll({
@@ -225,7 +237,7 @@ async function getUserProfile(req, res) {
         order: [['createdAt', 'DESC']],
       });
       responseData.rentalHistory = rentalHistory.map((p) => {
-        const r = p.Rentals ? p.Rentals.toJSON() : null;
+        const r = p.Rental ? p.Rental.toJSON() : null;
         if (r && r.User) {
           const parts = (r.User.full_name || '').split(' ');
           r.User.first_name = parts[0] || '';
@@ -276,10 +288,10 @@ async function getUserProfile(req, res) {
         });
 
         lockedByTenants = lockedProgress.map((p) => {
-          const tenant = p.Users;
+          const tenant = p.User;
           const tenantParts = tenant ? (tenant.full_name || '').split(' ') : [];
           return {
-            rental: p.Rentals,
+            rental: p.Rental,
             tenant: tenant
               ? {
                   id: tenant.id,

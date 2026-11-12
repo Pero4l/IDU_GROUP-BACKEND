@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { Wallet, WalletTransactions, Users } = require('../models');
+const { Wallet, WalletTransactions } = require('../models');
 const { withTransaction } = require('./rollback');
 const { toKobo, fromKobo, addKobo } = require('./money');
 
@@ -82,6 +82,11 @@ async function applyKoboDelta(wallet, deltaKobo, transaction) {
  * rental rented, or creating the inspection row. If it throws, the whole
  * transaction (charge included) rolls back, so a caller can never end up
  * charged with nothing to show for it.
+ *
+ * `commissionPercent` comes from .env for lock / rent / inspection fees.
+ * Shortlet bookings don't split here at all: they pass no landlord, so the
+ * platform holds the full amount, and the host is paid later by
+ * utils/shortletSettlement.js using the admin-set per-landlord commission.
  */
 async function chargeMarketplacePayment({ payerUserId, landlordUserId, amount, commissionPercent, type, narration, applyEffects }) {
   const amountKobo = toKobo(amount);
@@ -92,22 +97,9 @@ async function chargeMarketplacePayment({ payerUserId, landlordUserId, amount, c
     throw new Error('A valid amount is required');
   }
   const rawPct = Number(commissionPercent);
-  let pct = Number.isFinite(rawPct) ? Math.min(100, Math.max(0, rawPct)) : 0;
+  const pct = Number.isFinite(rawPct) ? Math.min(100, Math.max(0, rawPct)) : 0;
 
   return withTransaction(async (t) => {
-    // A per-landlord commission set by a super admin overrides the platform
-    // default. Read it inside the transaction (previously this ran before the
-    // transaction existed and threw "t is not defined" on every payment).
-    if (landlordUserId) {
-      const landlordUser = await Users.findByPk(landlordUserId, { attributes: ['id', 'commission_percent'], transaction: t });
-      if (landlordUser && landlordUser.commission_percent !== null && landlordUser.commission_percent !== undefined) {
-        const landlordPct = Number(landlordUser.commission_percent);
-        if (Number.isFinite(landlordPct) && landlordPct >= 0 && landlordPct <= 100) {
-          pct = landlordPct;
-        }
-      }
-    }
-
     // Lock payer & landlord wallets in a fixed order (by user id) so two
     // marketplace payments crossing the same pair of users can't deadlock.
     const userIds = [...new Set([payerUserId, landlordUserId].filter(Boolean))].sort();

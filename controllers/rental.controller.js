@@ -46,6 +46,18 @@ function uploadBufferToCloudinary(buffer, mimetype, folder) {
   });
 }
 
+// Inspection fee is charged to tenants' wallets when they book an inspection,
+// so reject anything that isn't a non-negative amount (blank means free).
+// Returns { value } or { error }.
+function parseInspectionFee(raw) {
+  if (raw === undefined || raw === null || raw === "") return { value: 0 };
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0 || !/^\d+(\.\d{1,2})?$/.test(String(raw).trim())) {
+    return { error: "inspectionFee must be a non-negative amount with at most 2 decimals (0 = free)" };
+  }
+  return { value: n };
+}
+
 function normalizeAmenities(amenities) {
   if (amenities === undefined || amenities === null || amenities === "") {
     return [];
@@ -88,6 +100,15 @@ function normalizeAmenities(amenities) {
   return [String(amenities).trim()].filter(Boolean);
 }
 
+// Accepts a UUID or a slug, like GET /rental/get1/:id. Querying the UUID
+// column with a slug would make Postgres throw (500), so check the shape first.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function findRentalByIdOrSlug(id, options = {}) {
+  return UUID_RE.test(String(id))
+    ? Rentals.findByPk(id, options)
+    : Rentals.findOne({ ...options, where: { slug: String(id) } });
+}
+
 // ─────────────────────────────────────────────
 // POST /rental/post  — landlord adds a rental
 // ─────────────────────────────────────────────
@@ -106,6 +127,7 @@ async function addRental(req, res) {
       cautionFee,
       brokeFee,
       mgtServiceCharge,
+      inspectionFee,
     } = req.body;
     const images = req.files?.images || [];
     const videos = req.files?.videos || [];
@@ -149,6 +171,11 @@ async function addRental(req, res) {
         success: false,
         message: "When uploading both, max is 4 images + 2 videos",
       });
+
+    const parsedInspectionFee = parseInspectionFee(inspectionFee);
+    if (parsedInspectionFee.error) {
+      return res.status(400).json({ success: false, message: parsedInspectionFee.error });
+    }
 
     const amenitiesData = normalizeAmenities(amenities);
 
@@ -197,6 +224,7 @@ async function addRental(req, res) {
       cautionFee: parseFloat(cautionFee) || 0.0,
       brokeFee: parseFloat(brokeFee) || 0.0,
       mgtServiceCharge: parseFloat(mgtServiceCharge) || 0.0,
+      inspectionFee: parsedInspectionFee.value,
       UserId: req.user.userId,
     });
 
@@ -254,6 +282,7 @@ async function seeAllRentals(req, res) {
         "cautionFee",
         "brokeFee",
         "mgtServiceCharge",
+        "inspectionFee",
         "images",
         "amenities",
         "status",
@@ -325,6 +354,7 @@ async function getRental(req, res) {
         "cautionFee",
         "brokeFee",
         "mgtServiceCharge",
+        "inspectionFee",
         "images",
         "videos",
         "amenities",
@@ -395,9 +425,10 @@ async function updateRental(req, res) {
       cautionFee,
       brokeFee,
       mgtServiceCharge,
+      inspectionFee,
     } = req.body;
 
-    const rental = await Rentals.findByPk(id);
+    const rental = await findRentalByIdOrSlug(id);
     if (!rental) {
       return res
         .status(404)
@@ -408,6 +439,15 @@ async function updateRental(req, res) {
         success: false,
         message: "You are not authorized to update this rental",
       });
+    }
+
+    let nextInspectionFee = rental.inspectionFee;
+    if (inspectionFee !== undefined) {
+      const parsed = parseInspectionFee(inspectionFee);
+      if (parsed.error) {
+        return res.status(400).json({ success: false, message: parsed.error });
+      }
+      nextInspectionFee = parsed.value;
     }
 
     const amenitiesData =
@@ -431,17 +471,18 @@ async function updateRental(req, res) {
         mgtServiceCharge !== undefined
           ? parseFloat(mgtServiceCharge)
           : rental.mgtServiceCharge,
+      inspectionFee: nextInspectionFee,
       images: images || rental.images,
       videos: videos || rental.videos,
       status: status || rental.status,
       amenities: amenitiesData,
     });
 
-    const updatedRental = await Rentals.findByPk(id, {
+    const updatedRental = await Rentals.findByPk(rental.id, {
       include: [{ model: Users, attributes: ["id", "full_name", "email"] }],
     });
 
-    logger.info("Rental updated", { rentalId: id, userId: req.user.userId });
+    logger.info("Rental updated", { rentalId: rental.id, userId: req.user.userId });
 
     if (updatedRental.User) {
       await logAndEmailUser(
@@ -480,9 +521,7 @@ async function deleteRental(req, res) {
     const { id } = req.params;
     const requesterId = req.user.userId;
 
-    // Non-UUID ids would make Postgres throw (500) — treat as not found
-    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
-    const rental = isUUID ? await Rentals.findByPk(id) : null;
+    const rental = await findRentalByIdOrSlug(id);
     if (!rental) {
       return res
         .status(404)
@@ -505,9 +544,9 @@ async function deleteRental(req, res) {
 
     await withTransaction(async (t) => {
       await rental.destroy({ transaction: t });
-    }, { context: 'deleteRental', rentalId: id, userId: requesterId, byAdmin: !isOwner });
+    }, { context: 'deleteRental', rentalId: rental.id, userId: requesterId, byAdmin: !isOwner });
 
-    logger.info('Rental deleted', { rentalId: id, title: rentalTitle, ownerId, deletedBy: requesterId, byAdmin: !isOwner });
+    logger.info('Rental deleted', { rentalId: rental.id, title: rentalTitle, ownerId, deletedBy: requesterId, byAdmin: !isOwner });
 
     // Non-critical side-effects — always notify the actual owner
     const owner = await Users.findByPk(ownerId, { attributes: ['id', 'email', 'full_name'] });
@@ -555,6 +594,7 @@ async function searchRentals(req, res) {
         "cautionFee",
         "brokeFee",
         "mgtServiceCharge",
+        "inspectionFee",
         "images",
         "status",
         "UserId",
@@ -623,6 +663,7 @@ async function seeRecentRentals(req, res) {
         "cautionFee",
         "brokeFee",
         "mgtServiceCharge",
+        "inspectionFee",
         "images",
         "status",
         "UserId",
@@ -696,6 +737,7 @@ async function seeRecommendedRentals(req, res) {
         "cautionFee",
         "brokeFee",
         "mgtServiceCharge",
+        "inspectionFee",
         "images",
         "status",
         "UserId",

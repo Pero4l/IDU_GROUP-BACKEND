@@ -5,7 +5,12 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node scripts/tests/shortletSettlement.unit.js",
+    "test:e2e": "node scripts/tests/fullApp.e2e.js && node scripts/tests/shortletBooking.e2e.js && node scripts/tests/backendGaps.e2e.js",
+    "test:gaps": "node scripts/tests/backendGaps.e2e.js",
+    "test:app": "node scripts/tests/fullApp.e2e.js",
+    "test:db:start": "bash scripts/tests/test-db.sh start",
+    "test:db:stop": "bash scripts/tests/test-db.sh stop",
     "dev": "nodemon index.js",
     "reconcile": "node scripts/reconcilePendingTransactions.js",
     "reconcile:dry-run": "node scripts/reconcilePendingTransactions.js --dry-run",

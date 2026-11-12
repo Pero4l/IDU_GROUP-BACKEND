@@ -1,6 +1,9 @@
 const axios = require('axios');
-const { Users, Rentals, Shortlets, Reports, Progress, Conversations, Messages, WalletTransactions, Waitlist } = require('../models');
+const { Users, Rentals, Shortlets, ShortletBookings, Reports, Progress, Conversations, Messages, WalletTransactions, Waitlist } = require('../models');
 
+// Shortlet bookings are NOT in this list: the platform holds their payment
+// until the host payout, so their wallet rows don't show the final split.
+// Their figures come from the shortlet_bookings table instead (see getAnalytics).
 const MARKETPLACE_PAYMENT_TYPES = ['lock house', 'house rent', 'inspection fee'];
 
 // Flutterwave's Transfers API rejects calls from IPs not on its whitelist.
@@ -205,7 +208,8 @@ async function getAnalytics(req, res) {
       pendingReports,
       resolvedReports,
       rejectedReports,
-      successfulTransactions
+      successfulTransactions,
+      shortletBookings
     ] = await Promise.all([
       Users.count(),
       Users.count({ where: { is_active: true } }),
@@ -227,6 +231,9 @@ async function getAnalytics(req, res) {
       WalletTransactions.findAll({
         where: { status: 'success', role: 'payer', type: MARKETPLACE_PAYMENT_TYPES },
         attributes: ['type', 'amount', 'meta']
+      }),
+      ShortletBookings.findAll({
+        attributes: ['status', 'payout_status', 'total_amount', 'refunded_amount', 'host_payout', 'platform_fee', 'security_deposit', 'deposit_status', 'deposit_paid_to_host']
       })
     ]);
 
@@ -246,6 +253,27 @@ async function getAnalytics(req, res) {
       platformRevenueNGN += platformShare;
       landlordPayoutsNGN += landlordShare;
       countsByType[tx.type] = (countsByType[tx.type] || 0) + 1;
+    }
+
+    // Shortlets: gross is what guests paid minus refunds. Revenue and host
+    // payouts only count once a booking is settled; until then it's held.
+    // Deposits waiting out the claim window (or a claim decision) are tracked
+    // separately; a deposit awarded to a host counts as a host payout.
+    const shortletStats = { confirmed: 0, completed: 0, cancelled: 0, heldNGN: 0, depositsHeldNGN: 0, openDepositClaims: 0 };
+    for (const b of shortletBookings) {
+      const net = (Number(b.total_amount) || 0) - (Number(b.refunded_amount) || 0);
+      const depositHeld = ['held', 'claimed'].includes(b.deposit_status) ? Number(b.security_deposit) || 0 : 0;
+      shortletStats[b.status] = (shortletStats[b.status] || 0) + 1;
+      if (b.deposit_status === 'claimed') shortletStats.openDepositClaims++;
+      grossPaymentsNGN += net;
+      landlordPayoutsNGN += Number(b.deposit_paid_to_host) || 0;
+      if (b.payout_status === 'pending') {
+        shortletStats.heldNGN += net;
+      } else {
+        platformRevenueNGN += Number(b.platform_fee) || 0;
+        landlordPayoutsNGN += Number(b.host_payout) || 0;
+        shortletStats.depositsHeldNGN += depositHeld;
+      }
     }
 
     return res.status(200).json({
@@ -292,7 +320,17 @@ async function getAnalytics(req, res) {
           landlordPayoutsNGN,
           successfulLockPaymentsCount: countsByType['lock house'],
           successfulRentPaymentsCount: countsByType['house rent'],
-          successfulInspectionPaymentsCount: countsByType['inspection fee']
+          successfulInspectionPaymentsCount: countsByType['inspection fee'],
+          shortletBookings: {
+            confirmed: shortletStats.confirmed,
+            completed: shortletStats.completed,
+            cancelled: shortletStats.cancelled,
+            // Paid by guests but not yet settled (host payout pending)
+            heldNGN: Math.round(shortletStats.heldNGN * 100) / 100,
+            // Deposits after payout, still in the claim window or under review
+            depositsHeldNGN: Math.round(shortletStats.depositsHeldNGN * 100) / 100,
+            openDepositClaims: shortletStats.openDepositClaims
+          }
         }
       }
     });
@@ -302,6 +340,8 @@ async function getAnalytics(req, res) {
   }
 }
 
+// Sets a landlord's SHORTLET commission only (used by utils/shortletSettlement.js).
+// Lock / rent / inspection commissions come from .env and are never per-landlord.
 async function updateLandlordCommission(req, res) {
   try {
     const { id } = req.params;
@@ -331,7 +371,7 @@ async function updateLandlordCommission(req, res) {
     const { password, otpCode, otpExpiresAt, ...safeUser } = user.toJSON();
     return res.status(200).json({ 
       success: true, 
-      message: "Landlord commission percentage updated successfully", 
+      message: "Landlord shortlet commission percentage updated successfully", 
       data: { full_name: safeUser.full_name, commission_percent: safeUser.commission_percent } 
     });
   } catch (error) {

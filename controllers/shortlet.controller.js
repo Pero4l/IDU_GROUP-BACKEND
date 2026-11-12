@@ -1,6 +1,14 @@
-const { Shortlets, Users, Profile } = require("../models");
+const { Shortlets, ShortletBookings, Users, Profile } = require("../models");
 const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
 const { withTransaction } = require('../utils/rollback');
+const { chargeMarketplacePayment, InsufficientBalanceError } = require('../utils/wallet');
+const { verifyTransactionPin } = require('../utils/pin');
+const { toKobo, fromKobo } = require('../utils/money');
+const {
+  PAYOUT_DELAY_MS, DEPOSIT_CLAIM_WINDOW_MS, POLICY_NAMES, BookingActionError, todayInLagos, checkInAt, checkOutAt,
+  describePolicy, getShortletCommissionPercent, splitKobo, cancellationTerms, cancelBooking,
+  validateDepositClaim, fileDepositClaim, resolveDepositClaim,
+} = require('../utils/shortletSettlement');
 const logger = require('../utils/logger');
 const { Op } = require('sequelize');
 const cloudinary = require("cloudinary").v2;
@@ -83,6 +91,7 @@ const ENUMS = {
   propertyType: ['apartment', 'house', 'villa', 'studio', 'condo', 'townhouse', 'bungalow', 'loft'],
   furnishingStatus: ['unfurnished', 'semi_furnished', 'fully_furnished'],
   status: ['available', 'rented', 'pending', 'locked'],
+  cancellationPolicy: POLICY_NAMES, // flexible, moderate, firm, strict
 };
 
 function validateEnums(values) {
@@ -152,7 +161,7 @@ const LIST_ATTRIBUTES = [
   "address", "city", "area", "landmark", "amenities", "images", "videos", "coverImage",
   "pricePerNight", "cleaningFee", "securityDeposit", "minimumStay", "maximumStay",
   "availableFrom", "availableTo", "checkInTime", "checkOutTime",
-  "smokingAllowed", "petsAllowed", "partiesAllowed", "houseRules", "status", "UserId", "createdAt"
+  "smokingAllowed", "petsAllowed", "partiesAllowed", "houseRules", "cancellationPolicy", "status", "UserId", "createdAt"
 ];
 
 const OWNER_INCLUDE = [{
@@ -186,7 +195,7 @@ async function addShortlet(req, res) {
       amenities, images, videos, coverImage,
       pricePerNight, cleaningFee, securityDeposit, minimumStay, maximumStay,
       availableFrom, availableTo, checkInTime, checkOutTime,
-      smokingAllowed, petsAllowed, partiesAllowed, houseRules, status,
+      smokingAllowed, petsAllowed, partiesAllowed, houseRules, status, cancellationPolicy,
     } = req.body;
 
     if (!title || !description || !propertyType || !rentalModel || !pricePerNight ||
@@ -201,7 +210,7 @@ async function addShortlet(req, res) {
       return res.status(403).json({ success: false, message: "Only landlords can add shortlets" });
     }
 
-    const enumError = validateEnums({ rentalModel, propertyType, furnishingStatus, status });
+    const enumError = validateEnums({ rentalModel, propertyType, furnishingStatus, status, cancellationPolicy });
     if (enumError) return res.status(400).json({ success: false, message: enumError });
 
     if (!isValidTime(checkInTime) || !isValidTime(checkOutTime)) {
@@ -288,6 +297,7 @@ async function addShortlet(req, res) {
       partiesAllowed: toBoolean(partiesAllowed),
       houseRules,
       status: status || 'available',
+      cancellationPolicy: cancellationPolicy || 'flexible',
       UserId: req.user.userId,
     });
 
@@ -402,7 +412,7 @@ async function updateShortlet(req, res) {
       amenities, images, videos, coverImage,
       pricePerNight, cleaningFee, securityDeposit, minimumStay, maximumStay,
       availableFrom, availableTo, checkInTime, checkOutTime,
-      smokingAllowed, petsAllowed, partiesAllowed, houseRules, status,
+      smokingAllowed, petsAllowed, partiesAllowed, houseRules, status, cancellationPolicy,
     } = req.body;
 
     const shortlet = await findShortletByIdOrSlug(id);
@@ -413,7 +423,7 @@ async function updateShortlet(req, res) {
       return res.status(403).json({ success: false, message: "You are not authorized to update this short let" });
     }
 
-    const enumError = validateEnums({ rentalModel, propertyType, furnishingStatus, status });
+    const enumError = validateEnums({ rentalModel, propertyType, furnishingStatus, status, cancellationPolicy });
     if (enumError) return res.status(400).json({ success: false, message: enumError });
 
     if (!isValidTime(checkInTime) || !isValidTime(checkOutTime)) {
@@ -460,6 +470,8 @@ async function updateShortlet(req, res) {
       images: images !== undefined ? parseJsonArray(images) : shortlet.images,
       videos: videos !== undefined ? parseJsonArray(videos) : shortlet.videos,
       status: status || shortlet.status,
+      // Only affects new bookings — each booking keeps the policy it was made under.
+      cancellationPolicy: cancellationPolicy || shortlet.cancellationPolicy,
     };
 
     // A shortlet must always keep at least one image (model: images NOT NULL, required on create)
@@ -482,6 +494,24 @@ async function updateShortlet(req, res) {
       }
       updateData.availableFrom = availableFrom || shortlet.availableFrom;
       updateData.availableTo = availableTo || shortlet.availableTo;
+
+      // Don't let the host shrink the window out from under confirmed guests.
+      const stranded = await ShortletBookings.findOne({
+        where: {
+          shortlet_id: shortlet.id,
+          status: 'confirmed',
+          [Op.or]: [
+            { check_in: { [Op.lt]: updateData.availableFrom } },
+            { check_out: { [Op.gt]: updateData.availableTo } },
+          ],
+        },
+      });
+      if (stranded) {
+        return res.status(409).json({
+          success: false,
+          message: `There is a confirmed booking from ${stranded.check_in} to ${stranded.check_out} outside the new availability dates. Cancel it first or keep those dates available.`,
+        });
+      }
     }
 
     await shortlet.update(updateData);
@@ -524,6 +554,20 @@ async function deleteShortlet(req, res) {
       return res.status(403).json({ success: false, message: "You are not authorized to delete this short let" });
     }
 
+    const upcomingBooking = await ShortletBookings.findOne({
+      where: {
+        shortlet_id: shortlet.id,
+        [Op.or]: [
+          { status: 'confirmed', check_out: { [Op.gt]: todayInLagos() } },
+          // a guest who ended early but hasn't left yet
+          { status: 'cancelled', actual_check_out: { [Op.gt]: todayInLagos() } },
+        ],
+      },
+    });
+    if (upcomingBooking) {
+      return res.status(409).json({ success: false, message: "This short let has upcoming bookings and cannot be deleted" });
+    }
+
     const shortletId = shortlet.id;
     const shortletTitle = shortlet.title;
     const ownerId = shortlet.UserId;
@@ -547,6 +591,802 @@ async function deleteShortlet(req, res) {
     return res.status(200).json({ success: true, message: "Short let deleted successfully" });
   } catch (error) {
     logger.error('Error deleting shortlet', { error: error.message, userId: req.user?.userId });
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+// ─────────────────────────────────────────────
+// Bookings
+// ─────────────────────────────────────────────
+// Money flow (held payment, host payout, deposit, cancellation policy) lives
+// in utils/shortletSettlement.js — see the header comment there.
+
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Strict YYYY-MM-DD check that also rejects impossible dates like 2026-02-31.
+function isValidDateOnly(value) {
+  if (typeof value !== 'string' || !DATE_PATTERN.test(value)) return false;
+  const d = new Date(`${value}T00:00:00Z`);
+  return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === value;
+}
+
+function dateOnlyToUTC(value) {
+  return Date.parse(`${value}T00:00:00Z`);
+}
+
+// Two stays overlap when one starts before the other ends. check_out is the
+// departure day, so a stay ending on the 5th and one starting on the 5th
+// do NOT clash (same-day turnover, like Airbnb).
+//
+// A stay ended early (cancelled during the stay) still blocks the nights up
+// to the guest's actual_check_out; the nights after it are free again.
+function overlapWhere(shortlet_id, checkIn, checkOut) {
+  return {
+    shortlet_id,
+    check_in: { [Op.lt]: checkOut },
+    [Op.or]: [
+      { status: 'confirmed', check_out: { [Op.gt]: checkIn } },
+      { status: 'cancelled', actual_check_out: { [Op.gt]: checkIn } },
+    ],
+  };
+}
+
+class BookingConflictError extends Error {}
+
+const BOOKING_SHORTLET_ATTRIBUTES = [
+  "id", "slug", "title", "address", "city", "area", "coverImage", "images",
+  "pricePerNight", "checkInTime", "checkOutTime", "status", "UserId",
+];
+const PERSON_ATTRIBUTES = ['id', 'full_name', 'phone_no'];
+
+// Validates a requested stay against the listing's rules and prices it.
+// Shared by the quote and booking endpoints so they can never disagree.
+// Returns { error: { status, message } } or { stay }.
+async function evaluateStay(shortlet, user_id, { checkIn, checkOut, guests: rawGuests }) {
+  const fail = (status, message, code) => ({ error: { status, message, code } });
+  const guests = rawGuests === undefined || rawGuests === '' ? 1 : toInt(rawGuests, NaN);
+
+  if (!checkIn || !checkOut) return fail(400, "checkIn and checkOut are required");
+  if (!isValidDateOnly(checkIn) || !isValidDateOnly(checkOut)) {
+    return fail(400, "checkIn and checkOut must be valid dates in YYYY-MM-DD format");
+  }
+  if (!Number.isInteger(guests) || guests < 1) return fail(400, "guests must be a whole number of at least 1");
+
+  if (shortlet.UserId === user_id) return fail(400, "You cannot book your own short let");
+  if (shortlet.status !== 'available') return fail(400, "This short let is not available for booking");
+
+  const nights = Math.round((dateOnlyToUTC(checkOut) - dateOnlyToUTC(checkIn)) / DAY_MS);
+  if (nights < 1) return fail(400, "Check-out must be at least one day after check-in");
+  // Same-day check-in is allowed only until the listing's check-in time.
+  if (checkIn < todayInLagos() || checkInAt({ check_in: checkIn, check_in_time: shortlet.checkInTime }) <= new Date()) {
+    return fail(400, "Check-in date is in the past");
+  }
+  if (checkIn < shortlet.availableFrom || checkOut > shortlet.availableTo) {
+    return fail(400, `This short let is only available from ${shortlet.availableFrom} to ${shortlet.availableTo}`);
+  }
+  if (nights < shortlet.minimumStay) return fail(400, `Minimum stay is ${shortlet.minimumStay} night(s)`);
+  if (nights > shortlet.maximumStay) return fail(400, `Maximum stay is ${shortlet.maximumStay} night(s)`);
+  if (guests > shortlet.guestCapacity) return fail(400, `This short let sleeps at most ${shortlet.guestCapacity} guest(s)`);
+
+  const clash = await ShortletBookings.findOne({ where: overlapWhere(shortlet.id, checkIn, checkOut) });
+  if (clash) return fail(409, "This short let is already booked for some of the selected dates", 'DATES_UNAVAILABLE');
+
+  // Price in kobo to avoid float drift.
+  const pricePerNightKobo = toKobo(shortlet.pricePerNight);
+  const cleaningFeeKobo = toKobo(shortlet.cleaningFee || 0);
+  const securityDepositKobo = toKobo(shortlet.securityDeposit || 0);
+  const subtotalKobo = pricePerNightKobo * nights;
+  const totalKobo = subtotalKobo + cleaningFeeKobo + securityDepositKobo;
+  if (!Number.isSafeInteger(totalKobo) || pricePerNightKobo <= 0) {
+    logger.error('Shortlet has an invalid price', { shortlet_id: shortlet.id, pricePerNight: shortlet.pricePerNight });
+    return fail(400, "This short let does not have a valid price and cannot be booked yet");
+  }
+
+  return {
+    stay: {
+      checkIn, checkOut, nights, guests,
+      checkInTime: shortlet.checkInTime,
+      checkOutTime: shortlet.checkOutTime,
+      pricePerNightKobo, cleaningFeeKobo, securityDepositKobo, subtotalKobo, totalKobo,
+      breakdown: {
+        pricePerNight: fromKobo(pricePerNightKobo),
+        nights,
+        subtotal: fromKobo(subtotalKobo),
+        cleaningFee: fromKobo(cleaningFeeKobo),
+        securityDeposit: fromKobo(securityDepositKobo),
+        securityDepositRefundable: true,
+        total: fromKobo(totalKobo),
+      },
+      cancellationPolicy: describePolicy(shortlet.cancellationPolicy, { checkIn, checkInTime: shortlet.checkInTime }),
+    },
+  };
+}
+
+function sendError(res, error) {
+  return res.status(error.status).json({ success: false, ...(error.code && { code: error.code }), message: error.message });
+}
+
+// ─────────────────────────────────────────────
+// GET /shortlet/availability/:id  — booked ranges for the date picker
+// ─────────────────────────────────────────────
+async function getShortletAvailability(req, res) {
+  try {
+    const shortlet = await findShortletByIdOrSlug(req.params.id, {
+      attributes: ['id', 'availableFrom', 'availableTo', 'minimumStay', 'maximumStay', 'checkInTime', 'checkOutTime', 'guestCapacity', 'cancellationPolicy', 'status'],
+    });
+    if (!shortlet) {
+      return res.status(404).json({ success: false, message: "Short let not found" });
+    }
+
+    const today = todayInLagos();
+    const booked = await ShortletBookings.findAll({
+      attributes: ['check_in', 'check_out', 'status', 'actual_check_out'],
+      where: {
+        shortlet_id: shortlet.id,
+        [Op.or]: [
+          { status: 'confirmed', check_out: { [Op.gt]: today } },
+          { status: 'cancelled', actual_check_out: { [Op.gt]: today } },
+        ],
+      },
+      order: [['check_in', 'ASC']],
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        ...shortlet.toJSON(),
+        bookable: shortlet.status === 'available',
+        // check_out is the departure day and is free for a new check-in.
+        bookedRanges: booked.map((b) => ({ checkIn: b.check_in, checkOut: b.status === 'cancelled' ? b.actual_check_out : b.check_out })),
+      },
+      message: "Availability retrieved successfully",
+    });
+  } catch (error) {
+    logger.error('Error fetching shortlet availability', { error: error.message });
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+// ─────────────────────────────────────────────
+// GET /shortlet/quote/:id?checkIn=&checkOut=&guests=  — price before paying
+// ─────────────────────────────────────────────
+async function quoteShortlet(req, res) {
+  try {
+    const shortlet = await findShortletByIdOrSlug(req.params.id);
+    if (!shortlet) {
+      return res.status(404).json({ success: false, message: "Short let not found" });
+    }
+    const { error, stay } = await evaluateStay(shortlet, req.user.userId, req.query);
+    if (error) return sendError(res, error);
+
+    return res.status(200).json({
+      success: true,
+      message: "Quote generated successfully",
+      data: {
+        shortlet_id: shortlet.id,
+        checkIn: stay.checkIn,
+        checkOut: stay.checkOut,
+        guests: stay.guests,
+        checkInTime: stay.checkInTime,
+        checkOutTime: stay.checkOutTime,
+        ...stay.breakdown,
+        cancellationPolicy: stay.cancellationPolicy,
+      },
+    });
+  } catch (error) {
+    logger.error('Error quoting shortlet', { error: error.message, userId: req.user?.userId });
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+// ─────────────────────────────────────────────
+// POST /shortlet/book
+// Body: { shortlet_id, checkIn: 'YYYY-MM-DD', checkOut: 'YYYY-MM-DD', guests?, pin }
+// Charges the guest's wallet (PIN-protected); the platform holds the money
+// until the host payout 24h after check-in.
+// ─────────────────────────────────────────────
+async function bookShortlet(req, res) {
+  try {
+    const user_id = req.user.userId;
+    const { shortlet_id, pin } = req.body;
+
+    if (!shortlet_id) {
+      return res.status(400).json({ success: false, message: "shortlet_id is required" });
+    }
+
+    const shortlet = await findShortletByIdOrSlug(String(shortlet_id));
+    if (!shortlet) {
+      return res.status(404).json({ success: false, message: "Short let not found" });
+    }
+
+    const { error, stay } = await evaluateStay(shortlet, user_id, req.body);
+    if (error) return sendError(res, error);
+
+    // PIN — required before any money leaves the wallet.
+    const pinError = await verifyTransactionPin(user_id, pin, 'booking');
+    if (pinError) {
+      logger.warn('Shortlet booking blocked by PIN check', { user_id, shortlet_id: shortlet.id, reason: pinError.code });
+      return sendError(res, pinError);
+    }
+
+    // Commission is the admin-set per-landlord value, frozen on the booking.
+    // It applies to nights + cleaning fee; the deposit goes back to the guest.
+    const commissionPercent = await getShortletCommissionPercent(shortlet.UserId);
+    const { hostKobo, platformKobo } = splitKobo(stay.subtotalKobo + stay.cleaningFeeKobo, commissionPercent);
+    const payoutDueAt = new Date(checkInAt({ check_in: stay.checkIn, check_in_time: stay.checkInTime }).getTime() + PAYOUT_DELAY_MS);
+    // Deposit is held until 48h after check-out so the host can file a claim.
+    const depositRefundDueAt = stay.securityDepositKobo > 0
+      ? new Date(checkOutAt({ check_out: stay.checkOut, check_out_time: stay.checkOutTime }).getTime() + DEPOSIT_CLAIM_WINDOW_MS)
+      : null;
+
+    let chargeResult;
+    try {
+      chargeResult = await chargeMarketplacePayment({
+        payerUserId: user_id,
+        // No landlord here on purpose: the platform holds the full amount
+        // until the payout job pays the host.
+        landlordUserId: null,
+        amount: fromKobo(stay.totalKobo),
+        commissionPercent: 100,
+        type: 'shortlet booking',
+        narration: `Shortlet booking for "${shortlet.title}" (${stay.checkIn} to ${stay.checkOut})`,
+        // Runs inside the same DB transaction as the charge: if the dates were
+        // taken in the meantime (or anything else fails) the charge rolls back,
+        // so a guest is never charged without a booking.
+        applyEffects: async (t) => {
+          // Serialise bookings for the same shortlet so two guests can't both
+          // pass the overlap check for the same nights.
+          const fresh = await Shortlets.findByPk(shortlet.id, { transaction: t, lock: t.LOCK.UPDATE });
+          if (!fresh || fresh.status !== 'available') throw new BookingConflictError();
+          const conflict = await ShortletBookings.findOne({
+            where: overlapWhere(shortlet.id, stay.checkIn, stay.checkOut),
+            transaction: t,
+          });
+          if (conflict) throw new BookingConflictError();
+
+          return ShortletBookings.create({
+            user_id,
+            shortlet_id: shortlet.id,
+            host_id: shortlet.UserId,
+            check_in: stay.checkIn,
+            check_out: stay.checkOut,
+            check_in_time: stay.checkInTime,
+            check_out_time: stay.checkOutTime,
+            nights: stay.nights,
+            guests: stay.guests,
+            price_per_night: fromKobo(stay.pricePerNightKobo),
+            cleaning_fee: fromKobo(stay.cleaningFeeKobo),
+            security_deposit: fromKobo(stay.securityDepositKobo),
+            total_amount: fromKobo(stay.totalKobo),
+            status: 'confirmed',
+            commission_percent: commissionPercent,
+            host_payout: fromKobo(hostKobo),
+            platform_fee: fromKobo(platformKobo),
+            payout_status: 'pending',
+            payout_due_at: payoutDueAt,
+            deposit_status: stay.securityDepositKobo > 0 ? 'held' : 'none',
+            deposit_refund_due_at: depositRefundDueAt,
+            cancellation_policy: stay.cancellationPolicy.policy,
+          }, { transaction: t });
+        },
+      });
+    } catch (error) {
+      if (error instanceof InsufficientBalanceError) {
+        return res.status(400).json({
+          success: false,
+          code: 'INSUFFICIENT_BALANCE',
+          message: "Insufficient wallet balance. Please top up your wallet to book this short let.",
+        });
+      }
+      if (error instanceof BookingConflictError) {
+        return res.status(409).json({ success: false, code: 'DATES_UNAVAILABLE', message: "This short let was just booked for some of the selected dates" });
+      }
+      if (error.code === 'WALLET_NOT_FOUND' || error.code === 'WALLET_INACTIVE') {
+        return res.status(400).json({ success: false, code: error.code, message: "Your wallet is not available. Please contact support." });
+      }
+      throw error;
+    }
+
+    const booking = chargeResult.effects;
+    logger.info('Shortlet booked', { user_id, shortlet_id: shortlet.id, booking_id: booking.id, nights: stay.nights, total: stay.breakdown.total });
+
+    // Non-critical notifications
+    try {
+      const [guest, host] = await Promise.all([
+        Users.findByPk(user_id, { attributes: ['id', 'email', 'full_name'] }),
+        Users.findByPk(shortlet.UserId, { attributes: ['id', 'email', 'full_name'] }),
+      ]);
+      const amountText = `₦${Number(stay.breakdown.total).toLocaleString()}`;
+      const when = `${stay.checkIn} (check-in from ${stay.checkInTime}) to ${stay.checkOut} (check-out by ${stay.checkOutTime})`;
+
+      await logAndEmailUser(user_id, guest?.email, "Shortlet Booked",
+        `Your booking for "${shortlet.title}" from ${when}, ${stay.nights} night(s), ${stay.guests} guest(s), is confirmed. ${amountText} has been deducted from your wallet. Cancellation policy (${stay.cancellationPolicy.label}): ${stay.cancellationPolicy.summary}`
+      );
+      if (host) {
+        await logAndEmailUser(host.id, host.email, "New Shortlet Booking",
+          `${guest?.full_name ?? 'A guest'} booked your short let "${shortlet.title}" from ${when}, ${stay.nights} night(s), ${stay.guests} guest(s). Your payout of ₦${Number(fromKobo(hostKobo)).toLocaleString()} will be sent to your wallet 24 hours after check-in.`
+        );
+      }
+      await notifySuperAdmins(
+        `Short let "${shortlet.title}" was booked by ${guest?.full_name ?? user_id} for ${stay.nights} night(s) (${amountText}).`,
+        "shortlet"
+      );
+    } catch (notifyError) {
+      logger.error('Shortlet booking notification failed', { error: notifyError.message, booking_id: booking.id });
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: "Short let booked successfully",
+      data: guestView(booking),
+      walletBalance: chargeResult.payerBalance,
+    });
+  } catch (error) {
+    logger.error('Error booking shortlet', { error: error.message, userId: req.user?.userId });
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+// Guests shouldn't see the host's payout or the platform's cut.
+// One summary of the security deposit + any claim, identical for guest, host
+// and admin, so every side sees the same facts (amount, reason, photos,
+// decision, admin note, who got what). Only the action flags differ:
+//   canClaim   — host only, while the claim window is open
+//   canResolve — admin only, while a claim is waiting for a decision
+function depositClaimSummary(booking, role, now = new Date()) {
+  const b = typeof booking.toJSON === 'function' ? booking.toJSON() : booking;
+  const deposit = Number(b.security_deposit) || 0;
+  const paidToHost = Number(b.deposit_paid_to_host) || 0;
+  const resolved = !!b.deposit_claim_resolved_at;
+  const windowOpen = b.deposit_status === 'held' && now >= checkInAt(b)
+    && (!b.deposit_refund_due_at || now <= new Date(b.deposit_refund_due_at));
+  return {
+    depositStatus: b.deposit_status,                   // none · held · claimed · refunded · settled
+    securityDeposit: fromKobo(toKobo(b.security_deposit)),
+    claimWindowEndsAt: b.deposit_status === 'held' ? b.deposit_refund_due_at : null,
+    claimed: !!b.deposit_claimed_at,
+    claim: b.deposit_claimed_at ? {
+      amount: b.deposit_claim_amount,
+      reason: b.deposit_claim_reason,
+      photos: b.deposit_claim_photos || [],
+      claimedAt: b.deposit_claimed_at,
+      status: resolved ? 'resolved' : 'pending_review',
+      decision: b.deposit_claim_decision,             // approved · partially_approved · rejected · null
+      adminNote: b.deposit_claim_note,
+      resolvedAt: b.deposit_claim_resolved_at,
+      paidToHost: resolved ? fromKobo(toKobo(paidToHost)) : null,
+      refundedToGuest: resolved ? fromKobo(toKobo(deposit - paidToHost)) : null,
+    } : null,
+    canClaim: role === 'host' && windowOpen,
+    canResolve: role === 'admin' && b.deposit_status === 'claimed',
+  };
+}
+
+function guestView(booking) {
+  const json = typeof booking.toJSON === 'function' ? booking.toJSON() : { ...booking };
+  json.depositClaim = depositClaimSummary(json, 'guest');
+  delete json.host_payout;
+  delete json.platform_fee;
+  delete json.commission_percent;
+  delete json.payout_status;
+  delete json.payout_due_at;
+  delete json.paid_out_at;
+  return json;
+}
+
+// Hosts see their payout; only the platform's cut is hidden.
+function hostView(booking) {
+  const json = typeof booking.toJSON === 'function' ? booking.toJSON() : { ...booking };
+  json.depositClaim = depositClaimSummary(json, 'host');
+  delete json.platform_fee;
+  return json;
+}
+
+// Admins see every field, including the platform's cut.
+function adminView(booking) {
+  const json = typeof booking.toJSON === 'function' ? booking.toJSON() : { ...booking };
+  json.depositClaim = depositClaimSummary(json, 'admin');
+  return json;
+}
+
+// ─────────────────────────────────────────────
+// GET /shortlet/bookings  — the signed-in guest's shortlet bookings
+// ─────────────────────────────────────────────
+async function getUserShortletBookings(user_id) {
+  const bookings = await ShortletBookings.findAll({
+    where: { user_id },
+    include: [
+      { model: Shortlets, as: 'shortlet', attributes: BOOKING_SHORTLET_ATTRIBUTES },
+      { model: Users, as: 'host', attributes: PERSON_ATTRIBUTES },
+    ],
+    order: [['check_in', 'DESC']],
+  });
+  return bookings.map(guestView);
+}
+
+async function getMyShortletBookings(req, res) {
+  try {
+    const bookings = await getUserShortletBookings(req.user.userId);
+    return res.status(200).json({ success: true, message: "Shortlet bookings retrieved successfully", data: bookings });
+  } catch (error) {
+    logger.error('Error fetching shortlet bookings', { error: error.message, userId: req.user?.userId });
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+// ─────────────────────────────────────────────
+// GET /shortlet/host/bookings?status=  — bookings on the signed-in host's listings
+// ─────────────────────────────────────────────
+async function getHostShortletBookings(req, res) {
+  try {
+    const where = { host_id: req.user.userId };
+    if (req.query.status) {
+      if (!['confirmed', 'cancelled', 'completed'].includes(req.query.status)) {
+        return res.status(400).json({ success: false, message: "status must be one of: confirmed, cancelled, completed" });
+      }
+      where.status = req.query.status;
+    }
+    const bookings = await ShortletBookings.findAll({
+      where,
+      include: [
+        { model: Shortlets, as: 'shortlet', attributes: BOOKING_SHORTLET_ATTRIBUTES },
+        { model: Users, as: 'guest', attributes: PERSON_ATTRIBUTES },
+      ],
+      order: [['check_in', 'DESC']],
+    });
+    return res.status(200).json({ success: true, message: "Host bookings retrieved successfully", data: bookings.map(hostView) });
+  } catch (error) {
+    logger.error('Error fetching host shortlet bookings', { error: error.message, userId: req.user?.userId });
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+// ─────────────────────────────────────────────
+// GET /shortlet/bookings/:bookingId  — guest or host
+// ─────────────────────────────────────────────
+async function getShortletBooking(req, res) {
+  try {
+    const { bookingId } = req.params;
+    if (!isUUID(bookingId)) {
+      return res.status(404).json({ success: false, message: "Booking not found" });
+    }
+    const user_id = req.user.userId;
+    const booking = await ShortletBookings.findOne({
+      where: { id: bookingId, [Op.or]: [{ user_id }, { host_id: user_id }] },
+      include: [
+        { model: Shortlets, as: 'shortlet', attributes: [...BOOKING_SHORTLET_ATTRIBUTES, 'houseRules', 'landmark'] },
+        { model: Users, as: 'guest', attributes: PERSON_ATTRIBUTES },
+        { model: Users, as: 'host', attributes: PERSON_ATTRIBUTES },
+      ],
+    });
+    if (!booking) {
+      return res.status(404).json({ success: false, message: "Booking not found" });
+    }
+
+    const isGuest = booking.user_id === user_id;
+    const data = isGuest ? guestView(booking) : hostView(booking);
+    // What cancelling right now would mean (before check-in, or ending the stay early).
+    if (booking.status === 'confirmed') {
+      try {
+        const terms = cancellationTerms(booking, isGuest ? 'guest' : 'host');
+        data.cancellation = {
+          canCancel: true,
+          policy: terms.policy,
+          stage: terms.stage, // 'before_check_in' | 'during_stay'
+          refundAmount: terms.refundAmount,
+          nonRefundableAmount: terms.nonRefundableAmount,
+          freeCancellationUntil: terms.freeCancellationUntil,
+          // during_stay only: when the guest would leave, and that the deposit
+          // stays held for the host's 48h claim window
+          actualCheckOut: terms.actualCheckOut,
+          depositHeldForClaims: terms.depositHeldForClaims,
+        };
+      } catch (e) {
+        data.cancellation = { canCancel: false, reason: e.message };
+      }
+    } else {
+      data.cancellation = { canCancel: false };
+    }
+
+
+    return res.status(200).json({ success: true, message: "Booking retrieved successfully", data });
+  } catch (error) {
+    logger.error('Error fetching shortlet booking', { error: error.message, userId: req.user?.userId });
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+// ─────────────────────────────────────────────
+// POST /shortlet/bookings/:bookingId/cancel  — guest or host
+// Body: { reason? }
+// ─────────────────────────────────────────────
+async function cancelShortletBooking(req, res) {
+  try {
+    const { bookingId } = req.params;
+    if (!isUUID(bookingId)) {
+      return res.status(404).json({ success: false, message: "Booking not found" });
+    }
+    const user_id = req.user.userId;
+
+    let result;
+    try {
+      result = await cancelBooking({ bookingId, actorUserId: user_id, reason: req.body?.reason });
+    } catch (error) {
+      if (error instanceof BookingActionError) {
+        if (error.code === 'REFUND_NEEDS_SUPPORT') {
+          notifySuperAdmins(`A shortlet cancellation (booking ${bookingId}) needs manual handling: the host's wallet can't cover the refund for unused nights.`, "shortlet")
+            .catch(() => {});
+        }
+        return sendError(res, error);
+      }
+      throw error;
+    }
+
+    const { booking, cancelledBy, terms } = result;
+    logger.info('Shortlet booking cancelled', { booking_id: booking.id, cancelledBy, stage: terms.stage, refund: terms.refundAmount });
+
+    try {
+      const [guest, host, shortlet] = await Promise.all([
+        Users.findByPk(booking.user_id, { attributes: ['id', 'email', 'full_name'] }),
+        booking.host_id ? Users.findByPk(booking.host_id, { attributes: ['id', 'email', 'full_name'] }) : null,
+        booking.shortlet_id ? Shortlets.findByPk(booking.shortlet_id, { attributes: ['id', 'title'] }) : null,
+      ]);
+      const title = shortlet?.title ?? 'your short let';
+      const dates = `${booking.check_in} to ${booking.check_out}`;
+      const refundText = `₦${Number(terms.refundAmount).toLocaleString()}`;
+      const keptText = `₦${Number(terms.nonRefundableAmount).toLocaleString()}`;
+      const early = terms.stage === 'during_stay';
+      const depositNote = terms.depositHeldForClaims
+        ? ' Your security deposit will be returned 48 hours after you leave, unless the host makes an approved damage claim.'
+        : '';
+      const what = early ? `Your stay at "${title}" has been ended early (leaving on ${terms.actualCheckOut}).` : `Your booking for "${title}" (${dates}) has been cancelled.`;
+
+      await logAndEmailUser(booking.user_id, guest?.email, early ? "Shortlet Stay Ended Early" : "Shortlet Booking Cancelled",
+        cancelledBy === 'host'
+          ? `${early ? `Your host ended your stay at "${title}" early (leaving on ${terms.actualCheckOut}).` : `Your host cancelled your booking for "${title}" (${dates}).`} ${refundText} has been refunded to your wallet.${depositNote}`
+          : `${what} ${refundText} has been refunded to your wallet.${terms.fullRefund ? '' : ` Under the ${terms.policy} cancellation policy, ${keptText} is non-refundable.`}${depositNote}`
+      );
+      if (host) {
+        await logAndEmailUser(host.id, host.email, early ? "Shortlet Stay Ended Early" : "Shortlet Booking Cancelled",
+          cancelledBy === 'host'
+            ? `You ${early ? 'ended the stay early' : 'cancelled the booking'} for "${title}" (${dates}). The guest was refunded ${refundText}.`
+            : `${guest?.full_name ?? 'The guest'} ${early ? `ended their stay early (leaving on ${terms.actualCheckOut})` : 'cancelled their booking'} for "${title}" (${dates}). Your earnings for this booking are now ₦${Number(booking.host_payout).toLocaleString()}.${terms.depositHeldForClaims ? ' You can still file a deposit claim for 48 hours after they leave.' : ''}`
+        );
+      }
+      await notifySuperAdmins(`Shortlet booking for "${title}" (${dates}) was ${early ? 'ended early' : 'cancelled'} by the ${cancelledBy}. Refund: ${refundText}.`, "shortlet");
+    } catch (notifyError) {
+      logger.error('Shortlet cancellation notification failed', { error: notifyError.message, booking_id: booking.id });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Booking cancelled successfully",
+      data: cancelledBy === 'guest' ? guestView(booking) : hostView(booking),
+      refundAmount: terms.refundAmount,
+    });
+  } catch (error) {
+    logger.error('Error cancelling shortlet booking', { error: error.message, userId: req.user?.userId });
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+// ─────────────────────────────────────────────
+// POST /shortlet/bookings/:bookingId/deposit-claim  — host only
+// multipart/form-data: amount, reason, photos (1–5 images). Allowed from check-in until 48h after check-out.
+// ─────────────────────────────────────────────
+async function claimShortletDeposit(req, res) {
+  try {
+    const { bookingId } = req.params;
+    if (!isUUID(bookingId)) {
+      return res.status(404).json({ success: false, message: "Booking not found" });
+    }
+    const hostUserId = req.user.userId;
+    const { amount, reason } = req.body || {};
+    const files = req.files || [];
+
+    // 1. Check everything BEFORE uploading, so a claim that can't be filed
+    //    never leaves photos behind on Cloudinary.
+    try {
+      validateDepositClaim(await ShortletBookings.findByPk(bookingId), { hostUserId, amount, reason, photoCount: files.length });
+    } catch (error) {
+      if (error instanceof BookingActionError) return sendError(res, error);
+      throw error;
+    }
+
+    // 2. Upload the evidence.
+    let uploaded;
+    try {
+      uploaded = await Promise.all(files.map((f) => uploadBufferToCloudinary(f.buffer, f.mimetype, "deposit-claims")));
+    } catch (error) {
+      logger.error('Deposit claim photo upload failed', { error: error.message, booking_id: bookingId });
+      return res.status(502).json({ success: false, code: 'UPLOAD_FAILED', message: "Couldn't upload the photos. Please try again." });
+    }
+
+    // 3. File the claim (re-checked under a row lock). If that fails, remove
+    //    the photos we just uploaded.
+    let result;
+    try {
+      result = await fileDepositClaim({ bookingId, hostUserId, amount, reason, photos: uploaded.map((u) => u.secure_url) });
+    } catch (error) {
+      Promise.all(uploaded.map((u) => cloudinary.uploader.destroy(u.public_id).catch(() => {}))).catch(() => {});
+      if (error instanceof BookingActionError) return sendError(res, error);
+      throw error;
+    }
+    const { booking } = result;
+    logger.info('Shortlet deposit claim filed', { booking_id: booking.id, amount: booking.deposit_claim_amount, photos: booking.deposit_claim_photos.length });
+
+    try {
+      const [guest, host] = await Promise.all([
+        Users.findByPk(booking.user_id, { attributes: ['id', 'email', 'full_name'] }),
+        Users.findByPk(booking.host_id, { attributes: ['id', 'email', 'full_name'] }),
+      ]);
+      const amountText = `₦${Number(booking.deposit_claim_amount).toLocaleString()}`;
+      await logAndEmailUser(booking.user_id, guest?.email, "Security Deposit Claim",
+        `Your host has claimed ${amountText} of your ₦${Number(booking.security_deposit).toLocaleString()} security deposit for your stay from ${booking.check_in}. Reason: "${booking.deposit_claim_reason}". ${booking.deposit_claim_photos.length} photo(s) were attached; you can see them on the booking. Our team will review it; contact support if you disagree.`
+      );
+      await notifySuperAdmins(`${host?.full_name ?? 'A host'} filed a ${amountText} security deposit claim (booking ${booking.id}). Review it under deposit claims.`, "shortlet");
+    } catch (notifyError) {
+      logger.error('Deposit claim notification failed', { error: notifyError.message, booking_id: booking.id });
+    }
+
+    return res.status(200).json({ success: true, message: "Deposit claim submitted for review", data: hostView(booking) });
+  } catch (error) {
+    logger.error('Error filing deposit claim', { error: error.message, userId: req.user?.userId });
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+// ─────────────────────────────────────────────
+// GET /admin/shortlet-bookings/deposit-claims?status=open|resolved|all  — super admin
+// ─────────────────────────────────────────────
+async function adminListDepositClaims(req, res) {
+  try {
+    const status = req.query.status || 'open';
+    const where = { deposit_claimed_at: { [Op.ne]: null } };
+    if (status === 'open') where.deposit_status = 'claimed';
+    else if (status === 'resolved') where.deposit_claim_resolved_at = { [Op.ne]: null };
+    else if (status !== 'all') {
+      return res.status(400).json({ success: false, message: "status must be one of: open, resolved, all" });
+    }
+    const claims = await ShortletBookings.findAll({
+      where,
+      include: [
+        { model: Shortlets, as: 'shortlet', attributes: ['id', 'slug', 'title', 'city', 'area'] },
+        { model: Users, as: 'guest', attributes: ['id', 'full_name', 'email', 'phone_no'] },
+        { model: Users, as: 'host', attributes: ['id', 'full_name', 'email', 'phone_no'] },
+      ],
+      order: [['deposit_claimed_at', 'ASC']],
+    });
+    return res.status(200).json({ success: true, count: claims.length, data: claims.map(adminView), message: "Deposit claims retrieved successfully" });
+  } catch (error) {
+    logger.error('Error listing deposit claims', { error: error.message });
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+// ─────────────────────────────────────────────
+// PUT /admin/shortlet-bookings/:bookingId/deposit-claim  — super admin
+// Body: { decision: 'approve' | 'reject', amount?, note? }
+// ─────────────────────────────────────────────
+async function adminResolveDepositClaim(req, res) {
+  try {
+    const { bookingId } = req.params;
+    if (!isUUID(bookingId)) {
+      return res.status(404).json({ success: false, message: "Booking not found" });
+    }
+    const { decision, amount, note } = req.body || {};
+    let result;
+    try {
+      result = await resolveDepositClaim({ bookingId, decision, amount, note });
+    } catch (error) {
+      if (error instanceof BookingActionError) return sendError(res, error);
+      throw error;
+    }
+    const { booking, awardKobo, guestKobo } = result;
+    logger.info('Shortlet deposit claim resolved', { booking_id: booking.id, decision: booking.deposit_claim_decision, toHost: awardKobo / 100, toGuest: guestKobo / 100 });
+
+    try {
+      const [guest, host] = await Promise.all([
+        Users.findByPk(booking.user_id, { attributes: ['id', 'email'] }),
+        Users.findByPk(booking.host_id, { attributes: ['id', 'email'] }),
+      ]);
+      const toHost = `₦${Number(fromKobo(awardKobo)).toLocaleString()}`;
+      const toGuest = `₦${Number(fromKobo(guestKobo)).toLocaleString()}`;
+      const noteText = booking.deposit_claim_note ? ` Note from our team: "${booking.deposit_claim_note}"` : '';
+      await logAndEmailUser(booking.user_id, guest?.email, "Security Deposit Claim Decided",
+        awardKobo > 0
+          ? `The host's deposit claim for your stay from ${booking.check_in} was ${booking.deposit_claim_decision === 'approved' ? 'approved' : 'partly approved'}: ${toHost} went to the host and ${toGuest} was refunded to your wallet.${noteText}`
+          : `The host's deposit claim for your stay from ${booking.check_in} was rejected. Your full deposit of ${toGuest} has been refunded to your wallet.${noteText}`
+      );
+      if (host) {
+        await logAndEmailUser(host.id, host.email, "Security Deposit Claim Decided",
+          awardKobo > 0
+            ? `Your deposit claim for the stay from ${booking.check_in} was ${booking.deposit_claim_decision === 'approved' ? 'approved' : 'partly approved'}. ${toHost} has been credited to your wallet.${noteText}`
+            : `Your deposit claim for the stay from ${booking.check_in} was rejected and the deposit was returned to the guest.${noteText}`
+        );
+      }
+    } catch (notifyError) {
+      logger.error('Deposit claim decision notification failed', { error: notifyError.message, booking_id: booking.id });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Deposit claim resolved",
+      data: adminView(booking),
+      paidToHost: fromKobo(awardKobo),
+      refundedToGuest: fromKobo(guestKobo),
+    });
+  } catch (error) {
+    logger.error('Error resolving deposit claim', { error: error.message });
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+// ─────────────────────────────────────────────
+// GET /admin/shortlet-bookings  — super admin: every booking
+// Query: status, deposit_status, shortlet_id, guest_id, host_id, limit (≤100, default 50), offset
+// ─────────────────────────────────────────────
+const ADMIN_BOOKING_INCLUDE = [
+  { model: Shortlets, as: 'shortlet', attributes: ['id', 'slug', 'title', 'address', 'city', 'area', 'coverImage', 'cancellationPolicy'] },
+  { model: Users, as: 'guest', attributes: ['id', 'full_name', 'email', 'phone_no'] },
+  { model: Users, as: 'host', attributes: ['id', 'full_name', 'email', 'phone_no'] },
+];
+
+async function adminListShortletBookings(req, res) {
+  try {
+    const { status, deposit_status, shortlet_id, guest_id, host_id } = req.query;
+    const where = {};
+    if (status) {
+      if (!['confirmed', 'completed', 'cancelled'].includes(status)) {
+        return res.status(400).json({ success: false, message: "status must be one of: confirmed, completed, cancelled" });
+      }
+      where.status = status;
+    }
+    if (deposit_status) {
+      if (!['none', 'held', 'claimed', 'refunded', 'settled'].includes(deposit_status)) {
+        return res.status(400).json({ success: false, message: "deposit_status must be one of: none, held, claimed, refunded, settled" });
+      }
+      where.deposit_status = deposit_status;
+    }
+    for (const [key, col] of [['shortlet_id', 'shortlet_id'], ['guest_id', 'user_id'], ['host_id', 'host_id']]) {
+      const v = req.query[key];
+      if (v === undefined) continue;
+      if (!isUUID(v)) return res.status(400).json({ success: false, message: `${key} must be a valid UUID` });
+      where[col] = v;
+    }
+    const { limit, offset } = parsePagination(req.query.limit, req.query.offset);
+    const { count, rows } = await ShortletBookings.findAndCountAll({
+      where,
+      include: ADMIN_BOOKING_INCLUDE,
+      order: [['createdAt', 'DESC']],
+      limit: limit || 50,
+      offset: offset || 0,
+      distinct: true,
+    });
+    return res.status(200).json({ success: true, count, data: rows.map(adminView), message: "Shortlet bookings retrieved successfully" });
+  } catch (error) {
+    logger.error('Error listing shortlet bookings (admin)', { error: error.message });
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+// ─────────────────────────────────────────────
+// GET /admin/shortlet-bookings/:bookingId  — super admin: one booking, all fields
+// ─────────────────────────────────────────────
+async function adminGetShortletBooking(req, res) {
+  try {
+    const { bookingId } = req.params;
+    if (!isUUID(bookingId)) {
+      return res.status(404).json({ success: false, message: "Booking not found" });
+    }
+    const booking = await ShortletBookings.findByPk(bookingId, { include: ADMIN_BOOKING_INCLUDE });
+    if (!booking) {
+      return res.status(404).json({ success: false, message: "Booking not found" });
+    }
+    return res.status(200).json({ success: true, data: adminView(booking), message: "Booking retrieved successfully" });
+  } catch (error) {
+    logger.error('Error fetching shortlet booking (admin)', { error: error.message });
     return res.status(500).json({ success: false, message: "Server error" });
   }
 }
@@ -595,4 +1435,17 @@ module.exports = {
   deleteShortlet,
   searchShortlets,
   adminGetAllShortlets,
+  getShortletAvailability,
+  quoteShortlet,
+  bookShortlet,
+  getMyShortletBookings,
+  getUserShortletBookings,
+  getHostShortletBookings,
+  getShortletBooking,
+  cancelShortletBooking,
+  claimShortletDeposit,
+  adminListDepositClaims,
+  adminResolveDepositClaim,
+  adminListShortletBookings,
+  adminGetShortletBooking,
 };

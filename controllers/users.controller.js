@@ -17,6 +17,7 @@ const { buildEmailShell, buildCodeBadge, buildActionButton } = require('../utils
 const { withTransaction } = require('../utils/rollback');
 const { createWalletForUser } = require('../utils/wallet');
 const logger = require('../utils/logger');
+const { authCookieOptions } = require('../utils/authCookies');
 
 
 async function register(req, res) {
@@ -273,13 +274,7 @@ async function login(req, res) {
         loginHtml,
       );
 
-      const cookieOptions = {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "strict",
-        path: "/",
-        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days in milliseconds
-      };
+      const cookieOptions = authCookieOptions();
 
       res.cookie("token", token, cookieOptions);
       res.cookie("userRole", role, cookieOptions);
@@ -614,13 +609,7 @@ async function googleAuth(req, res) {
       "A successful login via Google was just detected on your RentULO account.",
     );
 
-    const cookieOptions = {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
-      path: "/",
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days in milliseconds
-    };
+    const cookieOptions = authCookieOptions();
 
     res.cookie("token", token, cookieOptions);
     res.cookie("userRole", user.role, cookieOptions);
@@ -639,30 +628,28 @@ async function googleAuth(req, res) {
   }
 }
 
+// Logged in = a token (Bearer header or cookie) that actually verifies.
+// Previously any token cookie counted, even an expired one, and the role came
+// from a separate cookie the client could have tampered with.
 async function getMe(req, res) {
-  const token = req.cookies.token;
-  const userRole = req.cookies.userRole;
+  const authHeader = req.headers["authorization"] || "";
+  const bearer = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  const token = bearer || req.cookies?.token;
 
-  if (token && userRole) {
-    return res.status(200).json({
-      isLoggedIn: true,
-      userRole: userRole,
-    });
-  } else {
-    return res.status(200).json({
-      isLoggedIn: false,
-      userRole: null,
-    });
+  if (token) {
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      return res.status(200).json({ isLoggedIn: true, userRole: decoded.role || null });
+    } catch (e) {
+      // expired / invalid → fall through to logged out
+    }
   }
+  return res.status(200).json({ isLoggedIn: false, userRole: null });
 }
 
 async function logout(req, res) {
-  const cookieOptions = {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "strict",
-    path: "/",
-  };
+  // Must match the options used when setting the cookies, or browsers keep them.
+  const cookieOptions = authCookieOptions({ withMaxAge: false });
 
   res.clearCookie("token", cookieOptions);
   res.clearCookie("userRole", cookieOptions);

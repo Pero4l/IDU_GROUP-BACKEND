@@ -54,10 +54,21 @@ const writeLimiter = rateLimit({
   handler: respondTooManyRequests,
 });
 
+// Public waitlist sign-up (sends an email). Its own instance so it doesn't
+// share a budget with writeLimiter's routes.
+const waitlistLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: respondTooManyRequests,
+});
+
 module.exports = {
   loginLimiter,
   otpLimiter,
   otpRequestLimiter,
   chatLimiter,
   writeLimiter,
+  waitlistLimiter,
 };

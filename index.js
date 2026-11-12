@@ -82,9 +82,8 @@ const globalLimiter = rateLimit({
 app.use(globalLimiter);
 
 // CORS — use ONLY the env-driven allowlist (the duplicate hardcoded origin block was overriding it)
-const allowedOrigins = (process.env.ALLOWED_ORIGINS || "https://rentulo.ng,https://www.rentulo.ng,http://localhost:3000,https://idu-group-backend.onrender.com")
-  .split(",")
-  .map((o) => o.trim());
+// (shared with the cookie CSRF check — see config/allowedOrigins.js)
+const { allowedOrigins } = require("./config/allowedOrigins");
 
 app.use(
   cors({
@@ -92,7 +91,7 @@ app.use(
       if (!origin || allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
-        callback(new Error(`Not allowed by CORS: ${origin}`));
+        callback(Object.assign(new Error(`Not allowed by CORS: ${origin}`), { status: 403 }));
       }
     },
     credentials: true,
@@ -110,12 +109,18 @@ app.use((req, res, next) => {
       }
     }
   }
+  // Express 5 makes req.query a getter that re-parses the URL on every read,
+  // so editing it in place was silently lost (this sanitising did nothing,
+  // and getLocationMiddleware's lat/lng → location never reached the routes).
+  // Replace it once with a plain, writable object instead.
   if (req.query && typeof req.query === "object") {
-    for (const key of Object.keys(req.query)) {
-      if (typeof req.query[key] === "string") {
-        req.query[key] = xss(req.query[key]);
+    const query = { ...req.query };
+    for (const key of Object.keys(query)) {
+      if (typeof query[key] === "string") {
+        query[key] = xss(query[key]);
       }
     }
+    Object.defineProperty(req, "query", { value: query, writable: true, configurable: true, enumerable: true });
   }
   next();
 });
@@ -147,6 +152,7 @@ const walletRoute = require("./routes/wallet.routes");
 const pinRoutes = require("./routes/pin.routes");
 const transactionRoute = require("./routes/transaction.routes");
 const supportRoute = require("./routes/support.routes");
+const waitlistRoute = require("./routes/waitlist.routes");
 
 
 app.get("/", (req, res) => {
@@ -173,6 +179,7 @@ app.use("/ai-support", aiSupportRoute);
 app.use("/wallet", walletRoute);
 app.use("/pin", pinRoutes);
 app.use("/admin/transactions", transactionRoute);
+app.use("/waitlist", waitlistRoute);
 app.use("/", supportRoute);
 
 
@@ -236,6 +243,34 @@ function startReconcileCron() {
   console.log(`Reconciliation cron scheduled: ${schedule}`);
 }
 
+// ─────────────────────────────────────────────────────────────
+// Shortlet settlement — pays hosts 24h after check-in and completes
+// stays (refunding security deposits) after check-out. Idempotent.
+// Disable with SHORTLET_SETTLEMENT_CRON_ENABLED=false; schedule via
+// SHORTLET_SETTLEMENT_CRON_SCHEDULE (default every 10 minutes).
+// ─────────────────────────────────────────────────────────────
+const { runShortletSettlement } = require("./utils/shortletSettlement");
+
+function startShortletSettlementCron() {
+  if (process.env.SHORTLET_SETTLEMENT_CRON_ENABLED === 'false') return;
+
+  const schedule = process.env.SHORTLET_SETTLEMENT_CRON_SCHEDULE || "*/10 * * * *";
+  let running = false;
+
+  cron.schedule(schedule, async () => {
+    if (running) return;
+    running = true;
+    try {
+      await runShortletSettlement();
+    } catch (error) {
+      console.error("Shortlet settlement failed:", error);
+    } finally {
+      running = false;
+    }
+  });
+  console.log(`Shortlet settlement cron scheduled: ${schedule}`);
+}
+
 // Start HTTP server immediately to satisfy platform health checks ($PORT binding)
 server.listen(PORT, () => {
   console.log(`Server listening and running on PORT:${PORT}`);
@@ -248,6 +283,7 @@ async function connectDatabase(retries = 5, delay = 3000) {
       await db.sequelize.authenticate();
       console.log("Database connected successfully");
       startReconcileCron();
+      startShortletSettlementCron();
       return;
     } catch (e) {
       console.error(`Database connection attempt ${i + 1} failed:`, e.message);
