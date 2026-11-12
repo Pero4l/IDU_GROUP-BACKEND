@@ -9,7 +9,7 @@ const {
   getAllConversations, getConversationMessages,
   getAnalytics, suspendUser, unsuspendUser,
   getWaitlist, getOutboundIp,
-  updateLandlordCommission
+  updateLandlordCommission, getHostDebts
 } = require('../controllers/superAdmin.controller');
 const {
   deleteShortlet, adminGetAllShortlets, adminListDepositClaims, adminResolveDepositClaim,
@@ -29,6 +29,7 @@ router.put('/users/:id/status', authMiddleware, requireSuperAdmin, toggleUserSta
 router.put('/users/:id/suspend', authMiddleware, requireSuperAdmin, suspendUser);
 router.put('/users/:id/unsuspend', authMiddleware, requireSuperAdmin, unsuspendUser);
 router.put('/users/:id/commission', authMiddleware, requireSuperAdmin, updateLandlordCommission);
+router.get('/host-debts', authMiddleware, requireSuperAdmin, getHostDebts);
 router.delete('/users/:id', authMiddleware, requireSuperAdmin, deleteUser);
 
 // Rentals Oversight

@@ -18,7 +18,7 @@ const { authMiddleware } = require("../middleware/authUserMiddleware");
 // per IP) is far too loose for endpoints that move funds. The IP fallback
 // goes through express-rate-limit's ipKeyGenerator so IPv6 keys are
 // normalised (prevents IPv6-based limit bypass).
-const byUser = (req) => req.user?.userId || rateLimit.ipKeyGenerator(req);
+const byUser = (req) => req.user?.userId || rateLimit.ipKeyGenerator(req.ip);
 
 const withdrawLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -64,7 +64,7 @@ const couponLimiter = rateLimit({
 const webhookLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
   max: 500,
-  keyGenerator: (req) => rateLimit.ipKeyGenerator(req),
+  keyGenerator: (req) => rateLimit.ipKeyGenerator(req.ip),
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: "Too many webhook requests." },

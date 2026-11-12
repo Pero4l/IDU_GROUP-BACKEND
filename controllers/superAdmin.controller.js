@@ -1,5 +1,5 @@
 const axios = require('axios');
-const { Users, Rentals, Shortlets, ShortletBookings, Reports, Progress, Conversations, Messages, WalletTransactions, Waitlist } = require('../models');
+const { Users, Rentals, Shortlets, ShortletBookings, HostDebts, Reports, Progress, Conversations, Messages, WalletTransactions, Waitlist } = require('../models');
 
 // Shortlet bookings are NOT in this list: the platform holds their payment
 // until the host payout, so their wallet rows don't show the final split.
@@ -209,7 +209,8 @@ async function getAnalytics(req, res) {
       resolvedReports,
       rejectedReports,
       successfulTransactions,
-      shortletBookings
+      shortletBookings,
+      openHostDebts
     ] = await Promise.all([
       Users.count(),
       Users.count({ where: { is_active: true } }),
@@ -234,7 +235,8 @@ async function getAnalytics(req, res) {
       }),
       ShortletBookings.findAll({
         attributes: ['status', 'payout_status', 'total_amount', 'refunded_amount', 'host_payout', 'platform_fee', 'security_deposit', 'deposit_status', 'deposit_paid_to_host']
-      })
+      }),
+      HostDebts.findAll({ where: { status: 'open' }, attributes: ['amount', 'recovered_amount'] })
     ]);
 
     // Gross = everything tenants paid. Platform revenue = what we actually
@@ -329,7 +331,10 @@ async function getAnalytics(req, res) {
             heldNGN: Math.round(shortletStats.heldNGN * 100) / 100,
             // Deposits after payout, still in the claim window or under review
             depositsHeldNGN: Math.round(shortletStats.depositsHeldNGN * 100) / 100,
-            openDepositClaims: shortletStats.openDepositClaims
+            openDepositClaims: shortletStats.openDepositClaims,
+            // Owed by hosts after a guest refund their wallet couldn't cover (recovered automatically)
+            hostDebtsOutstandingNGN: Math.round(openHostDebts.reduce((a, d) => a + Number(d.amount) - Number(d.recovered_amount), 0) * 100) / 100,
+            openHostDebts: openHostDebts.length
           }
         }
       }
@@ -342,6 +347,27 @@ async function getAnalytics(req, res) {
 
 // Sets a landlord's SHORTLET commission only (used by utils/shortletSettlement.js).
 // Lock / rent / inspection commissions come from .env and are never per-landlord.
+// GET /admin/host-debts?status=open|settled|all — money hosts owe after a
+// guest refund their wallet couldn't cover. Recovered automatically.
+async function getHostDebts(req, res) {
+  try {
+    const status = req.query.status || 'open';
+    if (!['open', 'settled', 'all'].includes(status)) {
+      return res.status(400).json({ success: false, message: "status must be one of: open, settled, all" });
+    }
+    const debts = await HostDebts.findAll({
+      where: status === 'all' ? {} : { status },
+      include: [{ model: Users, as: 'host', attributes: ['id', 'full_name', 'email', 'phone_no'] }],
+      order: [['createdAt', 'ASC']],
+    });
+    const data = debts.map((d) => ({ ...d.toJSON(), outstanding: (Number(d.amount) - Number(d.recovered_amount)).toFixed(2) }));
+    return res.status(200).json({ success: true, count: data.length, data, message: "Host debts retrieved successfully" });
+  } catch (error) {
+    console.error("Super Admin - getHostDebts error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
 async function updateLandlordCommission(req, res) {
   try {
     const { id } = req.params;
@@ -447,6 +473,7 @@ async function getWaitlist(req, res) {
 }
 
 module.exports = { 
+  getHostDebts,
   getAllUsers, 
   toggleUserStatus, 
   deleteUser, 

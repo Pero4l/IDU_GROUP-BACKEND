@@ -25,7 +25,8 @@ const crypto = require('crypto');
 const { Op } = require('sequelize');
 const { ShortletBookings, Wallet, WalletTransactions, Users } = require('../models');
 const { withTransaction } = require('./rollback');
-const { applyKoboDelta, InsufficientBalanceError } = require('./wallet');
+const { applyKoboDelta } = require('./wallet');
+const { createHostDebt, recoverHostDebt, hostsWithOpenDebts } = require('./hostDebt');
 const { toKobo, fromKobo } = require('./money');
 const logger = require('./logger');
 
@@ -227,6 +228,8 @@ async function payoutBooking(bookingId, now = new Date()) {
         logger.warn('Shortlet payout deferred: host has no active wallet', { booking_id: booking.id, host_id: booking.host_id });
         return { skipped: 'host_wallet_unavailable' };
       }
+      // A payout first pays off anything the host owes from a past refund.
+      await recoverHostDebt(booking.host_id, wallet, t);
     }
 
     booking.payout_status = 'paid';
@@ -384,6 +387,7 @@ async function cancelBooking({ bookingId, actorUserId, reason, now = new Date() 
     const deltaKobo = terms.hostKobo - alreadyPaidKobo;
 
     // Lock wallets in a fixed order (by user id) to avoid deadlocks.
+    let debtKobo = 0;
     const steps = [
       { id: booking.user_id, run: async () => {
         const w = await creditWallet({
@@ -412,22 +416,34 @@ async function cancelBooking({ bookingId, actorUserId, reason, now = new Date() 
           return w ? deltaKobo : 0;
         }
         if (deltaKobo < 0) {
-          try {
-            const w = await debitWallet({
+          // Take back what the host's wallet holds now; anything it can't
+          // cover becomes a host debt, recovered automatically from their
+          // future income. The guest is refunded in full either way.
+          const needKobo = -deltaKobo;
+          const hostWallet = booking.host_id
+            ? await Wallet.findOne({ where: { user_id: booking.host_id }, transaction: t, lock: t.LOCK.UPDATE })
+            : null;
+          const availableKobo = hostWallet && hostWallet.status === 'ACTIVE' ? Math.max(0, toKobo(hostWallet.balance)) : 0;
+          const takeKobo = Math.min(availableKobo, needKobo);
+          if (takeKobo > 0) {
+            await debitWallet({
               userId: booking.host_id,
-              amountKobo: -deltaKobo,
+              amountKobo: takeKobo,
               type: 'shortlet booking',
               role: 'payer',
               narration: `Returned to guest: refunded nights for the stay from ${booking.check_in}`,
               meta: { booking_id: booking.id, reason: 'cancellation_clawback', cancelled_by: cancelledBy },
             }, t);
-            if (!w) throw new InsufficientBalanceError();
-          } catch (e) {
-            if (!(e instanceof InsufficientBalanceError)) throw e;
-            const msg = cancelledBy === 'host'
-              ? `Your wallet needs at least ₦${Number(fromKobo(-deltaKobo)).toLocaleString()} to refund the guest's unused nights. Top up your wallet or contact support.`
-              : "We couldn't process this refund automatically. Please contact support to end your stay early.";
-            throw new BookingActionError(409, msg, 'REFUND_NEEDS_SUPPORT');
+          }
+          const oweKobo = needKobo - takeKobo;
+          if (oweKobo > 0 && booking.host_id) {
+            await createHostDebt({
+              hostId: booking.host_id,
+              bookingId: booking.id,
+              amountKobo: oweKobo,
+              reason: `Refund for unused nights (stay from ${booking.check_in} ended early)`,
+            }, t);
+            debtKobo = oweKobo;
           }
           return deltaKobo;
         }
@@ -465,7 +481,7 @@ async function cancelBooking({ bookingId, actorUserId, reason, now = new Date() 
     }
     await booking.save({ transaction: t });
 
-    return { booking, cancelledBy, terms };
+    return { booking, cancelledBy, terms, debtKobo };
   }, { context: 'shortletCancel', bookingId, actorUserId });
 }
 
@@ -599,7 +615,7 @@ async function resolveDepositClaim({ bookingId, decision, amount, note, now = ne
 // Scheduled job — pay due hosts, complete finished stays, release deposits
 // ─────────────────────────────────────────────
 async function runShortletSettlement(now = new Date()) {
-  const summary = { paid: 0, completed: 0, depositsReleased: 0, skipped: 0, failed: 0 };
+  const summary = { paid: 0, completed: 0, depositsReleased: 0, debtsRecoveredKobo: 0, skipped: 0, failed: 0 };
 
   const run = async (ids, fn, key, label) => {
     for (const { id } of ids) {
@@ -632,7 +648,21 @@ async function runShortletSettlement(now = new Date()) {
     limit: 200,
   }), releaseDeposit, 'released', 'depositsReleased');
 
-  if (summary.paid || summary.completed || summary.depositsReleased || summary.failed) {
+  // Sweep host debts: any money that landed in a debtor's wallet since the
+  // last run (top-ups, rent/lock income, transfers in, …) pays them off.
+  for (const hostId of await hostsWithOpenDebts()) {
+    try {
+      summary.debtsRecoveredKobo += await withTransaction(async (t) => {
+        const w = await Wallet.findOne({ where: { user_id: hostId }, transaction: t, lock: t.LOCK.UPDATE });
+        return recoverHostDebt(hostId, w, t);
+      }, { context: 'hostDebtSweep', hostId });
+    } catch (error) {
+      summary.failed++;
+      logger.error('Host debt recovery failed', { host_id: hostId, error: error.message });
+    }
+  }
+
+  if (summary.paid || summary.completed || summary.depositsReleased || summary.debtsRecoveredKobo || summary.failed) {
     logger.info('Shortlet settlement run', summary);
   }
   return summary;
