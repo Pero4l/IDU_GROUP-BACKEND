@@ -117,7 +117,7 @@ async function getMyInspections(req, res) {
       where: { user_id },
       include: [{
         model: Rentals, as: 'rental',
-        attributes: ['id', 'slug', 'title', 'location', 'price', 'priceType', 'images', 'status'],
+        attributes: ['id', 'slug', 'title', 'location', 'price', 'priceType', 'images', 'status', 'inspectionFee'],
       }],
       order: [['date', 'ASC'], ['time', 'ASC']],
     });
@@ -140,7 +140,7 @@ async function getInspection(req, res) {
       where: { id, user_id },
       include: [{
         model: Rentals, as: 'rental',
-        attributes: ['id', 'slug', 'title', 'location', 'price', 'priceType', 'images', 'status'],
+        attributes: ['id', 'slug', 'title', 'location', 'price', 'priceType', 'images', 'status', 'inspectionFee'],
         include: [{
           model: Users,
           attributes: ['id', 'full_name', 'phone_no'],
@@ -170,39 +170,39 @@ async function getInspection(req, res) {
 // ─────────────────────────────────────────────
 // PUT /inspection/update/:id
 // ─────────────────────────────────────────────
+// Tenants can only reschedule (date/time). `is_paid` is set by the payment
+// flow in createInspection and is ignored here, so a tenant can't mark their
+// own inspection paid or unpaid.
 async function updateInspection(req, res) {
   try {
     const { id } = req.params;
     const user_id = req.user.userId;
-    const { date, time, is_paid } = req.body;
+    const { date, time } = req.body || {};
 
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(id))) {
+      return res.status(404).json({ success: false, message: 'Inspection not found' });
+    }
     const inspection = await Inspections.findOne({ where: { id, user_id } });
     if (!inspection) {
       return res.status(404).json({ success: false, message: 'Inspection not found' });
     }
 
-    const prevIsPaid = inspection.is_paid;
-
-    await inspection.update({
-      date: date ?? inspection.date,
-      time: time ?? inspection.time,
-      is_paid: is_paid !== undefined ? is_paid : inspection.is_paid,
-    });
-
-    logger.info('Inspection updated', { id, user_id });
-
-    if (is_paid !== undefined && is_paid !== prevIsPaid) {
-      const user = await Users.findByPk(user_id);
-      const rental = await Rentals.findByPk(inspection.rental_id);
-      await logAndEmailUser(user_id, user?.email, 'Inspection Payment Updated',
-        `Payment status for your inspection of "${rental?.title}" has been updated to ${is_paid ? 'paid' : 'unpaid'}.`
-      );
+    const nextDate = date ?? inspection.date;
+    // Same rule as booking: one inspection per user per rental per date.
+    if (nextDate !== inspection.date) {
+      const clash = await Inspections.findOne({ where: { user_id, rental_id: inspection.rental_id, date: nextDate } });
+      if (clash) {
+        return res.status(409).json({ success: false, message: 'You already have an inspection scheduled for this property on that date' });
+      }
     }
+
+    await inspection.update({ date: nextDate, time: time ?? inspection.time });
+    logger.info('Inspection updated', { id, user_id });
 
     return res.status(200).json({ success: true, message: 'Inspection updated successfully', data: inspection });
   } catch (error) {
     logger.error('Error updating inspection', { error: error.message, userId: req.user?.userId });
-    return res.status(500).json({ success: false, message: 'Server error', error: error.message });
+    return res.status(500).json({ success: false, message: 'Server error' });
   }
 }
 

@@ -1,22 +1,53 @@
 const jwt = require("jsonwebtoken");
 const db = require("../models");
+const { allowedOrigins } = require("../config/allowedOrigins");
 
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+// Where the browser says the request came from: Origin, or Referer's origin.
+function requestOrigin(req) {
+  if (req.headers.origin) return req.headers.origin;
+  if (req.headers.referer) {
+    try { return new URL(req.headers.referer).origin; } catch (_) { /* ignore */ }
+  }
+  return null;
+}
+
+// CSRF guard. Auth cookies are SameSite=None in production (so they work from
+// rentulo.ng → onrender.com), which means a browser will also attach them to
+// requests other websites trigger. So a cookie is only trusted on
+// data-changing requests coming from an allow-listed origin. Bearer tokens
+// can't be attached by another site, so they're always fine.
+function cookieAllowed(req) {
+  if (SAFE_METHODS.has(req.method)) return true;
+  const origin = requestOrigin(req);
+  return !!origin && allowedOrigins.includes(origin);
+}
+
+// Returns { token, fromCookie, blocked }.
 function getTokenFromReq(req) {
   const authHeader = req.headers["authorization"];
   if (authHeader) {
     const parts = authHeader.split(" ");
     if (parts.length === 2 && parts[0] === "Bearer") {
-      return parts[1];
+      return { token: parts[1], fromCookie: false, blocked: false };
     }
   }
   if (req.cookies && req.cookies.token) {
-    return req.cookies.token;
+    return { token: req.cookies.token, fromCookie: true, blocked: !cookieAllowed(req) };
   }
-  return null;
+  return { token: null, fromCookie: false, blocked: false };
 }
 
 function authMiddleware(req, res, next) {
-  const token = getTokenFromReq(req);
+  const { token, blocked } = getTokenFromReq(req);
+
+  if (blocked) {
+    return res.status(403).json({
+      success: false,
+      message: "Request origin not allowed. Send the token in the Authorization header.",
+    });
+  }
 
   if (!token) {
     return res.status(401).json({
@@ -56,9 +87,10 @@ function authMiddleware(req, res, next) {
 }
 
 function optionalAuth(req, res, next) {
-  const token = getTokenFromReq(req);
+  const { token, blocked } = getTokenFromReq(req);
 
-  if (!token) {
+  // A cookie from a non-allowed origin is ignored: treat as anonymous.
+  if (!token || blocked) {
     req.user = null;
     return next();
   }

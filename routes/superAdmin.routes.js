@@ -11,7 +11,10 @@ const {
   getWaitlist, getOutboundIp,
   updateLandlordCommission
 } = require('../controllers/superAdmin.controller');
-const { deleteShortlet, adminGetAllShortlets } = require('../controllers/shortlet.controller');
+const {
+  deleteShortlet, adminGetAllShortlets, adminListDepositClaims, adminResolveDepositClaim,
+  adminListShortletBookings, adminGetShortletBooking,
+} = require('../controllers/shortlet.controller');
 // Use the rental controller's delete so the owner gets notified and admin deletes are logged
 const { deleteRental: deleteAnyRental } = require('../controllers/rental.controller');
 const {
@@ -35,6 +38,12 @@ router.delete('/rentals/:id', authMiddleware, requireSuperAdmin, deleteAnyRental
 // Shortlets Oversight
 router.get('/shortlets', authMiddleware, requireSuperAdmin, adminGetAllShortlets);
 router.delete('/shortlets/:id', authMiddleware, requireSuperAdmin, deleteShortlet);
+// Shortlet bookings — admins can view everything; only admins can resolve deposit claims.
+// (deposit-claims must stay above /:bookingId so it isn't read as an id)
+router.get('/shortlet-bookings', authMiddleware, requireSuperAdmin, adminListShortletBookings);
+router.get('/shortlet-bookings/deposit-claims', authMiddleware, requireSuperAdmin, adminListDepositClaims);
+router.get('/shortlet-bookings/:bookingId', authMiddleware, requireSuperAdmin, adminGetShortletBooking);
+router.put('/shortlet-bookings/:bookingId/deposit-claim', authMiddleware, requireSuperAdmin, adminResolveDepositClaim);
 
 // Progress oversight (locked houses)
 router.get('/rentals/locked', authMiddleware, requireSuperAdmin, getLockedHouses);

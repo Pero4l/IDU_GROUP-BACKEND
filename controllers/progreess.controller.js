@@ -1,4 +1,5 @@
-const { Progress, Users, Rentals } = require('../models');
+const { Progress, Users, Rentals, Shortlets } = require('../models');
+const { getUserShortletBookings } = require('./shortlet.controller');
 const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
 const { withTransaction } = require('../utils/rollback');
 const { chargeMarketplacePayment, InsufficientBalanceError } = require('../utils/wallet');
@@ -321,6 +322,24 @@ async function bookHouse(req, res) {
       return res.status(400).json({ success: false, message: "rental_id is required" });
     }
 
+    // progresses.rental_id has no foreign key, so without this check any id —
+    // including a shortlet's — was saved as a "booking" with no payment and
+    // no PIN, and then never showed up because the Rentals join came back
+    // empty. Shortlets must go through the paid, PIN-protected flow.
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(rental_id));
+    const rental = isUuid ? await Rentals.findByPk(rental_id) : null;
+    if (!rental) {
+      const shortlet = isUuid ? await Shortlets.findByPk(rental_id, { attributes: ['id'] }) : null;
+      if (shortlet) {
+        return res.status(400).json({
+          success: false,
+          code: 'USE_SHORTLET_BOOKING',
+          message: "Short lets must be booked via POST /shortlet/book with check-in/check-out dates and your transaction pin",
+        });
+      }
+      return res.status(404).json({ success: false, message: "Rental not found" });
+    }
+
     const progressRecord = await withTransaction(async (t) => {
       let record = await Progress.findOne({ where: { user_id, rental_id }, transaction: t });
 
@@ -336,7 +355,6 @@ async function bookHouse(req, res) {
     logger.info('House booked', { user_id, rental_id });
 
     const userObj = await Users.findByPk(user_id);
-    const rental = await Rentals.findByPk(rental_id);
     const landlord = rental?.UserId ? await Users.findByPk(rental.UserId) : null;
 
     const bookHtml = buildPropertyEmailHtml({
@@ -366,11 +384,21 @@ async function bookHouse(req, res) {
 async function getBookedHouses(req, res) {
   try {
     const user_id = req.user.userId;
-    const bookedHouses = await Progress.findAll({
-      where: { user_id, booked: true },
-      include: [{ model: Rentals }]
+    const [bookedHouses, shortletBookings] = await Promise.all([
+      Progress.findAll({
+        where: { user_id, booked: true },
+        include: [{ model: Rentals }]
+      }),
+      getUserShortletBookings(user_id),
+    ]);
+    return res.status(200).json({
+      success: true,
+      message: "Booked houses retrieved successfully",
+      // Rows whose rental no longer exists (e.g. stray shortlet ids saved by
+      // the old unchecked /progress/book) have nothing to display.
+      data: bookedHouses.filter((b) => b.Rental),
+      shortletBookings,
     });
-    return res.status(200).json({ success: true, message: "Booked houses retrieved successfully", data: bookedHouses });
   } catch (error) {
     logger.error('Error getting booked houses', { error: error.message, userId: req.user?.userId });
     return res.status(500).json({ success: false, message: "Server error" });

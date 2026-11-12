@@ -124,11 +124,29 @@ async function notificationCount(req, res) {
   }
 }
 
+// A missing / non-UUID id used to reach the query and crash it (500).
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function invalidIdResponse(res, id) {
+  if (id === undefined || id === null || id === '') {
+    return res.status(400).json({ success: false, message: "Notification id is required" });
+  }
+  if (!UUID_RE.test(String(id))) {
+    return res.status(400).json({ success: false, message: "Notification id must be a valid UUID" });
+  }
+  return null;
+}
+
 async function markAsRead(req, res) {
   try {
-    const { id } = req.body;
+    const { id } = req.body || {};
     const userId = req.user.userId;
-    await Notifications.update({ is_read: true }, { where: { id, user_id: userId } });
+    const invalid = invalidIdResponse(res, id);
+    if (invalid) return invalid;
+
+    const [updated] = await Notifications.update({ is_read: true }, { where: { id, user_id: userId } });
+    if (updated === 0) {
+      return res.status(404).json({ success: false, message: "Notification not found" });
+    }
     return res.status(200).json({ success: true, message: "Notification marked as read" });
   } catch (error) {
     logger.error('Error marking notification as read', { error: error.message, userId: req.user?.userId });
@@ -138,9 +156,15 @@ async function markAsRead(req, res) {
 
 async function deleteNotification(req, res) {
   try {
-    const { id } = req.body;
+    const { id } = req.body || {};
     const userId = req.user.userId;
-    await Notifications.destroy({ where: { id, user_id: userId } });
+    const invalid = invalidIdResponse(res, id);
+    if (invalid) return invalid;
+
+    const deleted = await Notifications.destroy({ where: { id, user_id: userId } });
+    if (deleted === 0) {
+      return res.status(404).json({ success: false, message: "Notification not found" });
+    }
     return res.status(200).json({ success: true, message: "Notification deleted" });
   } catch (error) {
     logger.error('Error deleting notification', { error: error.message, userId: req.user?.userId });
