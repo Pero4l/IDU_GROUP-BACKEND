@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const { Wallet, WalletTransactions, Profile, Users } = require('../models');
 const { verifyTransactionPin } = require('../utils/pin');
+const { recoverHostDebt, settleHostDebtNow, outstandingDebtKobo } = require('../utils/hostDebt');
 const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
 const { buildPropertyEmailHtml } = require('../utils/emailTemplates');
 const { withTransaction } = require('../utils/rollback');
@@ -53,10 +54,17 @@ function safeEqual(a, b) {
 async function getWallet(req, res) {
   try {
     const user_id = req.user.userId;
-    const wallet = await Wallet.findOne({ where: { user_id } });
+    // Settle anything owed from a past guest refund first, so the balance
+    // shown is what the user can actually spend.
+    const wallet = await withTransaction(async (t) => {
+      const w = await Wallet.findOne({ where: { user_id }, transaction: t, lock: t.LOCK.UPDATE });
+      if (w) await recoverHostDebt(user_id, w, t);
+      return w;
+    }, { context: 'getWallet', user_id });
     if (!wallet) {
       return res.status(404).json({ success: false, message: "Wallet not found" });
     }
+    const owedKobo = await outstandingDebtKobo(user_id);
 
     return res.status(200).json({
       success: true,
@@ -65,6 +73,9 @@ async function getWallet(req, res) {
         accountNumber: wallet.accountNumber,
         balance: wallet.balance,
         status: wallet.status,
+        // Still owed after using the balance (hosts only; usually "0.00").
+        // Future income is used to pay it off automatically.
+        outstandingDebt: fromKobo(owedKobo),
       },
     });
   } catch (error) {
@@ -593,6 +604,10 @@ async function withdraw(req, res) {
       });
     }
 
+    // Money owed from a past guest refund is taken first, committed on its
+    // own so it stands even if this withdrawal is then refused.
+    await settleHostDebtNow(user_id);
+
     // Debit first (holds the funds) inside a locked transaction, then attempt the transfer.
     const tx_ref = generateTxRef('WD');
     let wallet;
@@ -609,6 +624,8 @@ async function withdraw(req, res) {
           err.status = 400;
           throw err;
         }
+        // Money owed from a past guest refund is taken before a withdrawal.
+        await recoverHostDebt(user_id, w, t);
         if (toKobo(w.balance) < toKobo(amount)) {
           const err = new Error('Insufficient balance');
           err.status = 400;
@@ -797,6 +814,8 @@ async function transferToUser(req, res) {
     }
 
     logger.info('Initiating wallet transfer', { user_id, accountNumber, amount });
+    // Money owed from a past guest refund is taken first (committed on its own).
+    await settleHostDebtNow(user_id);
 
     try {
       const result = await withTransaction(async (t) => {
@@ -819,6 +838,8 @@ async function transferToUser(req, res) {
           err.status = 400;
           throw err;
         }
+        // Money owed from a past guest refund is taken before a transfer.
+        await recoverHostDebt(sender.user_id, sender, t);
         if (toKobo(sender.balance) < toKobo(amount)) {
           const err = new Error('Insufficient balance');
           err.status = 400;

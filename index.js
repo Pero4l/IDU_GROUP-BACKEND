@@ -68,7 +68,7 @@ const globalLimiter = rateLimit({
         // invalid/expired token — fall through to IP; auth middleware handles it
       }
     }
-    return rateLimit.ipKeyGenerator(req);
+    return rateLimit.ipKeyGenerator(req.ip);
   },
   // The wallet webhook gets its own dedicated limiter (see wallet.routes.js)
   // with a much higher ceiling, so legitimate Flutterwave delivery is never

@@ -38,7 +38,7 @@ const { Op } = require('sequelize');
 const db = require(path.join(ROOT, 'models'));
 const settlement = require(path.join(ROOT, 'utils/shortletSettlement'));
 
-const { Users, Wallet, Shortlets, ShortletBookings, WalletTransactions, Pins, Notifications } = db;
+const { Users, Wallet, Shortlets, ShortletBookings, WalletTransactions, Pins, Notifications, HostDebts } = db;
 
 let pass = 0, fail = 0;
 function check(name, cond, extra) {
@@ -52,6 +52,7 @@ app.use('/shortlet', require(path.join(ROOT, 'routes/shortlet.routes')));
 app.use('/progress', require(path.join(ROOT, 'routes/progress.routes')));
 app.use('/pin', require(path.join(ROOT, 'routes/pin.routes')));
 app.use('/admin', require(path.join(ROOT, 'routes/superAdmin.routes')));
+app.use('/wallet', require(path.join(ROOT, 'routes/wallet.routes')));
 
 let base;
 const tokenFor = (u) => jwt.sign({ userId: u.id, role: u.role }, process.env.JWT_SECRET);
@@ -101,6 +102,7 @@ async function mkUser(name, extra = {}) {
 async function cleanup() {
   if (process.env.KEEP_TEST_DATA === 'true') return console.log(`\n(kept test data, run ${runId})`);
   const users = { [Op.in]: created.users };
+  await HostDebts.destroy({ where: { host_id: users } });
   await ShortletBookings.destroy({ where: { [Op.or]: [{ user_id: users }, { host_id: users }] } });
   await Shortlets.destroy({ where: { id: { [Op.in]: created.shortlets } } });
   await WalletTransactions.destroy({ where: { user_id: users } });
@@ -442,18 +444,51 @@ async function main() {
   check('host pays back ₦16,000 (had ₦41,600, now entitled to ₦25,600)', h0 - (await bal(host)) === 16000 && res.booking.host_payout === '25600.00', { delta: h0 - (await bal(host)) });
   check('guest +₦20,000', (await bal(guest)) - g0 === 20000);
 
-  // m3: host can't cover the clawback → refused, nothing changes
+  // m3: host can't cover the clawback → guest still refunded in full; the rest becomes a host debt
   r = await book(guest, d(80), d(85));
   const m3 = r.body.data;
   await settlement.runShortletSettlement(at(81, '15:00:00'));
-  await setBal(host, 0);
+  await setBal(host, 6000);
   g0 = await bal(guest);
-  err = await settlement.cancelBooking({ bookingId: m3.id, actorUserId: guest.id, now: at(82, '10:00:00') }).catch((e) => e);
-  check('host wallet too low → 409 REFUND_NEEDS_SUPPORT', err.code === 'REFUND_NEEDS_SUPPORT', err.message);
-  check('…and nothing moved: booking still confirmed, guest unchanged', (await ShortletBookings.findByPk(m3.id)).status === 'confirmed' && (await bal(guest)) === g0);
+  res = await settlement.cancelBooking({ bookingId: m3.id, actorUserId: guest.id, now: at(82, '10:00:00') });
+  check('host short of the ₦16,000 clawback: guest STILL refunded ₦20,000 right away', res.booking.status === 'cancelled' && (await bal(guest)) - g0 === 20000, res.terms);
+  check('host pays what they have (₦6,000 → ₦0), the other ₦10,000 becomes a debt', (await bal(host)) === 0 && res.debtKobo === 1000000, res.debtKobo);
+  let debt = await db.HostDebts.findOne({ where: { booking_id: m3.id } });
+  check('debt row: open, ₦10,000, linked to the booking', debt && debt.status === 'open' && debt.amount === '10000.00' && debt.host_id === host.id, debt?.toJSON());
+  await setBal(host, 4000);
+  sum = await settlement.runShortletSettlement(at(82, '11:00:00'));
+  debt = await db.HostDebts.findByPk(debt.id);
+  check('settlement job sweeps new money into the debt (₦4,000 recovered, ₦6,000 left)', (await bal(host)) === 0 && debt.recovered_amount === '4000.00' && debt.status === 'open', { sum, debt: debt.toJSON() });
+  r = await call(host, 'GET', '/wallet');
+  check('GET /wallet shows the outstanding ₦6,000', r.body.data.balance === '0.00' && r.body.data.outstandingDebt === '6000.00', r.body.data);
+  await setBal(host, 50000);
+  r = await call(host, 'GET', '/wallet');
+  check('next wallet read settles it: balance ₦44,000, nothing owed', r.body.data.balance === '44000.00' && r.body.data.outstandingDebt === '0.00', r.body.data);
+  debt = await db.HostDebts.findByPk(debt.id);
+  check('debt settled', debt.status === 'settled' && debt.recovered_amount === '10000.00' && !!debt.settled_at);
+  const recoveries = await WalletTransactions.findAll({ where: { user_id: host.id, role: 'payer' } });
+  check('every naira recovered is in the host ledger', recoveries.filter((t) => t.meta?.reason === 'debt_recovery').reduce((a, t) => a + Number(t.amount), 0) === 10000);
+  // a debt is taken BEFORE the host can move money out
+  await db.HostDebts.create({ host_id: host.id, amount: 3000, reason: 'test debt' });
+  await setBal(host, 3500);
+  await call(host, 'POST', '/pin/create', { pin: '2468' });
+  const guestAcct = (await Wallet.findOne({ where: { user_id: guest.id } })).accountNumber;
+  r = await call(host, 'POST', '/wallet/transfer', { accountNumber: guestAcct, amount: 1000, pin: '2468' });
+  check('transfer: debt (₦3,000) comes out first, so ₦1,000 of ₦3,500 → Insufficient balance', r.status === 400 && r.body.message === 'Insufficient balance' && (await bal(host)) === 500, { r: r.body, bal: await bal(host) });
+  r = await call(host, 'POST', '/wallet/transfer', { accountNumber: guestAcct, amount: 500, pin: '2468' });
+  check('…and the ₦500 left can be transferred', r.status === 200 && (await bal(host)) === 0, r.body);
+  r = await call(admin, 'GET', '/admin/host-debts?status=all');
+  check('admin can list host debts (with host, outstanding)', r.status === 200 && r.body.data.some((x) => x.booking_id === m3.id && x.host?.id === host.id && x.outstanding === '0.00'), r.body);
+  r = await call(guest, 'GET', '/admin/host-debts');
+  check('non-admin cannot list host debts', r.status === 403);
+
+  // m4: host ends a stay early
   await setBal(host, 200000);
+  r = await book(guest, d(160), d(165));
+  const m4 = r.body.data;
+  await settlement.runShortletSettlement(at(161, '15:00:00'));
   h0 = await bal(host); g0 = await bal(guest);
-  res = await settlement.cancelBooking({ bookingId: m3.id, actorUserId: host.id, now: at(81, '20:00:00') });
+  res = await settlement.cancelBooking({ bookingId: m4.id, actorUserId: host.id, now: at(161, '20:00:00') });
   check('host ends stay early: guest gets 100% of nights not yet started (3 × ₦10,000)', res.terms.usedNights === 2 && (await bal(guest)) - g0 === 30000, res.terms);
   check('host keeps 80% of 2 nights + cleaning (₦17,600): pays back ₦24,000', h0 - (await bal(host)) === 24000);
 

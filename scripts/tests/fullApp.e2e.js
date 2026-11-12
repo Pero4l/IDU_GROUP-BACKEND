@@ -767,6 +767,7 @@ async function cleanup() {
   const convs = (await db.Conversations.findAll({ where: { [Op.or]: [{ tenant_id: ids }, { landlord_id: ids }] }, attributes: ['id'] })).map((c) => c.id);
   await del(db.Messages, { conversation_id: { [Op.in]: convs } });
   await del(db.Conversations, { id: { [Op.in]: convs } });
+  await del(db.HostDebts, { host_id: ids });
   await del(db.ShortletBookings, { [Op.or]: [{ user_id: ids }, { host_id: ids }] });
   await del(db.Shortlets, { UserId: ids });
   await del(db.Inspections, { user_id: ids });

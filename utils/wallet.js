@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const { Wallet, WalletTransactions } = require('../models');
 const { withTransaction } = require('./rollback');
 const { toKobo, fromKobo, addKobo } = require('./money');
+const { recoverHostDebt, settleHostDebtNow } = require('./hostDebt');
 
 const ACCOUNT_PREFIX = 'RentULO-';
 
@@ -99,6 +100,10 @@ async function chargeMarketplacePayment({ payerUserId, landlordUserId, amount, c
   const rawPct = Number(commissionPercent);
   const pct = Number.isFinite(rawPct) ? Math.min(100, Math.max(0, rawPct)) : 0;
 
+  // Anything the payer owes from a past refund is taken first — committed on
+  // its own, so it stands even if this payment then fails.
+  await settleHostDebtNow(payerUserId);
+
   return withTransaction(async (t) => {
     // Lock payer & landlord wallets in a fixed order (by user id) so two
     // marketplace payments crossing the same pair of users can't deadlock.
@@ -119,6 +124,8 @@ async function chargeMarketplacePayment({ payerUserId, landlordUserId, amount, c
       err.code = 'WALLET_INACTIVE';
       throw err;
     }
+    // Anything the payer owes from a past refund comes out first.
+    await recoverHostDebt(payerUserId, payerWallet, t);
     if (toKobo(payerWallet.balance) < amountKobo) {
       throw new InsufficientBalanceError();
     }
@@ -170,6 +177,11 @@ async function chargeMarketplacePayment({ payerUserId, landlordUserId, amount, c
         to_account_name: landlordWallet.accountName,
         meta: splitMeta,
       }, { transaction: t });
+    }
+
+    // New income pays off anything the landlord owes from a past refund.
+    if (landlordIsPayable && shareKobo > 0) {
+      await recoverHostDebt(landlordUserId, landlordWallet, t);
     }
 
     const effects = typeof applyEffects === 'function' ? await applyEffects(t) : undefined;

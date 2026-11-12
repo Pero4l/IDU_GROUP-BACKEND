@@ -1113,17 +1113,11 @@ async function cancelShortletBooking(req, res) {
     try {
       result = await cancelBooking({ bookingId, actorUserId: user_id, reason: req.body?.reason });
     } catch (error) {
-      if (error instanceof BookingActionError) {
-        if (error.code === 'REFUND_NEEDS_SUPPORT') {
-          notifySuperAdmins(`A shortlet cancellation (booking ${bookingId}) needs manual handling: the host's wallet can't cover the refund for unused nights.`, "shortlet")
-            .catch(() => {});
-        }
-        return sendError(res, error);
-      }
+      if (error instanceof BookingActionError) return sendError(res, error);
       throw error;
     }
 
-    const { booking, cancelledBy, terms } = result;
+    const { booking, cancelledBy, terms, debtKobo } = result;
     logger.info('Shortlet booking cancelled', { booking_id: booking.id, cancelledBy, stage: terms.stage, refund: terms.refundAmount });
 
     try {
@@ -1153,8 +1147,13 @@ async function cancelShortletBooking(req, res) {
             ? `You ${early ? 'ended the stay early' : 'cancelled the booking'} for "${title}" (${dates}). The guest was refunded ${refundText}.`
             : `${guest?.full_name ?? 'The guest'} ${early ? `ended their stay early (leaving on ${terms.actualCheckOut})` : 'cancelled their booking'} for "${title}" (${dates}). Your earnings for this booking are now ₦${Number(booking.host_payout).toLocaleString()}.${terms.depositHeldForClaims ? ' You can still file a deposit claim for 48 hours after they leave.' : ''}`
         );
+        if (debtKobo > 0) {
+          await logAndEmailUser(host.id, host.email, "Amount Owed for a Guest Refund",
+            `The guest was refunded for unused nights at "${title}", but your wallet didn't have enough to cover your share. You owe ₦${Number(fromKobo(debtKobo)).toLocaleString()}. It will be taken automatically from your wallet as money comes in (payouts, rent, top-ups), and before any withdrawal or transfer.`
+          );
+        }
       }
-      await notifySuperAdmins(`Shortlet booking for "${title}" (${dates}) was ${early ? 'ended early' : 'cancelled'} by the ${cancelledBy}. Refund: ${refundText}.`, "shortlet");
+      await notifySuperAdmins(`Shortlet booking for "${title}" (${dates}) was ${early ? 'ended early' : 'cancelled'} by the ${cancelledBy}. Refund: ${refundText}.${debtKobo > 0 ? ` The host now owes ₦${Number(fromKobo(debtKobo)).toLocaleString()} (recovered automatically).` : ''}`, "shortlet");
     } catch (notifyError) {
       logger.error('Shortlet cancellation notification failed', { error: notifyError.message, booking_id: booking.id });
     }
@@ -1164,6 +1163,8 @@ async function cancelShortletBooking(req, res) {
       message: "Booking cancelled successfully",
       data: cancelledBy === 'guest' ? guestView(booking) : hostView(booking),
       refundAmount: terms.refundAmount,
+      // Only shown to the host: how much of their share they still owe.
+      ...(cancelledBy === 'host' && debtKobo > 0 && { hostDebtCreated: fromKobo(debtKobo) }),
     });
   } catch (error) {
     logger.error('Error cancelling shortlet booking', { error: error.message, userId: req.user?.userId });
