@@ -169,10 +169,18 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.TEXT,
       allowNull: true,
     },
+    // Legacy: hosts used to pick a policy per listing. New bookings always use
+    // the RentULO standard policy; this column is no longer set or used.
     cancellationPolicy: {
       type: DataTypes.ENUM('flexible', 'moderate', 'firm', 'strict'),
       allowNull: false,
       defaultValue: 'flexible',
+    },
+    // Host's choice: are unused nights refunded when a guest checks out early?
+    earlyCheckoutRefundable: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: true,
     },
     status: {
       type: DataTypes.ENUM('available', 'rented', 'pending', 'locked'),

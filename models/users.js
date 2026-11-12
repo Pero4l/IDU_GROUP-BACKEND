@@ -106,9 +106,17 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.BOOLEAN,
         defaultValue: false,
       },
+      // Shortlet commission % set by a super admin (landlords only).
+      // Postgres returns DECIMAL as a string ("15.50"), but the PUT response
+      // returned a number (15.5) — always expose a number (or null = not set)
+      // so the admin UI gets one consistent type everywhere.
       commission_percent: {
         type: DataTypes.DECIMAL(5, 2),
         allowNull: true,
+        get() {
+          const v = this.getDataValue('commission_percent');
+          return v === null || v === undefined ? null : Number(v);
+        },
       },
     },
     {

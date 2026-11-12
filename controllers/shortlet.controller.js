@@ -5,10 +5,11 @@ const { chargeMarketplacePayment, InsufficientBalanceError } = require('../utils
 const { verifyTransactionPin } = require('../utils/pin');
 const { toKobo, fromKobo } = require('../utils/money');
 const {
-  PAYOUT_DELAY_MS, DEPOSIT_CLAIM_WINDOW_MS, POLICY_NAMES, BookingActionError, todayInLagos, checkInAt, checkOutAt,
-  describePolicy, getShortletCommissionPercent, splitKobo, cancellationTerms, cancelBooking,
+  PAYOUT_DELAY_MS, DEPOSIT_CLAIM_WINDOW_MS, BookingActionError, todayInLagos, checkInAt, checkOutAt,
+  getShortletCommissionPercent, splitKobo, cancellationTerms, presentTerms, cancelBooking,
   validateDepositClaim, fileDepositClaim, resolveDepositClaim,
 } = require('../utils/shortletSettlement');
+const { getActivePolicy, describeStandardPolicy } = require('../utils/cancellationPolicy');
 const logger = require('../utils/logger');
 const { Op } = require('sequelize');
 const cloudinary = require("cloudinary").v2;
@@ -91,7 +92,6 @@ const ENUMS = {
   propertyType: ['apartment', 'house', 'villa', 'studio', 'condo', 'townhouse', 'bungalow', 'loft'],
   furnishingStatus: ['unfurnished', 'semi_furnished', 'fully_furnished'],
   status: ['available', 'rented', 'pending', 'locked'],
-  cancellationPolicy: POLICY_NAMES, // flexible, moderate, firm, strict
 };
 
 function validateEnums(values) {
@@ -161,7 +161,7 @@ const LIST_ATTRIBUTES = [
   "address", "city", "area", "landmark", "amenities", "images", "videos", "coverImage",
   "pricePerNight", "cleaningFee", "securityDeposit", "minimumStay", "maximumStay",
   "availableFrom", "availableTo", "checkInTime", "checkOutTime",
-  "smokingAllowed", "petsAllowed", "partiesAllowed", "houseRules", "cancellationPolicy", "status", "UserId", "createdAt"
+  "smokingAllowed", "petsAllowed", "partiesAllowed", "houseRules", "earlyCheckoutRefundable", "status", "UserId", "createdAt"
 ];
 
 const OWNER_INCLUDE = [{
@@ -195,7 +195,7 @@ async function addShortlet(req, res) {
       amenities, images, videos, coverImage,
       pricePerNight, cleaningFee, securityDeposit, minimumStay, maximumStay,
       availableFrom, availableTo, checkInTime, checkOutTime,
-      smokingAllowed, petsAllowed, partiesAllowed, houseRules, status, cancellationPolicy,
+      smokingAllowed, petsAllowed, partiesAllowed, houseRules, status, earlyCheckoutRefundable,
     } = req.body;
 
     if (!title || !description || !propertyType || !rentalModel || !pricePerNight ||
@@ -210,7 +210,7 @@ async function addShortlet(req, res) {
       return res.status(403).json({ success: false, message: "Only landlords can add shortlets" });
     }
 
-    const enumError = validateEnums({ rentalModel, propertyType, furnishingStatus, status, cancellationPolicy });
+    const enumError = validateEnums({ rentalModel, propertyType, furnishingStatus, status });
     if (enumError) return res.status(400).json({ success: false, message: enumError });
 
     if (!isValidTime(checkInTime) || !isValidTime(checkOutTime)) {
@@ -297,7 +297,9 @@ async function addShortlet(req, res) {
       partiesAllowed: toBoolean(partiesAllowed),
       houseRules,
       status: status || 'available',
-      cancellationPolicy: cancellationPolicy || 'flexible',
+      // Host's early check-out choice. Cancelling before check-in always
+      // follows the RentULO standard policy (admin settings).
+      earlyCheckoutRefundable: toBoolean(earlyCheckoutRefundable, true),
       UserId: req.user.userId,
     });
 
@@ -412,7 +414,7 @@ async function updateShortlet(req, res) {
       amenities, images, videos, coverImage,
       pricePerNight, cleaningFee, securityDeposit, minimumStay, maximumStay,
       availableFrom, availableTo, checkInTime, checkOutTime,
-      smokingAllowed, petsAllowed, partiesAllowed, houseRules, status, cancellationPolicy,
+      smokingAllowed, petsAllowed, partiesAllowed, houseRules, status, earlyCheckoutRefundable,
     } = req.body;
 
     const shortlet = await findShortletByIdOrSlug(id);
@@ -423,7 +425,7 @@ async function updateShortlet(req, res) {
       return res.status(403).json({ success: false, message: "You are not authorized to update this short let" });
     }
 
-    const enumError = validateEnums({ rentalModel, propertyType, furnishingStatus, status, cancellationPolicy });
+    const enumError = validateEnums({ rentalModel, propertyType, furnishingStatus, status });
     if (enumError) return res.status(400).json({ success: false, message: enumError });
 
     if (!isValidTime(checkInTime) || !isValidTime(checkOutTime)) {
@@ -470,8 +472,8 @@ async function updateShortlet(req, res) {
       images: images !== undefined ? parseJsonArray(images) : shortlet.images,
       videos: videos !== undefined ? parseJsonArray(videos) : shortlet.videos,
       status: status || shortlet.status,
-      // Only affects new bookings — each booking keeps the policy it was made under.
-      cancellationPolicy: cancellationPolicy || shortlet.cancellationPolicy,
+      // Only affects new bookings — each booking keeps the choice it was made under.
+      earlyCheckoutRefundable: earlyCheckoutRefundable !== undefined ? toBoolean(earlyCheckoutRefundable) : shortlet.earlyCheckoutRefundable,
     };
 
     // A shortlet must always keep at least one image (model: images NOT NULL, required on create)
@@ -670,6 +672,7 @@ async function evaluateStay(shortlet, user_id, { checkIn, checkOut, guests: rawG
   if (guests > shortlet.guestCapacity) return fail(400, `This short let sleeps at most ${shortlet.guestCapacity} guest(s)`);
 
   const clash = await ShortletBookings.findOne({ where: overlapWhere(shortlet.id, checkIn, checkOut) });
+  const activePolicy = await getActivePolicy();
   if (clash) return fail(409, "This short let is already booked for some of the selected dates", 'DATES_UNAVAILABLE');
 
   // Price in kobo to avoid float drift.
@@ -698,13 +701,22 @@ async function evaluateStay(shortlet, user_id, { checkIn, checkOut, guests: rawG
         securityDepositRefundable: true,
         total: fromKobo(totalKobo),
       },
-      cancellationPolicy: describePolicy(shortlet.cancellationPolicy, { checkIn, checkInTime: shortlet.checkInTime }),
+      cancellationPolicy: describeStandardPolicy(activePolicy.rules, {
+        checkInAt: checkInAt({ check_in: checkIn, check_in_time: shortlet.checkInTime }),
+        earlyCheckoutRefundable: shortlet.earlyCheckoutRefundable,
+      }),
+      // Frozen onto the booking: later admin/host changes never affect it.
+      policySnapshot: {
+        version: activePolicy.version,
+        rules: activePolicy.rules,
+        earlyCheckoutRefundable: !!shortlet.earlyCheckoutRefundable,
+      },
     },
   };
 }
 
 function sendError(res, error) {
-  return res.status(error.status).json({ success: false, ...(error.code && { code: error.code }), message: error.message });
+  return res.status(error.status).json({ success: false, ...(error.code && { code: error.code }), message: error.message, ...(error.details || {}) });
 }
 
 // ─────────────────────────────────────────────
@@ -713,7 +725,7 @@ function sendError(res, error) {
 async function getShortletAvailability(req, res) {
   try {
     const shortlet = await findShortletByIdOrSlug(req.params.id, {
-      attributes: ['id', 'availableFrom', 'availableTo', 'minimumStay', 'maximumStay', 'checkInTime', 'checkOutTime', 'guestCapacity', 'cancellationPolicy', 'status'],
+      attributes: ['id', 'availableFrom', 'availableTo', 'minimumStay', 'maximumStay', 'checkInTime', 'checkOutTime', 'guestCapacity', 'earlyCheckoutRefundable', 'status'],
     });
     if (!shortlet) {
       return res.status(404).json({ success: false, message: "Short let not found" });
@@ -867,7 +879,9 @@ async function bookShortlet(req, res) {
             payout_due_at: payoutDueAt,
             deposit_status: stay.securityDepositKobo > 0 ? 'held' : 'none',
             deposit_refund_due_at: depositRefundDueAt,
-            cancellation_policy: stay.cancellationPolicy.policy,
+            cancellation_policy: 'standard',
+            cancellation_policy_version: stay.policySnapshot.version,
+            cancellation_policy_snapshot: stay.policySnapshot,
           }, { transaction: t });
         },
       });
@@ -963,9 +977,23 @@ function depositClaimSummary(booking, role, now = new Date()) {
   };
 }
 
+// Cancellation record minus the parts a viewer shouldn't see.
+function scrubCancellation(details, role) {
+  if (!details || typeof details !== 'object') return details ?? null;
+  const d = { ...details, amounts: { ...(details.amounts || {}) } };
+  if (role !== 'admin') delete d.amounts.platformShare;
+  if (role === 'guest') {
+    for (const k of ['hostShare', 'alreadyPaidToHost', 'takenBackFromHost', 'hostDebtCreated']) delete d.amounts[k];
+    delete d.commissionPercent;
+    delete d.hostDebtId;
+  }
+  return d;
+}
+
 function guestView(booking) {
   const json = typeof booking.toJSON === 'function' ? booking.toJSON() : { ...booking };
   json.depositClaim = depositClaimSummary(json, 'guest');
+  json.cancellation_details = scrubCancellation(json.cancellation_details, 'guest');
   delete json.host_payout;
   delete json.platform_fee;
   delete json.commission_percent;
@@ -979,6 +1007,7 @@ function guestView(booking) {
 function hostView(booking) {
   const json = typeof booking.toJSON === 'function' ? booking.toJSON() : { ...booking };
   json.depositClaim = depositClaimSummary(json, 'host');
+  json.cancellation_details = scrubCancellation(json.cancellation_details, 'host');
   delete json.platform_fee;
   return json;
 }
@@ -1067,23 +1096,12 @@ async function getShortletBooking(req, res) {
     const isGuest = booking.user_id === user_id;
     const data = isGuest ? guestView(booking) : hostView(booking);
     // What cancelling right now would mean (before check-in, or ending the stay early).
+    // (Full detail for the cancel dialog: GET /shortlet/bookings/:id/cancellation)
     if (booking.status === 'confirmed') {
       try {
-        const terms = cancellationTerms(booking, isGuest ? 'guest' : 'host');
-        data.cancellation = {
-          canCancel: true,
-          policy: terms.policy,
-          stage: terms.stage, // 'before_check_in' | 'during_stay'
-          refundAmount: terms.refundAmount,
-          nonRefundableAmount: terms.nonRefundableAmount,
-          freeCancellationUntil: terms.freeCancellationUntil,
-          // during_stay only: when the guest would leave, and that the deposit
-          // stays held for the host's 48h claim window
-          actualCheckOut: terms.actualCheckOut,
-          depositHeldForClaims: terms.depositHeldForClaims,
-        };
+        data.cancellation = presentTerms(cancellationTerms(booking, isGuest ? 'guest' : 'host'), booking);
       } catch (e) {
-        data.cancellation = { canCancel: false, reason: e.message };
+        data.cancellation = { canCancel: false, reason: e.message, ...(e.code && { code: e.code }) };
       }
     } else {
       data.cancellation = { canCancel: false };
@@ -1111,7 +1129,13 @@ async function cancelShortletBooking(req, res) {
 
     let result;
     try {
-      result = await cancelBooking({ bookingId, actorUserId: user_id, reason: req.body?.reason });
+      result = await cancelBooking({
+        bookingId,
+        actorUserId: user_id,
+        reason: req.body?.reason,
+        checkOutDate: req.body?.checkOutDate,             // early check-out: the day the guest leaves
+        expectedRefundAmount: req.body?.expectedRefundAmount, // the refund the guest saw and confirmed
+      });
     } catch (error) {
       if (error instanceof BookingActionError) return sendError(res, error);
       throw error;
@@ -1139,7 +1163,7 @@ async function cancelShortletBooking(req, res) {
       await logAndEmailUser(booking.user_id, guest?.email, early ? "Shortlet Stay Ended Early" : "Shortlet Booking Cancelled",
         cancelledBy === 'host'
           ? `${early ? `Your host ended your stay at "${title}" early (leaving on ${terms.actualCheckOut}).` : `Your host cancelled your booking for "${title}" (${dates}).`} ${refundText} has been refunded to your wallet.${depositNote}`
-          : `${what} ${refundText} has been refunded to your wallet.${terms.fullRefund ? '' : ` Under the ${terms.policy} cancellation policy, ${keptText} is non-refundable.`}${depositNote}`
+          : `${what} ${refundText} has been refunded to your wallet.${terms.fullRefund ? '' : ` Under the ${terms.policy === 'standard' ? 'RentULO' : terms.policy} cancellation policy, ${keptText} is non-refundable.`}${depositNote}`
       );
       if (host) {
         await logAndEmailUser(host.id, host.email, early ? "Shortlet Stay Ended Early" : "Shortlet Booking Cancelled",
@@ -1329,7 +1353,7 @@ async function adminResolveDepositClaim(req, res) {
 // Query: status, deposit_status, shortlet_id, guest_id, host_id, limit (≤100, default 50), offset
 // ─────────────────────────────────────────────
 const ADMIN_BOOKING_INCLUDE = [
-  { model: Shortlets, as: 'shortlet', attributes: ['id', 'slug', 'title', 'address', 'city', 'area', 'coverImage', 'cancellationPolicy'] },
+  { model: Shortlets, as: 'shortlet', attributes: ['id', 'slug', 'title', 'address', 'city', 'area', 'coverImage', 'earlyCheckoutRefundable'] },
   { model: Users, as: 'guest', attributes: ['id', 'full_name', 'email', 'phone_no'] },
   { model: Users, as: 'host', attributes: ['id', 'full_name', 'email', 'phone_no'] },
 ];
@@ -1393,6 +1417,141 @@ async function adminGetShortletBooking(req, res) {
 }
 
 // ─────────────────────────────────────────────
+// GET /shortlet/bookings/:bookingId/cancellation?checkOutDate=YYYY-MM-DD
+// Read-only preview for the cancel dialog (guest or host): the policy that
+// applies to THIS booking with its real deadlines, and exactly what would be
+// refunded / kept if they confirmed now.
+// ─────────────────────────────────────────────
+async function getCancellationPreview(req, res) {
+  try {
+    const { bookingId } = req.params;
+    if (!isUUID(bookingId)) {
+      return res.status(404).json({ success: false, message: "Booking not found" });
+    }
+    const user_id = req.user.userId;
+    const booking = await ShortletBookings.findOne({ where: { id: bookingId, [Op.or]: [{ user_id }, { host_id: user_id }] } });
+    if (!booking) {
+      return res.status(404).json({ success: false, message: "Booking not found" });
+    }
+    const role = booking.user_id === user_id ? 'guest' : 'host';
+    const snapshot = booking.cancellation_policy_snapshot;
+    const policy = booking.cancellation_policy === 'standard' && snapshot?.rules
+      ? describeStandardPolicy(snapshot.rules, { checkInAt: checkInAt(booking), bookedAt: new Date(booking.createdAt), earlyCheckoutRefundable: snapshot.earlyCheckoutRefundable })
+      : { policy: booking.cancellation_policy, label: booking.cancellation_policy, legacy: true };
+
+    let cancellation;
+    try {
+      cancellation = presentTerms(cancellationTerms(booking, role, new Date(), { checkOutDate: req.query.checkOutDate }), booking);
+    } catch (e) {
+      if (!(e instanceof BookingActionError)) throw e;
+      if (e.code === 'INVALID_CHECKOUT_DATE') return sendError(res, e);
+      cancellation = { canCancel: false, code: e.code, reason: e.message };
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Cancellation preview",
+      data: {
+        booking_id: booking.id,
+        status: booking.status,
+        cancelledBy: role,
+        policy,
+        cancellation,
+        // Send this back as expectedRefundAmount when confirming.
+        ...(cancellation.canCancel && { expectedRefundAmount: cancellation.refundAmount }),
+      },
+    });
+  } catch (error) {
+    logger.error('Error previewing cancellation', { error: error.message, userId: req.user?.userId });
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+// ─────────────────────────────────────────────
+// GET /admin/shortlet-bookings/cancellations  — super admin report
+// Query: from, to (YYYY-MM-DD, on cancelled_at), cancelled_by (guest|host),
+//        shortlet_id, guest_id, host_id, limit (≤100, default 50), offset
+// ─────────────────────────────────────────────
+async function adminListCancellations(req, res) {
+  try {
+    const where = { status: 'cancelled' };
+    const { from, to, cancelled_by } = req.query;
+    if (cancelled_by) {
+      if (!['guest', 'host'].includes(cancelled_by)) {
+        return res.status(400).json({ success: false, message: "cancelled_by must be guest or host" });
+      }
+      where.cancelled_by = cancelled_by;
+    }
+    for (const [key, val] of [['from', from], ['to', to]]) {
+      if (val !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(String(val))) {
+        return res.status(400).json({ success: false, message: `${key} must be a date in YYYY-MM-DD format` });
+      }
+    }
+    if (from || to) {
+      where.cancelled_at = {};
+      if (from) where.cancelled_at[Op.gte] = new Date(`${from}T00:00:00+01:00`);
+      if (to) where.cancelled_at[Op.lt] = new Date(new Date(`${to}T00:00:00+01:00`).getTime() + DAY_MS);
+    }
+    for (const [key, col] of [['shortlet_id', 'shortlet_id'], ['guest_id', 'user_id'], ['host_id', 'host_id']]) {
+      const v = req.query[key];
+      if (v === undefined) continue;
+      if (!isUUID(v)) return res.status(400).json({ success: false, message: `${key} must be a valid UUID` });
+      where[col] = v;
+    }
+    const { limit, offset } = parsePagination(req.query.limit, req.query.offset);
+    const { count, rows } = await ShortletBookings.findAndCountAll({
+      where,
+      include: ADMIN_BOOKING_INCLUDE,
+      order: [['cancelled_at', 'DESC']],
+      limit: limit || 50,
+      offset: offset || 0,
+      distinct: true,
+    });
+
+    const data = rows.map((b) => {
+      const d = b.cancellation_details || {};
+      const a = d.amounts || {};
+      const cancelledByUser = b.cancelled_by === 'guest' ? b.guest : b.cancelled_by === 'host' ? b.host : null;
+      return {
+        booking_id: b.id,
+        shortlet: b.shortlet,
+        guest: b.guest,
+        host: b.host,
+        checkIn: b.check_in,
+        checkOut: b.check_out,
+        nights: b.nights,
+        originalAmount: b.total_amount,
+        cancelledAt: b.cancelled_at,
+        cancelledBy: b.cancelled_by,                   // guest | host
+        cancelledByUser,                               // who exactly
+        reason: b.cancellation_reason,
+        stage: d.stage || null,                        // before_check_in | during_stay
+        rule: d.rule || null,                          // grace_period | cancellation_window | early_checkout | host_cancelled | legacy_policy
+        policy: d.policy || b.cancellation_policy,
+        policyVersion: d.policyVersion ?? b.cancellation_policy_version ?? null,
+        hoursBeforeCheckIn: d.hoursBeforeCheckIn ?? null,
+        refundPercent: d.refundPercent ?? null,        // % of the nights refunded by the rule
+        refundedAmount: a.totalRefund ?? null,         // returned to the guest at cancellation
+        retainedAmount: a.retained ?? null,            // kept (nights + cleaning not refunded)
+        hostShare: a.hostShare ?? b.host_payout,
+        platformShare: a.platformShare ?? b.platform_fee,
+        securityDepositHeldForClaims: a.securityDepositHeldForClaims ?? null,
+        takenBackFromHost: a.takenBackFromHost ?? null,
+        hostDebtCreated: a.hostDebtCreated ?? null,
+        actualCheckOut: b.actual_check_out,
+        transactionRefs: d.transactionRefs || [],
+        // Bookings cancelled before the detailed record existed only have the totals.
+        detailed: !!b.cancellation_details,
+      };
+    });
+    return res.status(200).json({ success: true, count, data, message: "Cancellations retrieved successfully" });
+  } catch (error) {
+    logger.error('Error listing cancellations (admin)', { error: error.message });
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+// ─────────────────────────────────────────────
 // GET /admin/shortlets  — super admin oversight
 // ─────────────────────────────────────────────
 async function adminGetAllShortlets(req, res) {
@@ -1449,4 +1608,6 @@ module.exports = {
   adminResolveDepositClaim,
   adminListShortletBookings,
   adminGetShortletBooking,
+  getCancellationPreview,
+  adminListCancellations,
 };

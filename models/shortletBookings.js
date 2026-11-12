@@ -64,11 +64,18 @@ module.exports = (sequelize, DataTypes) => {
     deposit_claim_note: { type: DataTypes.TEXT, allowNull: true },
     deposit_claim_resolved_at: { type: DataTypes.DATE, allowNull: true },
     deposit_paid_to_host: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
+    // 'standard' = the RentULO policy (rules in cancellation_policy_snapshot).
+    // flexible/moderate/firm/strict = older bookings made under host-chosen policies.
     cancellation_policy: {
-      type: DataTypes.ENUM('flexible', 'moderate', 'firm', 'strict'),
+      type: DataTypes.ENUM('flexible', 'moderate', 'firm', 'strict', 'standard'),
       allowNull: false,
       defaultValue: 'flexible',
     },
+    cancellation_policy_version: { type: DataTypes.INTEGER, allowNull: true },
+    // { version, rules, earlyCheckoutRefundable } — frozen at booking time
+    cancellation_policy_snapshot: { type: DataTypes.JSON, allowNull: true },
+    // Full record of the cancellation (who, when, rule, amounts, tx refs)
+    cancellation_details: { type: DataTypes.JSON, allowNull: true },
     // Set when a stay is ended early: the day the guest actually leaves.
     actual_check_out: { type: DataTypes.DATEONLY, allowNull: true },
     refunded_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
