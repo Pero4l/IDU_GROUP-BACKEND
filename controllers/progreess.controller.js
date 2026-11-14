@@ -491,6 +491,7 @@ async function payRent(req, res) {
         commissionPercent: Number(process.env.PLATFORM_RENT_COMMISSION_PERCENT ?? 100),
         type: 'house rent',
         narration: `Rent payment for "${rental.title}"`,
+        meta: { rental_id: rental.id },
         // Runs inside the same DB transaction as the charge — if marking the
         // rental rented fails, the charge rolls back too.
         applyEffects: async (t) => {

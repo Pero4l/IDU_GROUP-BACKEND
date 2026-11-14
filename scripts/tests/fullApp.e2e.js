@@ -448,6 +448,21 @@ async function main() {
   r = await api('POST', '/progress/rent/pay', { as: tenant, body: { rental_id: rental.id } });
   check('pay rent again → 400 already rented', r.status === 400 && r.body.message === 'This property has already been rented', r.body);
 
+  r = await api('GET', `/rental/rented/${rental.id}`, { as: landlord });
+  const rd = r.body.data;
+  check('rented details → 200 with property, tenant, tenancy, transaction', r.status === 200 && rd.property.id === rental.id && rd.property.status === 'rented' && rd.tenant?.id === tenant.id && rd.tenancy.status === 'active' && !!rd.tenancy.startDate, r.body);
+  check('rented details: transaction ref + amount paid ₦120,000 + landlord share ₦96,000', rd?.transaction?.reference?.startsWith('RENTULO-HOUSERENT-') && rd.transaction.amountPaid === 120000 && rd.transaction.landlordShare === 96000 && rd.transaction.paymentStatus === 'paid', rd);
+  r = await api('GET', `/rental/rented/${rental.slug}`, { as: landlord });
+  check('rented details by slug → 200', r.status === 200 && r.body.data.property.id === rental.id, r.body);
+  r = await api('GET', `/rental/rented/${rental.id}`, { as: tenant });
+  check('rented details as non-owner → 403', r.status === 403, r.body);
+  r = await api('GET', `/rental/rented/${rental.id}`, { as: superAdmin });
+  check('rented details as super admin → 200', r.status === 200 && r.body.data.tenant?.id === tenant.id, r.body);
+  r = await api('GET', `/rental/rented/${rental2.id}`, { as: landlord });
+  check('rented details on un-rented property → 400 NOT_RENTED', r.status === 400 && r.body.code === 'NOT_RENTED', r.body);
+  r = await api('GET', '/rental/rented', { as: landlord });
+  check('my rented properties list includes the rental', r.status === 200 && r.body.data.some((d) => d.property.id === rental.id && d.tenant?.id === tenant.id), r.body);
+
   // ═══ 12. Inspections ═══
   section('12. Inspection System');
   await db.Rentals.update({ inspectionFee: 2000 }, { where: { id: rental2.id } });

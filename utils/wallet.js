@@ -84,12 +84,14 @@ async function applyKoboDelta(wallet, deltaKobo, transaction) {
  * transaction (charge included) rolls back, so a caller can never end up
  * charged with nothing to show for it.
  *
+ * `meta` is merged into the ledger rows' meta (e.g. { rental_id }).
+ *
  * `commissionPercent` comes from .env for lock / rent / inspection fees.
  * Shortlet bookings don't split here at all: they pass no landlord, so the
  * platform holds the full amount, and the host is paid later by
  * utils/shortletSettlement.js using the admin-set per-landlord commission.
  */
-async function chargeMarketplacePayment({ payerUserId, landlordUserId, amount, commissionPercent, type, narration, applyEffects }) {
+async function chargeMarketplacePayment({ payerUserId, landlordUserId, amount, commissionPercent, type, narration, meta, applyEffects }) {
   const amountKobo = toKobo(amount);
   // Non-numeric input parses to NaN, and `NaN <= 0` is false — so the sign
   // check alone would let it through and only fail later, deeper in. Reject it
@@ -143,7 +145,9 @@ async function chargeMarketplacePayment({ payerUserId, landlordUserId, amount, c
       await applyKoboDelta(landlordWallet, shareKobo, t);
     }
 
-    const splitMeta ={ commissionPercent: pct, landlordShare: shareKobo / 100, platformShare: platformKobo / 100 };
+    // Caller-supplied `meta` (e.g. { rental_id }) is stored on both ledger rows
+    // so the payment can be traced back to what it paid for.
+    const splitMeta = { ...(meta || {}), commissionPercent: pct, landlordShare: shareKobo / 100, platformShare: platformKobo / 100 };
 
     await WalletTransactions.create({
       wallet_id: payerWallet.id,

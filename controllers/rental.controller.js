@@ -4,6 +4,7 @@ const {
   Notifications,
   Profile,
   Progress,
+  WalletTransactions,
 } = require("../models");
 const {
   notifySuperAdmins,
@@ -786,6 +787,168 @@ async function seeRecommendedRentals(req, res) {
   }
 }
 
+// ═══════════════════════════════════════
+// RENTED PROPERTY DETAILS (landlord dashboard)
+// ═══════════════════════════════════════
+
+const RENTED_PROPERTY_ATTRIBUTES = [
+  "id", "slug", "title", "description", "propertyType", "location", "price",
+  "priceType", "legalFee", "cautionFee", "brokeFee", "mgtServiceCharge",
+  "images", "amenities", "status", "UserId", "createdAt", "updatedAt",
+];
+
+// There's no tenancy table: a tenancy is the rent payment itself. The tenancy
+// period is derived from the payment date and the rental's priceType.
+function deriveTenancyPeriod(startDate, priceType) {
+  if (!startDate) return { startDate: null, endDate: null };
+  const start = new Date(startDate);
+  let end = null;
+  if (priceType === "monthly") {
+    end = new Date(start);
+    end.setMonth(end.getMonth() + 1);
+  } else if (priceType === "yearly") {
+    end = new Date(start);
+    end.setFullYear(end.getFullYear() + 1);
+  }
+  return { startDate: start, endDate: end };
+}
+
+// Finds the tenant's (payer's) rent ledger row for this rental. Payments made
+// since rental_id was stored in meta are matched exactly; older ones fall back
+// to the narration written at payment time.
+async function findRentPayment(rental) {
+  const base = { type: "house rent", role: "payer", status: "success" };
+  const order = [["createdAt", "DESC"]];
+  const byMeta = await WalletTransactions.findOne({
+    where: { ...base, "meta.rental_id": rental.id },
+    order,
+  });
+  if (byMeta) return byMeta;
+  return WalletTransactions.findOne({
+    where: { ...base, narration: `Rent payment for "${rental.title}"` },
+    order,
+  });
+}
+
+async function buildRentedPropertyDetails(rental) {
+  const payment = await findRentPayment(rental);
+
+  // Tenant: the payer of the rent. If no ledger row is found (very old data),
+  // fall back to the most recent booked progress record.
+  let tenantId = payment?.user_id ?? null;
+  if (!tenantId) {
+    const booking = await Progress.findOne({
+      where: { rental_id: rental.id, booked: true },
+      order: [["updatedAt", "DESC"]],
+    });
+    tenantId = booking?.user_id ?? null;
+  }
+  const tenant = tenantId
+    ? await Users.findByPk(tenantId, {
+        attributes: ["id", "full_name", "email", "phone_no", "address", "state", "country"],
+        include: [{ model: Profile, attributes: ["image", "phone", "verified"] }],
+      })
+    : null;
+
+  const { startDate, endDate } = deriveTenancyPeriod(payment?.createdAt, rental.priceType);
+  let tenancyStatus = "unknown";
+  if (startDate) {
+    tenancyStatus = endDate && endDate < new Date() ? "expired" : "active";
+  }
+
+  const meta = payment?.meta || {};
+  const property = rental.toJSON();
+  delete property.UserId;
+
+  return {
+    property,
+    tenant: tenant
+      ? {
+          id: tenant.id,
+          fullName: tenant.full_name,
+          email: tenant.email,
+          phone: tenant.phone_no || tenant.Profile?.phone || null,
+          address: tenant.address,
+          state: tenant.state,
+          country: tenant.country,
+          image: tenant.Profile?.image ?? null,
+          verified: tenant.Profile?.verified ?? false,
+        }
+      : null,
+    tenancy: {
+      status: tenancyStatus,
+      startDate,
+      endDate,
+      priceType: rental.priceType,
+      // true = dates are computed from the payment date + priceType, not
+      // set explicitly (no lease-date fields exist yet).
+      datesDerived: true,
+    },
+    transaction: payment
+      ? {
+          id: payment.id,
+          reference: payment.tx_ref,
+          amountPaid: Number(payment.amount),
+          landlordShare: meta.landlordShare ?? null,
+          platformShare: meta.platformShare ?? null,
+          paymentStatus: payment.status === "success" ? "paid" : payment.status,
+          paymentMethod: "wallet",
+          paidAt: payment.createdAt,
+        }
+      : null,
+  };
+}
+
+async function canViewRental(rental, userId) {
+  if (rental.UserId === userId) return true;
+  const requester = await Users.findByPk(userId, { attributes: ["id", "is_superadmin"] });
+  return requester?.is_superadmin === true;
+}
+
+// GET /rental/rented/:id — one rented property + its tenant and payment (id or slug)
+async function getRentedPropertyDetails(req, res) {
+  try {
+    const { id } = req.params;
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+    const query = { attributes: RENTED_PROPERTY_ATTRIBUTES };
+    const rental = isUUID
+      ? await Rentals.findByPk(id, query)
+      : await Rentals.findOne({ where: { slug: id }, ...query });
+
+    if (!rental) {
+      return res.status(404).json({ success: false, message: "Rental not found" });
+    }
+    if (!(await canViewRental(rental, req.user.userId))) {
+      return res.status(403).json({ success: false, message: "You can only view tenancy details for your own properties" });
+    }
+    if (rental.status !== "rented") {
+      return res.status(400).json({ success: false, code: "NOT_RENTED", message: "This property has not been rented yet" });
+    }
+
+    const data = await buildRentedPropertyDetails(rental);
+    return res.status(200).json({ success: true, message: "Rented property details retrieved successfully", data });
+  } catch (error) {
+    logger.error("Error fetching rented property details", { error: error.message, userId: req.user?.userId });
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+// GET /rental/rented — all of the landlord's rented properties with tenancy details
+async function getMyRentedProperties(req, res) {
+  try {
+    const rentals = await Rentals.findAll({
+      where: { UserId: req.user.userId, status: "rented" },
+      attributes: RENTED_PROPERTY_ATTRIBUTES,
+      order: [["updatedAt", "DESC"]],
+    });
+    const data = await Promise.all(rentals.map(buildRentedPropertyDetails));
+    return res.status(200).json({ success: true, message: "Rented properties retrieved successfully", count: data.length, data });
+  } catch (error) {
+    logger.error("Error fetching rented properties", { error: error.message, userId: req.user?.userId });
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
 module.exports = {
   addRental,
   seeAllRentals,
@@ -795,4 +958,6 @@ module.exports = {
   searchRentals,
   seeRecentRentals,
   seeRecommendedRentals,
+  getRentedPropertyDetails,
+  getMyRentedProperties,
 };
