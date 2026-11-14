@@ -5,7 +5,7 @@ const { rentalUpload: upload } = require('../middleware/uploadConfig');
 const { authMiddleware } = require('../middleware/authUserMiddleware');
 const { getLocationMiddleware } = require('../middleware/getLocationMiddleware');
 const { requireProfileCompletion } = require('../middleware/requireProfileCompletion');
-const { addRental, seeAllRentals, getRental, updateRental, deleteRental, searchRentals, seeRecentRentals, seeRecommendedRentals } = require('../controllers/rental.controller');
+const { addRental, seeAllRentals, getRental, updateRental, deleteRental, searchRentals, seeRecentRentals, seeRecommendedRentals, getRentedPropertyDetails, getMyRentedProperties } = require('../controllers/rental.controller');
 
 // Define expected file fields and max counts for rental images and videos
 const rentalUploadFields = upload.fields([
@@ -17,6 +17,9 @@ router.post('/post', authMiddleware, requireProfileCompletion, rentalUploadField
 router.get('/all', authMiddleware, requireProfileCompletion, seeAllRentals);
 router.get('/recent', seeRecentRentals);
 router.get('/recommended', authMiddleware, requireProfileCompletion, seeRecommendedRentals);
+// Landlord dashboard: rented property + tenant + payment
+router.get('/rented', authMiddleware, requireProfileCompletion, getMyRentedProperties);
+router.get('/rented/:id', authMiddleware, requireProfileCompletion, getRentedPropertyDetails);
 router.get('/get1/:id', authMiddleware, requireProfileCompletion, getRental);
 router.put('/update/:id', authMiddleware, requireProfileCompletion, updateRental);
 router.delete('/delete/:id', authMiddleware, requireProfileCompletion, deleteRental);
