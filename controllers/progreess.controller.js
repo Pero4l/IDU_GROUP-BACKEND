@@ -1,4 +1,6 @@
-const { Progress, Users, Rentals, Shortlets } = require('../models');
+const { Progress, Users, Rentals, Shortlets, Tenancies } = require('../models');
+const { quoteRent, canRenewNow, renewedEndDate, addRentPeriod } = require('../utils/tenancy');
+const crypto = require('crypto');
 const { getUserShortletBookings } = require('./shortlet.controller');
 const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
 const { withTransaction } = require('../utils/rollback');
@@ -442,7 +444,61 @@ async function deleteAllBookedHouses(req, res) {
 // RENT PAYMENT CONTROLLERS
 // ==========================
 
-// Pay rent — charges the wallet for the total package (price + fees) directly ===> POST
+// Error thrown inside the payment transaction to roll the charge back when
+// the rental/tenancy changed between the pre-check and the charge.
+class RentStateError extends Error {
+  constructor(message, code) { super(message); this.code = code; }
+}
+
+async function findActiveTenancy(rental_id, options = {}) {
+  return Tenancies.findOne({ where: { rental_id, status: 'active' }, order: [['createdAt', 'DESC']], ...options });
+}
+
+function presentTenancy(tenancy) {
+  if (!tenancy) return null;
+  return { id: tenancy.id, startDate: tenancy.start_date, endDate: tenancy.end_date, status: tenancy.status };
+}
+
+// Quote rent — what the caller would pay right now for this rental ===> GET
+// First payment: basic rent + all fees. Renewal (current tenant): basic rent only.
+async function getRentQuote(req, res) {
+  try {
+    const { rental_id } = req.params;
+    const user_id = req.user.userId;
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(rental_id));
+    const rental = isUuid ? await Rentals.findByPk(rental_id) : null;
+    if (!rental) {
+      return res.status(404).json({ success: false, message: "Rental property not found" });
+    }
+    const tenancy = await findActiveTenancy(rental.id);
+    const quote = quoteRent(rental, tenancy, user_id);
+    const isOwnTenancy = tenancy && tenancy.tenant_id === user_id;
+    return res.status(200).json({
+      success: true,
+      message: "Rent quote retrieved successfully",
+      data: {
+        rental_id: rental.id,
+        priceType: rental.priceType,
+        canPay: !quote.error,
+        paymentKind: quote.kind ?? null,
+        amount: quote.amount ?? null,
+        breakdown: quote.breakdown ?? null,
+        code: quote.code ?? null,
+        reason: quote.error ?? null,
+        tenancy: isOwnTenancy ? presentTenancy(tenancy) : null,
+      },
+    });
+  } catch (error) {
+    logger.error('Error quoting rent', { error: error.message, userId: req.user?.userId });
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+// Pay rent from the wallet ===> POST
+// First payment ("initial"): price + legal + caution + broker + service charge,
+// marks the rental rented and starts a tenancy.
+// Later payments by the same tenant ("renewal"): the basic rent (price) only,
+// extending the tenancy by one month/year.
 async function payRent(req, res) {
   try {
     const { rental_id } = req.body;
@@ -457,30 +513,23 @@ async function payRent(req, res) {
       return res.status(404).json({ success: false, message: "Rental property not found" });
     }
 
-    if (rental.status === 'rented') {
-      return res.status(400).json({ success: false, message: "This property has already been rented" });
+    const activeTenancy = await findActiveTenancy(rental.id);
+    const quote = quoteRent(rental, activeTenancy, user_id);
+    if (quote.error) {
+      return res.status(400).json({ success: false, code: quote.code, message: quote.error });
     }
+    const isRenewal = quote.kind === 'renewal';
 
-    // Check if property is locked by someone else
-    const activeLock = await Progress.findOne({
-      where: {
-        rental_id,
-        locked: true
+    // Check if property is locked by someone else (only matters before it's rented)
+    if (!isRenewal) {
+      const activeLock = await Progress.findOne({ where: { rental_id, locked: true } });
+      if (activeLock && activeLock.user_id !== user_id) {
+        return res.status(400).json({ success: false, message: "This property is currently locked by another user" });
       }
-    });
-
-    if (activeLock && activeLock.user_id !== user_id) {
-      return res.status(400).json({ success: false, message: "This property is currently locked by another user" });
     }
 
-    // Calculate total pricing (Price + Legal + Caution + Broker + Service Charge)
-    const price = parseFloat(rental.price) || 0;
-    const legalFee = parseFloat(rental.legalFee) || 0;
-    const cautionFee = parseFloat(rental.cautionFee) || 0;
-    const brokeFee = parseFloat(rental.brokeFee) || 0;
-    const mgtServiceCharge = parseFloat(rental.mgtServiceCharge) || 0;
-
-    const totalAmount = price + legalFee + cautionFee + brokeFee + mgtServiceCharge;
+    const totalAmount = quote.amount;
+    const tenancyId = isRenewal ? activeTenancy.id : crypto.randomUUID();
 
     let chargeResult;
     try {
@@ -490,13 +539,43 @@ async function payRent(req, res) {
         amount: totalAmount,
         commissionPercent: Number(process.env.PLATFORM_RENT_COMMISSION_PERCENT ?? 100),
         type: 'house rent',
-        narration: `Rent payment for "${rental.title}"`,
-        meta: { rental_id: rental.id },
-        // Runs inside the same DB transaction as the charge — if marking the
-        // rental rented fails, the charge rolls back too.
+        narration: isRenewal ? `Rent renewal for "${rental.title}"` : `Rent payment for "${rental.title}"`,
+        meta: { rental_id: rental.id, tenancy_id: tenancyId, payment_kind: quote.kind },
+        // Runs inside the same DB transaction as the charge — if anything
+        // here fails, the charge rolls back too.
         applyEffects: async (t) => {
+          const now = new Date();
+          if (isRenewal) {
+            const tenancy = await Tenancies.findByPk(tenancyId, { transaction: t, lock: t.LOCK.UPDATE });
+            if (!tenancy || tenancy.status !== 'active' || tenancy.tenant_id !== user_id) {
+              throw new RentStateError('This property has already been rented', 'ALREADY_RENTED');
+            }
+            if (!canRenewNow(tenancy, rental.priceType, now)) {
+              throw new RentStateError('Your rent is already paid more than one period ahead', 'RENEWAL_TOO_EARLY');
+            }
+            tenancy.end_date = renewedEndDate(tenancy, rental.priceType, now);
+            await tenancy.save({ transaction: t });
+            const record = await Progress.findOne({ where: { user_id, rental_id }, transaction: t });
+            return { progress: record, tenancy };
+          }
+
+          // Re-check under a row lock so two tenants paying at once can't both rent it.
+          await rental.reload({ transaction: t, lock: t.LOCK.UPDATE });
+          const taken = await findActiveTenancy(rental.id, { transaction: t });
+          if (rental.status === 'rented' || taken) {
+            throw new RentStateError('This property has already been rented', 'ALREADY_RENTED');
+          }
           rental.status = 'rented';
           await rental.save({ transaction: t });
+
+          const tenancy = await Tenancies.create({
+            id: tenancyId,
+            rental_id: rental.id,
+            tenant_id: user_id,
+            start_date: now,
+            end_date: addRentPeriod(now, rental.priceType),
+            status: 'active',
+          }, { transaction: t });
 
           let record = await Progress.findOne({ where: { user_id, rental_id }, transaction: t, lock: t.LOCK.UPDATE });
           if (record) {
@@ -513,7 +592,7 @@ async function payRent(req, res) {
               booked: true
             }, { transaction: t });
           }
-          return record;
+          return { progress: record, tenancy };
         },
       });
     } catch (error) {
@@ -523,51 +602,67 @@ async function payRent(req, res) {
           message: "Insufficient wallet balance. Please top up your wallet to pay for this rental."
         });
       }
+      if (error instanceof RentStateError) {
+        return res.status(400).json({ success: false, code: error.code, message: error.message });
+      }
       throw error;
     }
 
-    const progressRecord = chargeResult.effects;
+    const { progress: progressRecord, tenancy } = chargeResult.effects;
     const userObj = await Users.findByPk(user_id);
-    const rentTransaction = { amount: totalAmount, reference: 'Wallet Payment', payment_type: 'rent_payment' };
+    const rentTransaction = { amount: totalAmount, reference: 'Wallet Payment', payment_type: isRenewal ? 'rent_renewal' : 'rent_payment' };
     let landlord = null;
 
     if (rental.UserId) {
       landlord = await Users.findByPk(rental.UserId);
     }
 
+    const amountText = `₦${totalAmount.toLocaleString()}`;
+    const untilText = tenancy.end_date ? ` Your tenancy now runs until <strong>${new Date(tenancy.end_date).toDateString()}</strong>.` : '';
+
     const tenantHtml = buildPropertyEmailHtml({
-      heading: "Rent Paid Successfully",
+      heading: isRenewal ? "Rent Renewed Successfully" : "Rent Paid Successfully",
       subheading: "Payment Receipt Confirmation",
-      bodyText: `You have successfully paid the rent of <strong>₦${totalAmount.toLocaleString()}</strong> for the property: <strong>${rental.title}</strong> from your wallet.`,
+      bodyText: isRenewal
+        ? `You have successfully renewed your rent of <strong>${amountText}</strong> for the property: <strong>${rental.title}</strong> from your wallet.${untilText}`
+        : `You have successfully paid the rent of <strong>${amountText}</strong> for the property: <strong>${rental.title}</strong> from your wallet.`,
       recipientName: userObj?.full_name,
       rental,
       transaction: rentTransaction,
       landlord
     });
-    await logAndEmailUser(user_id, userObj?.email, "Rent Paid Successfully", tenantHtml);
+    await logAndEmailUser(user_id, userObj?.email, isRenewal ? "Rent Renewed Successfully" : "Rent Paid Successfully", tenantHtml);
 
     if (landlord) {
       const landlordHtml = buildPropertyEmailHtml({
-        heading: "Property Rented",
-        subheading: "Congratulations! Your property has a new tenant",
-        bodyText: `Your property <strong>"${rental.title}"</strong> has been successfully rented by <strong>${userObj.full_name}</strong>. Your share of <strong>₦${chargeResult.landlordShare.toLocaleString()}</strong> has been credited to your wallet.`,
+        heading: isRenewal ? "Rent Renewed" : "Property Rented",
+        subheading: isRenewal ? "Your tenant has renewed their rent" : "Congratulations! Your property has a new tenant",
+        bodyText: isRenewal
+          ? `<strong>${userObj.full_name}</strong> has renewed their rent for <strong>"${rental.title}"</strong>. Your share of <strong>₦${chargeResult.landlordShare.toLocaleString()}</strong> has been credited to your wallet.`
+          : `Your property <strong>"${rental.title}"</strong> has been successfully rented by <strong>${userObj.full_name}</strong>. Your share of <strong>₦${chargeResult.landlordShare.toLocaleString()}</strong> has been credited to your wallet.`,
         recipientName: landlord.full_name,
         rental,
         transaction: rentTransaction,
         tenant: userObj
       });
-      await logAndEmailUser(rental.UserId, landlord.email, "Property Rented", landlordHtml);
+      await logAndEmailUser(rental.UserId, landlord.email, isRenewal ? "Rent Renewed" : "Property Rented", landlordHtml);
     }
 
     await notifySuperAdmins(
-      `Property "${rental.title}" has been successfully rented by ${userObj?.full_name ?? user_id} after wallet payment.`,
+      isRenewal
+        ? `Rent for "${rental.title}" was renewed by ${userObj?.full_name ?? user_id} (₦${totalAmount.toLocaleString()}).`
+        : `Property "${rental.title}" has been successfully rented by ${userObj?.full_name ?? user_id} after wallet payment.`,
       'system',
-      { heading: 'Property Rented', rental, transaction: rentTransaction, tenant: userObj, landlord }
+      { heading: isRenewal ? 'Rent Renewed' : 'Property Rented', rental, transaction: rentTransaction, tenant: userObj, landlord }
     );
 
     return res.status(200).json({
       success: true,
-      message: "Rent paid and property rented successfully",
+      message: isRenewal ? "Rent renewed successfully" : "Rent paid and property rented successfully",
+      paymentKind: quote.kind,
+      amountCharged: totalAmount,
+      breakdown: quote.breakdown,
+      tenancy: presentTenancy(tenancy),
       data: progressRecord,
       walletBalance: chargeResult.payerBalance
     });
@@ -586,5 +681,5 @@ module.exports = {
   // Booked
   bookHouse, getBookedHouses, deleteBookedHouse, deleteAllBookedHouses,
   // Rent Payment
-  payRent
+  payRent, getRentQuote
 };

@@ -440,18 +440,26 @@ async function main() {
   r = await api('DELETE', '/progress/book', { as: tenant });
   check('clear all bookings', r.status === 200 && r.body.message === 'All booked houses cleared successfully', r.body);
 
+  r = await api('GET', `/progress/rent/quote/${rental.id}`, { as: tenant });
+  check('rent quote before renting → initial, ₦120,000 with full breakdown', r.status === 200 && r.body.data.paymentKind === 'initial' && r.body.data.amount === 120000 && r.body.data.breakdown.basicRent === 100000 && r.body.data.breakdown.legalFee === 10000 && r.body.data.canPay === true, r.body);
+  r = await api('GET', '/progress/rent/quote/not-a-uuid', { as: tenant });
+  check('rent quote for bad id → 404', r.status === 404, r.body);
+
   const rentLL = Number((await db.Wallet.findOne({ where: { user_id: landlord.id } })).balance);
   r = await api('POST', '/progress/rent/pay', { as: tenant, body: { rental_id: rental.id } });
-  check('pay rent: price + fees (₦120,000) charged', r.status === 200 && r.body.message === 'Rent paid and property rented successfully' && r.body.walletBalance === '73000.00' && r.body.data.booked === true, r.body);
+  check('pay rent: price + fees (₦120,000) charged', r.status === 200 && r.body.message === 'Rent paid and property rented successfully' && r.body.walletBalance === '73000.00' && r.body.data.booked === true && r.body.paymentKind === 'initial' && r.body.amountCharged === 120000, r.body);
+  const firstTenancy = r.body.tenancy;
+  check('pay rent: tenancy starts now and ends in 1 year', !!firstTenancy?.id && Math.abs(new Date(firstTenancy.endDate) - new Date(firstTenancy.startDate) - 365 * 864e5) <= 864e5, firstTenancy);
   check('rent split from .env (20% platform): landlord +₦96,000', Number((await db.Wallet.findOne({ where: { user_id: landlord.id } })).balance) - rentLL === 96000);
   check('rental status → rented', (await db.Rentals.findByPk(rental.id)).status === 'rented');
-  r = await api('POST', '/progress/rent/pay', { as: tenant, body: { rental_id: rental.id } });
-  check('pay rent again → 400 already rented', r.status === 400 && r.body.message === 'This property has already been rented', r.body);
+  r = await api('POST', '/progress/rent/pay', { as: landlord, body: { rental_id: rental.id } });
+  check('someone else pays for rented property → 400 already rented', r.status === 400 && r.body.message === 'This property has already been rented' && r.body.code === 'ALREADY_RENTED', r.body);
 
   r = await api('GET', `/rental/rented/${rental.id}`, { as: landlord });
-  const rd = r.body.data;
-  check('rented details → 200 with property, tenant, tenancy, transaction', r.status === 200 && rd.property.id === rental.id && rd.property.status === 'rented' && rd.tenant?.id === tenant.id && rd.tenancy.status === 'active' && !!rd.tenancy.startDate, r.body);
-  check('rented details: transaction ref + amount paid ₦120,000 + landlord share ₦96,000', rd?.transaction?.reference?.startsWith('RENTULO-HOUSERENT-') && rd.transaction.amountPaid === 120000 && rd.transaction.landlordShare === 96000 && rd.transaction.paymentStatus === 'paid', rd);
+  let rd = r.body.data;
+  check('rented details → 200 with property, tenant, tenancy, transaction', r.status === 200 && rd.property.id === rental.id && rd.property.status === 'rented' && rd.tenant?.id === tenant.id && rd.tenancy.status === 'active' && rd.tenancy.id === firstTenancy.id && !!rd.tenancy.startDate, r.body);
+  check('rented details: basicRent ₦100,000/yearly separate from ₦120,000 initial package', rd?.property.basicRent === '100000.00' && rd.property.priceType === 'yearly' && rd.property.totalInitialPayment === 120000 && rd.tenancy.renewalAmount === 100000, rd?.property);
+  check('rented details: transaction ref + amount paid ₦120,000 + landlord share ₦96,000', rd?.transaction?.reference?.startsWith('RENTULO-HOUSERENT-') && rd.transaction.amountPaid === 120000 && rd.transaction.landlordShare === 96000 && rd.transaction.paymentStatus === 'paid' && rd.transaction.paymentKind === 'initial' && rd.payments.length === 1, rd);
   r = await api('GET', `/rental/rented/${rental.slug}`, { as: landlord });
   check('rented details by slug → 200', r.status === 200 && r.body.data.property.id === rental.id, r.body);
   r = await api('GET', `/rental/rented/${rental.id}`, { as: tenant });
@@ -462,6 +470,31 @@ async function main() {
   check('rented details on un-rented property → 400 NOT_RENTED', r.status === 400 && r.body.code === 'NOT_RENTED', r.body);
   r = await api('GET', '/rental/rented', { as: landlord });
   check('my rented properties list includes the rental', r.status === 200 && r.body.data.some((d) => d.property.id === rental.id && d.tenant?.id === tenant.id), r.body);
+
+  // ── Renewal: the same tenant pays again → basic rent (price) only ──
+  r = await api('GET', `/progress/rent/quote/${rental.id}`, { as: tenant });
+  check('rent quote for current tenant → renewal, basic rent ₦100,000 only', r.status === 200 && r.body.data.paymentKind === 'renewal' && r.body.data.amount === 100000 && JSON.stringify(r.body.data.breakdown) === '{"basicRent":100000}' && r.body.data.tenancy?.id === firstTenancy.id, r.body);
+  r = await api('GET', `/progress/rent/quote/${rental.id}`, { as: landlord });
+  check('rent quote for someone else → canPay false, ALREADY_RENTED', r.status === 200 && r.body.data.canPay === false && r.body.data.code === 'ALREADY_RENTED' && r.body.data.tenancy === null, r.body);
+  await db.Wallet.increment({ balance: 100000 }, { where: { user_id: tenant.id } });
+  const renewLL = Number((await db.Wallet.findOne({ where: { user_id: landlord.id } })).balance);
+  r = await api('POST', '/progress/rent/pay', { as: tenant, body: { rental_id: rental.id } });
+  check('renewal → 200, only basic rent ₦100,000 charged', r.status === 200 && r.body.message === 'Rent renewed successfully' && r.body.paymentKind === 'renewal' && r.body.amountCharged === 100000 && r.body.walletBalance === '73000.00', r.body);
+  check('renewal extends the same tenancy by 1 year', r.body.tenancy?.id === firstTenancy.id && Math.abs(new Date(r.body.tenancy.endDate) - new Date(firstTenancy.endDate) - 365 * 864e5) <= 864e5, r.body.tenancy);
+  check('renewal split (20% platform): landlord +₦80,000', Number((await db.Wallet.findOne({ where: { user_id: landlord.id } })).balance) - renewLL === 80000);
+  r = await api('POST', '/progress/rent/pay', { as: tenant, body: { rental_id: rental.id } });
+  check('renew again (already a period ahead) → 400 RENEWAL_TOO_EARLY, nothing charged', r.status === 400 && r.body.code === 'RENEWAL_TOO_EARLY' && Number((await db.Wallet.findOne({ where: { user_id: tenant.id } })).balance) === 73000, r.body);
+  r = await api('GET', `/rental/rented/${rental.id}`, { as: landlord });
+  rd = r.body.data;
+  check('rented details after renewal: 2 payments, latest is the renewal', r.status === 200 && rd.payments.length === 2 && rd.transaction.paymentKind === 'renewal' && rd.transaction.amountPaid === 100000 && rd.payments[1].paymentKind === 'initial', rd);
+
+  // ── basicRent is accepted as another name for price ──
+  r = await api('PUT', `/rental/update/${rental2.id}`, { as: landlord, body: { basicRent: '50000' } });
+  check('update with basicRent → price set', r.status === 200 && r.body.data.price === '50000.00', r.body);
+  r = await api('PUT', `/rental/update/${rental2.id}`, { as: landlord, body: { basicRent: '60000', price: '50000' } });
+  check('update with mismatched price + basicRent → 400', r.status === 400 && /same field/.test(r.body.message), r.body);
+  r = await api('GET', `/rental/get1/${rental2.id}`, { as: tenant });
+  check('get1 returns basicRent (= price)', r.status === 200 && r.body.data.basicRent === r.body.data.price, r.body);
 
   // ═══ 12. Inspections ═══
   section('12. Inspection System');
@@ -502,7 +535,47 @@ async function main() {
   r = await api('POST', '/report', { as: tenant, body: { search_name: 'Landlord Lola', report_type: 'fraud', report_message: 'Asked for cash' } });
   check('report by search_name → 201', r.status === 201 && r.body.data.report_user_id === landlord.id, r.body);
   r = await api('POST', '/report', { as: tenant, body: { report_user_id: landlord.id, search_name: 'x', report_type: 'spam', report_message: 'x' } });
-  check('both id and name → 400', r.status === 400 && r.body.message === 'Please provide either report_user_id OR search_name, not both.', r.body);
+  check('both id and name → 400', r.status === 400 && r.body.message === 'Please provide only one of report_user_id, landlord_name or search_name.', r.body);
+  r = await api('POST', '/report', { as: tenant, body: { landlord_name: '  landlord LOLA ', report_type: 'fraud', report_message: 'Asked for cash outside the app' } });
+  check('report by landlord_name (case/space-insensitive) → 201', r.status === 201 && r.body.data.report_user_id === landlord.id && r.body.data.report_category === 'user', r.body);
+  r = await api('POST', '/report', { as: tenant, body: { landlord_name: 'Tenant Tobi', report_type: 'spam', report_message: 'x' } });
+  check('landlord_name never matches non-landlords → 404', r.status === 404 && r.body.message === 'No landlord found with that name.', r.body);
+  r = await api('POST', '/report', { as: tenant, body: { landlord_name: 'l', report_type: 'spam', report_message: 'x' } });
+  check('landlord_name too short → 400', r.status === 400, r.body);
+  const dupName = `Dup Landlord ${runId}`;
+  const dups = [];
+  for (const tag of ['dupa', 'dupb']) {
+    dups.push(await Users.create({ full_name: dupName, email: email(tag), password: 'x', role: 'landlord', is_verified: true, is_active: true, gender: 'male' }));
+  }
+  r = await api('POST', '/report', { as: tenant, body: { landlord_name: dupName, report_type: 'spam', report_message: 'x' } });
+  check('ambiguous landlord_name → 409 AMBIGUOUS_NAME with both candidates, nothing filed', r.status === 409 && r.body.code === 'AMBIGUOUS_NAME' && r.body.matches.length === 2 && dups.every((d) => r.body.matches.some((m) => m.id === d.id)) && r.body.matches.every((m) => m.email === undefined), r.body);
+  r = await api('POST', '/report', { as: tenant, body: { landlord_name: `Lola`, report_type: 'spam', report_message: 'partial name' } });
+  check('partial landlord_name with one match → 201', r.status === 201 && r.body.data.report_user_id === landlord.id, r.body);
+  r = await api('POST', '/report', { as: tenant, body: { report_user_id: tenant.id, report_type: 'spam', report_message: 'x' } });
+  check('reporting yourself → 400', r.status === 400 && r.body.message === 'You cannot report yourself.', r.body);
+  r = await api('POST', '/report', { as: tenant, body: { report_user_id: landlord.id, report_type: 'missing_funds', report_message: 'x' } });
+  check('wallet-only report_type on a user report → 400', r.status === 400, r.body);
+
+  // Wallet reports
+  const myTx = await db.WalletTransactions.findOne({ where: { user_id: tenant.id }, order: [['createdAt', 'ASC']] });
+  const llTx = await db.WalletTransactions.findOne({ where: { user_id: landlord.id } });
+  r = await api('POST', '/report', { as: tenant, body: { report_category: 'wallet', report_type: 'missing_funds', report_message: 'Top-up not credited', transaction_ref: myTx.tx_ref } });
+  check('wallet report with transaction_ref → 201, linked to the tx, no reported user', r.status === 201 && r.body.data.report_category === 'wallet' && r.body.data.wallet_transaction_id === myTx.id && r.body.data.transaction_ref === myTx.tx_ref && r.body.data.report_user_id === null && r.body.data.wallet_transaction?.tx_ref === myTx.tx_ref, r.body);
+  const walletReport = r.body.data;
+  r = await api('POST', '/report', { as: tenant, body: { report_category: 'wallet', report_type: 'wrong_charge', report_message: 'Charged twice' } });
+  check('wallet report without a transaction → 201', r.status === 201 && r.body.data.wallet_transaction_id === null, r.body);
+  r = await api('POST', '/report', { as: tenant, body: { report_category: 'wallet', report_type: 'missing_funds', report_message: 'x', transaction_ref: llTx.tx_ref } });
+  check("someone else's transaction → 404", r.status === 404 && r.body.message === 'Wallet transaction not found.', r.body);
+  r = await api('POST', '/report', { as: tenant, body: { report_category: 'wallet', report_type: 'spam', report_message: 'x' } });
+  check('user-only report_type on a wallet report → 400', r.status === 400, r.body);
+  r = await api('POST', '/report', { as: tenant, body: { report_category: 'billing', report_message: 'x' } });
+  check('unknown report_category → 400', r.status === 400, r.body);
+  r = await api('POST', '/report', { as: tenant, body: { report_user_id: landlord.id, report_type: 'spam', report_message: 'a'.repeat(1500) } });
+  check('long (1500-char) message is accepted', r.status === 201, r.status);
+  r = await api('GET', '/admin/reports?category=wallet', { as: superAdmin });
+  check('admin filters wallet reports, with the transaction included', r.status === 200 && r.body.data.length >= 2 && r.body.data.every((x) => x.report_category === 'wallet') && r.body.data.find((x) => x.id === walletReport.id)?.wallet_transaction?.id === myTx.id, r.body);
+  r = await api('GET', '/admin/reports?category=nope', { as: superAdmin });
+  check('admin bad category → 400', r.status === 400, r.body);
   r = await api('POST', '/report', { as: tenant, body: { report_user_id: landlord.id, report_type: 'spam' } });
   check('no message → 400', r.status === 400 && r.body.message === 'Report message is required.', r.body);
   r = await api('POST', '/report', { as: tenant, body: { report_user_id: crypto.randomUUID(), report_type: 'spam', report_message: 'x' } });

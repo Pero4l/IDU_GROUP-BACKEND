@@ -7,7 +7,7 @@ const {
   likeHouse, getLikedHouses, unlikeHouse, deleteAllLikedHouses,
   lockHouse, getLockedHouses, deleteLockedHouse, deleteAllLockedHouses,
   bookHouse, getBookedHouses, deleteBookedHouse, deleteAllBookedHouses,
-  payRent
+  payRent, getRentQuote
 } = require('../controllers/progreess.controller');
 
 // Liked endpoints
@@ -29,6 +29,9 @@ router.delete('/book/:id', authMiddleware, deleteBookedHouse);
 router.delete('/book', authMiddleware, deleteAllBookedHouses);
 
 // Rent payment — charges the wallet directly, no gateway redirect
+// First payment = basic rent + all fees; later payments by the same tenant = basic rent only
 router.post('/rent/pay', authMiddleware, isVerifiedMiddleware, payRent);
+// What the caller would pay right now (initial vs renewal), before paying
+router.get('/rent/quote/:rental_id', authMiddleware, getRentQuote);
 
 module.exports = router;

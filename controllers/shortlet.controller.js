@@ -1022,21 +1022,64 @@ function adminView(booking) {
 // ─────────────────────────────────────────────
 // GET /shortlet/bookings  — the signed-in guest's shortlet bookings
 // ─────────────────────────────────────────────
-async function getUserShortletBookings(user_id) {
+const BOOKING_STATUSES = ['confirmed', 'cancelled', 'completed'];
+
+// What cancelling right now would mean (before check-in, or ending the stay
+// early). Full detail for the cancel dialog: GET /shortlet/bookings/:id/cancellation
+function cancellationSummary(booking, role) {
+  if (booking.status !== 'confirmed') return { canCancel: false };
+  try {
+    return presentTerms(cancellationTerms(booking, role), booking);
+  } catch (e) {
+    return { canCancel: false, reason: e.message, ...(e.code && { code: e.code }) };
+  }
+}
+
+// Bookings only exist once the wallet charge has succeeded, so a booking is
+// always paid; refunds (cancellation and/or security-deposit release) are
+// tracked cumulatively in refunded_amount.
+function paymentSummary(booking) {
+  const totalKobo = toKobo(booking.total_amount);
+  const refundedKobo = toKobo(booking.refunded_amount);
+  let status = 'paid';
+  if (refundedKobo > 0) status = refundedKobo >= totalKobo ? 'refunded' : 'partially_refunded';
+  return {
+    status,                                   // paid · partially_refunded · refunded
+    method: 'wallet',
+    amountPaid: fromKobo(totalKobo),
+    refundedAmount: fromKobo(refundedKobo),
+    netPaid: fromKobo(Math.max(0, totalKobo - refundedKobo)),
+    paidAt: booking.createdAt,
+  };
+}
+
+async function getUserShortletBookings(user_id, { status } = {}) {
+  const where = { user_id };
+  if (status) where.status = status;
   const bookings = await ShortletBookings.findAll({
-    where: { user_id },
+    where,
     include: [
       { model: Shortlets, as: 'shortlet', attributes: BOOKING_SHORTLET_ATTRIBUTES },
       { model: Users, as: 'host', attributes: PERSON_ATTRIBUTES },
     ],
     order: [['check_in', 'DESC']],
   });
-  return bookings.map(guestView);
+  return bookings.map((booking) => {
+    const data = guestView(booking);
+    data.payment = paymentSummary(booking);
+    data.cancellation = cancellationSummary(booking, 'guest');
+    return data;
+  });
 }
 
+// ?status=confirmed|cancelled|completed (optional)
 async function getMyShortletBookings(req, res) {
   try {
-    const bookings = await getUserShortletBookings(req.user.userId);
+    const { status } = req.query;
+    if (status && !BOOKING_STATUSES.includes(status)) {
+      return res.status(400).json({ success: false, message: `status must be one of: ${BOOKING_STATUSES.join(', ')}` });
+    }
+    const bookings = await getUserShortletBookings(req.user.userId, { status });
     return res.status(200).json({ success: true, message: "Shortlet bookings retrieved successfully", data: bookings });
   } catch (error) {
     logger.error('Error fetching shortlet bookings', { error: error.message, userId: req.user?.userId });
@@ -1051,8 +1094,8 @@ async function getHostShortletBookings(req, res) {
   try {
     const where = { host_id: req.user.userId };
     if (req.query.status) {
-      if (!['confirmed', 'cancelled', 'completed'].includes(req.query.status)) {
-        return res.status(400).json({ success: false, message: "status must be one of: confirmed, cancelled, completed" });
+      if (!BOOKING_STATUSES.includes(req.query.status)) {
+        return res.status(400).json({ success: false, message: `status must be one of: ${BOOKING_STATUSES.join(', ')}` });
       }
       where.status = req.query.status;
     }
@@ -1095,18 +1138,8 @@ async function getShortletBooking(req, res) {
 
     const isGuest = booking.user_id === user_id;
     const data = isGuest ? guestView(booking) : hostView(booking);
-    // What cancelling right now would mean (before check-in, or ending the stay early).
-    // (Full detail for the cancel dialog: GET /shortlet/bookings/:id/cancellation)
-    if (booking.status === 'confirmed') {
-      try {
-        data.cancellation = presentTerms(cancellationTerms(booking, isGuest ? 'guest' : 'host'), booking);
-      } catch (e) {
-        data.cancellation = { canCancel: false, reason: e.message, ...(e.code && { code: e.code }) };
-      }
-    } else {
-      data.cancellation = { canCancel: false };
-    }
-
+    if (isGuest) data.payment = paymentSummary(booking);
+    data.cancellation = cancellationSummary(booking, isGuest ? 'guest' : 'host');
 
     return res.status(200).json({ success: true, message: "Booking retrieved successfully", data });
   } catch (error) {

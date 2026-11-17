@@ -124,11 +124,22 @@ async function getLockedHouses(req, res) {
 
 async function getAllReports(req, res) {
   try {
+    // ?category=user|wallet (optional)
+    const where = {};
+    if (req.query.category) {
+      if (!['user', 'wallet'].includes(req.query.category)) {
+        return res.status(400).json({ success: false, message: "category must be one of: user, wallet" });
+      }
+      where.report_category = req.query.category;
+    }
     const reports = await Reports.findAll({
+      where,
       include: [
         { model: Users, as: 'user', attributes: ['full_name', 'email'] },
-        { model: Users, as: 'report_user', attributes: ['full_name', 'email'] }
-      ]
+        { model: Users, as: 'report_user', attributes: ['full_name', 'email'] },
+        { model: WalletTransactions, as: 'wallet_transaction', attributes: ['id', 'tx_ref', 'type', 'amount', 'status', 'narration', 'createdAt'] },
+      ],
+      order: [['createdAt', 'DESC']],
     });
     return res.status(200).json({ success: true, count: reports.length, data: reports });
   } catch (error) {
