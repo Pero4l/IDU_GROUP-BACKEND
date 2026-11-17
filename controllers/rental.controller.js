@@ -5,7 +5,9 @@ const {
   Profile,
   Progress,
   WalletTransactions,
+  Tenancies,
 } = require("../models");
+const { initialBreakdown, tenancyDisplayStatus } = require("../utils/tenancy");
 const {
   notifySuperAdmins,
   logAndEmailUser,
@@ -110,6 +112,16 @@ function findRentalByIdOrSlug(id, options = {}) {
     : Rentals.findOne({ ...options, where: { slug: String(id) } });
 }
 
+// `basicRent` and `price` are the same thing: the rent per period (month/year)
+// without any fees. Either name is accepted; if both are sent they must match.
+function resolveBasicRent(price, basicRent) {
+  const has = (v) => v !== undefined && v !== null && v !== "";
+  if (has(price) && has(basicRent) && Number(price) !== Number(basicRent)) {
+    return { error: "price and basicRent are the same field; send one, or send matching values" };
+  }
+  return { value: has(price) ? price : has(basicRent) ? basicRent : undefined };
+}
+
 // ─────────────────────────────────────────────
 // POST /rental/post  — landlord adds a rental
 // ─────────────────────────────────────────────
@@ -120,7 +132,7 @@ async function addRental(req, res) {
       description,
       propertyType,
       location,
-      price,
+      price: rawPrice,
       priceType,
       status,
       amenities,
@@ -129,8 +141,16 @@ async function addRental(req, res) {
       brokeFee,
       mgtServiceCharge,
       inspectionFee,
+      basicRent,
     } = req.body;
     const images = req.files?.images || [];
+
+    // `basicRent` is another name for `price` (the rent per period, without fees).
+    const priceInput = resolveBasicRent(rawPrice, basicRent);
+    if (priceInput.error) {
+      return res.status(400).json({ success: false, message: priceInput.error });
+    }
+    const price = priceInput.value;
     const videos = req.files?.videos || [];
 
     if (
@@ -388,6 +408,7 @@ async function getRental(req, res) {
     }
 
     const rentalData = rental.toJSON();
+    rentalData.basicRent = rentalData.price;
     return res.status(200).json({
       success: true,
       data: {
@@ -416,7 +437,7 @@ async function updateRental(req, res) {
       description,
       propertyType,
       location,
-      price,
+      price: rawPrice,
       priceType,
       images,
       videos,
@@ -427,7 +448,14 @@ async function updateRental(req, res) {
       brokeFee,
       mgtServiceCharge,
       inspectionFee,
+      basicRent,
     } = req.body;
+
+    const priceInput = resolveBasicRent(rawPrice, basicRent);
+    if (priceInput.error) {
+      return res.status(400).json({ success: false, message: priceInput.error });
+    }
+    const price = priceInput.value;
 
     const rental = await findRentalByIdOrSlug(id);
     if (!rental) {
@@ -797,68 +825,47 @@ const RENTED_PROPERTY_ATTRIBUTES = [
   "images", "amenities", "status", "UserId", "createdAt", "updatedAt",
 ];
 
-// There's no tenancy table: a tenancy is the rent payment itself. The tenancy
-// period is derived from the payment date and the rental's priceType.
-function deriveTenancyPeriod(startDate, priceType) {
-  if (!startDate) return { startDate: null, endDate: null };
-  const start = new Date(startDate);
-  let end = null;
-  if (priceType === "monthly") {
-    end = new Date(start);
-    end.setMonth(end.getMonth() + 1);
-  } else if (priceType === "yearly") {
-    end = new Date(start);
-    end.setFullYear(end.getFullYear() + 1);
-  }
-  return { startDate: start, endDate: end };
-}
-
-// Finds the tenant's (payer's) rent ledger row for this rental. Payments made
-// since rental_id was stored in meta are matched exactly; older ones fall back
-// to the narration written at payment time.
-async function findRentPayment(rental) {
-  const base = { type: "house rent", role: "payer", status: "success" };
-  const order = [["createdAt", "DESC"]];
-  const byMeta = await WalletTransactions.findOne({
-    where: { ...base, "meta.rental_id": rental.id },
-    order,
-  });
-  if (byMeta) return byMeta;
-  return WalletTransactions.findOne({
-    where: { ...base, narration: `Rent payment for "${rental.title}"` },
-    order,
-  });
+function presentPayment(tx) {
+  const meta = tx.meta || {};
+  return {
+    id: tx.id,
+    reference: tx.tx_ref,
+    paymentKind: meta.payment_kind ?? "initial",
+    amountPaid: Number(tx.amount),
+    landlordShare: meta.landlordShare ?? null,
+    platformShare: meta.platformShare ?? null,
+    paymentStatus: tx.status === "success" ? "paid" : tx.status,
+    paymentMethod: "wallet",
+    paidAt: tx.createdAt,
+  };
 }
 
 async function buildRentedPropertyDetails(rental) {
-  const payment = await findRentPayment(rental);
+  const tenancy = await Tenancies.findOne({
+    where: { rental_id: rental.id, status: "active" },
+    order: [["createdAt", "DESC"]],
+  });
 
-  // Tenant: the payer of the rent. If no ledger row is found (very old data),
-  // fall back to the most recent booked progress record.
-  let tenantId = payment?.user_id ?? null;
-  if (!tenantId) {
-    const booking = await Progress.findOne({
-      where: { rental_id: rental.id, booked: true },
-      order: [["updatedAt", "DESC"]],
-    });
-    tenantId = booking?.user_id ?? null;
-  }
-  const tenant = tenantId
-    ? await Users.findByPk(tenantId, {
+  const tenant = tenancy
+    ? await Users.findByPk(tenancy.tenant_id, {
         attributes: ["id", "full_name", "email", "phone_no", "address", "state", "country"],
         include: [{ model: Profile, attributes: ["image", "phone", "verified"] }],
       })
     : null;
 
-  const { startDate, endDate } = deriveTenancyPeriod(payment?.createdAt, rental.priceType);
-  let tenancyStatus = "unknown";
-  if (startDate) {
-    tenancyStatus = endDate && endDate < new Date() ? "expired" : "active";
-  }
+  // The tenant's rent payments for this tenancy (initial + renewals), newest first.
+  const paymentRows = tenancy
+    ? await WalletTransactions.findAll({
+        where: { type: "house rent", role: "payer", status: "success", "meta.tenancy_id": tenancy.id },
+        order: [["createdAt", "DESC"]],
+      })
+    : [];
+  const payments = paymentRows.map(presentPayment);
 
-  const meta = payment?.meta || {};
   const property = rental.toJSON();
   delete property.UserId;
+  property.basicRent = property.price;
+  property.totalInitialPayment = initialBreakdown(rental).total;
 
   return {
     property,
@@ -876,26 +883,17 @@ async function buildRentedPropertyDetails(rental) {
         }
       : null,
     tenancy: {
-      status: tenancyStatus,
-      startDate,
-      endDate,
+      id: tenancy?.id ?? null,
+      status: tenancyDisplayStatus(tenancy),
+      startDate: tenancy?.start_date ?? null,
+      endDate: tenancy?.end_date ?? null,
       priceType: rental.priceType,
-      // true = dates are computed from the payment date + priceType, not
-      // set explicitly (no lease-date fields exist yet).
-      datesDerived: true,
+      // Each renewal charges only this amount (the basic rent).
+      renewalAmount: Number(rental.price) || 0,
     },
-    transaction: payment
-      ? {
-          id: payment.id,
-          reference: payment.tx_ref,
-          amountPaid: Number(payment.amount),
-          landlordShare: meta.landlordShare ?? null,
-          platformShare: meta.platformShare ?? null,
-          paymentStatus: payment.status === "success" ? "paid" : payment.status,
-          paymentMethod: "wallet",
-          paidAt: payment.createdAt,
-        }
-      : null,
+    // Latest payment (initial or renewal); full list in `payments`.
+    transaction: payments[0] ?? null,
+    payments,
   };
 }
 

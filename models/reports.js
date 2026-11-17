@@ -20,6 +20,11 @@ module.exports = (sequelize, DataTypes) => {
         foreignKey: "report_user_id",
         as: "report_user"
       });
+
+      Reports.belongsTo(models.WalletTransactions, {
+        foreignKey: "wallet_transaction_id",
+        as: "wallet_transaction"
+      });
     }
   }
   Reports.init({
@@ -33,8 +38,19 @@ module.exports = (sequelize, DataTypes) => {
     report_user_id: DataTypes.UUID,
     report_name: DataTypes.STRING,
     report_number: DataTypes.STRING,
-    report_type: DataTypes.ENUM('spam', 'harassment', 'fraud', 'other'),
-    report_message: DataTypes.STRING,
+    // 'user' = about another user (report_user_id set); 'wallet' = a wallet problem
+    report_category: {
+      type: DataTypes.ENUM('user', 'wallet'),
+      allowNull: false,
+      defaultValue: 'user',
+    },
+    wallet_transaction_id: DataTypes.UUID,
+    transaction_ref: DataTypes.STRING,
+    report_type: DataTypes.ENUM(
+      'spam', 'harassment', 'fraud', 'other',
+      'failed_transaction', 'missing_funds', 'wrong_charge', 'refund_issue', 'withdrawal_issue'
+    ),
+    report_message: DataTypes.TEXT,
     report_status: DataTypes.ENUM('pending', 'resolved', 'rejected')
   }, {
     sequelize,

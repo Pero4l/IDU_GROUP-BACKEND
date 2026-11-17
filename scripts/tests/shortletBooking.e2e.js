@@ -199,6 +199,20 @@ async function main() {
   check('GET /progress/book includes shortletBookings', r.status === 200 && r.body.shortletBookings.length === 1 && r.body.shortletBookings[0].shortlet.id === sl.id, r.body);
   r = await call(guest, 'GET', '/shortlet/bookings');
   check('GET /shortlet/bookings lists the trip', r.body.data.length === 1);
+  {
+    const t = r.body.data[0];
+    check('trip has listing title, cover image and location', t.shortlet && t.shortlet.title && 'coverImage' in t.shortlet && t.shortlet.city !== undefined && t.shortlet.address !== undefined, t.shortlet);
+    check('trip has dates, guests, total and status', t.check_in && t.check_out && t.guests >= 1 && t.total_amount && t.status === 'confirmed', t);
+    check('trip payment is paid with nothing refunded', t.payment && t.payment.status === 'paid' && t.payment.refundedAmount === '0.00' && t.payment.amountPaid === t.total_amount, t.payment);
+    check('trip carries cancellation terms', t.cancellation && t.cancellation.canCancel === true && t.cancellation.refundAmount, t.cancellation);
+    check('trip hides host payout / platform fee', t.host_payout === undefined && t.platform_fee === undefined);
+  }
+  r = await call(guest, 'GET', '/shortlet/bookings?status=cancelled');
+  check('?status=cancelled filters out the confirmed trip', r.status === 200 && r.body.data.length === 0, r.body);
+  r = await call(guest, 'GET', '/shortlet/bookings?status=bogus');
+  check('?status=bogus → 400', r.status === 400, r.body);
+  r = await call(host, 'GET', '/shortlet/bookings');
+  check("host's own trip list excludes guests' bookings", r.status === 200 && r.body.data.every((x) => x.user_id === host.id), r.body);
   r = await call(host, 'GET', '/shortlet/host/bookings');
   check('host sees reservations with payout + guest, no platform fee', r.body.data.length >= 3 && r.body.data.every((x) => x.host_payout && x.guest && x.platform_fee === undefined), r.body);
   r = await call(guest, 'GET', `/shortlet/bookings/${b1.id}`);
@@ -224,6 +238,11 @@ async function main() {
   check('dates freed up', !r.body.data.bookedRanges.some((x) => x.checkIn === d(20)));
   r = await call(guest, 'POST', `/shortlet/bookings/${b1.id}/cancel`, {});
   check("can't cancel twice", r.status === 400, r);
+  r = await call(guest, 'GET', '/shortlet/bookings?status=cancelled');
+  {
+    const t = r.body.data.find((x) => x.id === b1.id);
+    check('cancelled trip shows refunded payment + cancellation record', t && t.payment.status === 'refunded' && t.payment.refundedAmount === '37000.00' && t.cancelled_by === 'guest' && t.cancellation_details && t.cancellation.canCancel === false, t);
+  }
 
   // Late cancel: next check-in that is less than 24h away (today if before 14:00 WAT, else tomorrow)
   const lagosHour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Lagos', hour: '2-digit', hour12: false }).format(new Date()));
