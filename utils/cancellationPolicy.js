@@ -178,7 +178,7 @@ function describeStandardPolicy(rules, { checkInAt, bookedAt = new Date(), early
   if (g?.enabled) {
     lines.unshift(`Free cancellation within ${g.withinHoursOfBooking} hours of booking, as long as check-in is at least ${hoursText(g.minHoursBeforeCheckIn)} away.`);
   }
-  lines.push('The cleaning fee is refunded if you cancel before check-in, and the security deposit is always returned unless the host makes an approved damage claim.');
+  lines.push('The cleaning fee is refunded if you cancel before check-in, and the refundable caution fee is always returned unless RentULO approves a damage report from the host.');
   const notice = rules.earlyCheckout.noticeHours;
   const earlyCheckout = {
     unusedNightsRefundable: !!earlyCheckoutRefundable,

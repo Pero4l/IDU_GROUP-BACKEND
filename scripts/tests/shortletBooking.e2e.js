@@ -175,7 +175,7 @@ async function main() {
   const b1row = await ShortletBookings.findByPk(b1.id);
   check('admin commission 20% frozen on booking: host ₦25,600 / platform ₦6,400 (deposit excluded)',
     Number(b1row.commission_percent) === 20 && b1row.host_payout === '25600.00' && b1row.platform_fee === '6400.00', b1row.toJSON());
-  check('payout due 24h after check-in', new Date(b1row.payout_due_at).getTime() === at(21, '14:00:00').getTime(), b1row.payout_due_at);
+  check('payout due 10h after check-in (14:00 → 00:00 next day)', new Date(b1row.payout_due_at).getTime() === at(21, '00:00:00').getTime(), b1row.payout_due_at);
 
   console.log('\n4. Calendar & double booking');
   r = await call(guest2, 'GET', `/shortlet/availability/${sl.id}`);
@@ -258,14 +258,14 @@ async function main() {
   r = await call(host, 'POST', `/shortlet/bookings/${b2.id}/cancel`, { reason: 'Maintenance' });
   check('host cancels → guest always gets a full refund', r.status === 200 && r.body.refundAmount === '27000.00', r);
 
-  console.log('\n8. Settlement job (host paid 24h after check-in, deposit back 48h after check-out)');
+  console.log('\n8. Settlement job (host paid 10h after check-in, deposit back 48h after check-out)');
   r = await book(guest, d(30), d(33));
   const s1 = r.body.data;
   const hostPre = await bal(host), guestPre = await bal(guest);
-  let sum = await settlement.runShortletSettlement(at(30, '20:00:00'));
-  check('before payout is due: nothing paid', (await bal(host)) === hostPre, sum);
-  sum = await settlement.runShortletSettlement(at(31, '15:00:00'));
-  check('24h after check-in: host paid ₦25,600', (await bal(host)) - hostPre === 25600, sum);
+  let sum = await settlement.runShortletSettlement(at(30, '23:59:00'));
+  check('9h59m after check-in: nothing paid yet', (await bal(host)) === hostPre, sum);
+  sum = await settlement.runShortletSettlement(at(31, '00:00:00'));
+  check('10h after check-in: host paid ₦25,600', (await bal(host)) - hostPre === 25600, sum);
   await settlement.runShortletSettlement(at(31, '16:00:00'));
   check('running again does not pay twice', (await bal(host)) - hostPre === 25600);
   await settlement.runShortletSettlement(at(33, '11:00:00'));
@@ -638,6 +638,283 @@ async function main() {
   check('bad date → 400', r.status === 400, r.body);
   r = await call(guest, 'GET', '/admin/shortlet-bookings/cancellations');
   check('non-admin → 403', r.status === 403);
+
+  console.log('\n8d. Refundable caution fee: checkout inspection + admin settlement');
+  {
+    // Moves a future booking into the past (stay ended yesterday, inspection
+    // window still open) and lets the settlement job complete it.
+    const endStay = async (id, { checkIn = d(-3), checkOut = d(-1) } = {}) => {
+      await ShortletBookings.update({
+        check_in: checkIn, check_out: checkOut, payout_due_at: at(-2, '14:00:00'),
+        deposit_refund_due_at: new Date(settlement.lagosDateTime(checkOut, '11:00:00').getTime() + 48 * 3600e3),
+      }, { where: { id } });
+      await settlement.runShortletSettlement();
+    };
+    const inspect = async (user, id, { outcome, description, photos = 0, videos = 0, amount }) => {
+      const f = new FormData();
+      if (outcome !== undefined) f.append('outcome', outcome);
+      if (description !== undefined) f.append('description', description);
+      if (amount !== undefined) f.append('amount', String(amount));
+      for (let i = 0; i < photos; i++) f.append('photos', new Blob([Buffer.from(`p${i}`)], { type: 'image/jpeg' }), `p${i}.jpg`);
+      for (let i = 0; i < videos; i++) f.append('videos', new Blob([Buffer.from(`v${i}`)], { type: 'video/mp4' }), `v${i}.mp4`);
+      const rr = await fetch(`${base}/shortlet/bookings/${id}/inspection`, { method: 'POST', headers: { authorization: `Bearer ${tokenFor(user)}` }, body: f });
+      return { status: rr.status, body: await rr.json().catch(() => ({})) };
+    };
+    await setBal(guest, 300000);
+
+    // Listing: the caution fee can be set as cautionFee, must be ≥ 0, and shows on the quote.
+    r = await call(host, 'PUT', `/shortlet/update/${sl.id}`, { cautionFee: -5 });
+    check('negative caution fee refused', r.status === 400, r.body);
+    r = await call(host, 'PUT', `/shortlet/update/${sl.id}`, { cautionFee: 'abc' });
+    check('non-numeric caution fee refused', r.status === 400, r.body);
+    r = await call(host, 'PUT', `/shortlet/update/${sl.id}`, { cautionFee: 8000 });
+    check('host sets cautionFee ₦8,000 (stored as securityDeposit)', r.status === 200 && Number((await Shortlets.findByPk(sl.id)).securityDeposit) === 8000, r.body);
+    r = await call(guest, 'GET', `/shortlet/quote/${sl.id}?checkIn=${d(166)}&checkOut=${d(167)}`);
+    check('quote shows the refundable caution fee', r.status === 200 && r.body.data.cautionFee === '8000.00' && r.body.data.cautionFeeRefundable === true && r.body.data.securityDeposit === '8000.00', r.body);
+    r = await call(host, 'PUT', `/shortlet/update/${sl.id}`, { cautionFee: 0 });
+    check('host can set the caution fee to ₦0', r.status === 200 && Number((await Shortlets.findByPk(sl.id)).securityDeposit) === 0, r.body);
+    await call(host, 'PUT', `/shortlet/update/${sl.id}`, { securityDeposit: 5000 });
+    check('old securityDeposit field still works', Number((await Shortlets.findByPk(sl.id)).securityDeposit) === 5000);
+
+    // i1: "No damage incurred" → full refund straight away
+    r = await book(guest, d(166), d(168));
+    const i1 = r.body.data;
+    r = await call(host, 'POST', `/shortlet/bookings/${i1.id}/inspection`, { outcome: 'no_damage' });
+    check('inspection before check-out → 400 STAY_NOT_ENDED', r.status === 400 && r.body.code === 'STAY_NOT_ENDED', r.body);
+    await endStay(i1.id);
+    r = await call(host, 'GET', `/shortlet/bookings/${i1.id}`);
+    check('host detail after check-out: canInspect, inspection pending', r.body.data.depositClaim.canInspect === true && r.body.data.depositClaim.inspection.pending === true
+      && r.body.data.depositClaim.cautionFee === '5000.00', r.body.data.depositClaim);
+    r = await call(guest, 'GET', `/shortlet/bookings/${i1.id}`);
+    check('guest cannot inspect', r.body.data.depositClaim.canInspect === false);
+    r = await call(host, 'GET', '/shortlet/host/inspections');
+    check('host dashboard lists the stay awaiting inspection', r.status === 200 && r.body.data.some((b) => b.id === i1.id), r.body);
+    r = await call(guest, 'POST', `/shortlet/bookings/${i1.id}/inspection`, { outcome: 'no_damage' });
+    check('guest cannot answer the inspection (403)', r.status === 403, r.body);
+    r = await call(host, 'POST', `/shortlet/bookings/${i1.id}/inspection`, { outcome: 'maybe' });
+    check('unknown outcome → 400 INVALID_OUTCOME', r.status === 400 && r.body.code === 'INVALID_OUTCOME', r.body);
+    let g0 = await bal(guest);
+    r = await call(host, 'POST', `/shortlet/bookings/${i1.id}/inspection`, { outcome: 'no_damage' });
+    let row = await ShortletBookings.findByPk(i1.id);
+    check('no damage → ₦5,000 refunded to the guest immediately', r.status === 200 && r.body.refunded === true && (await bal(guest)) - g0 === 5000
+      && row.deposit_status === 'refunded' && row.deposit_inspection_outcome === 'no_damage' && !!row.deposit_inspected_at, r.body);
+    check('guest notified: Caution Fee Refunded', (await Notifications.count({ where: { user_id: guest.id, notification: 'Caution Fee Refunded' } })) >= 1);
+    r = await call(host, 'POST', `/shortlet/bookings/${i1.id}/inspection`, { outcome: 'no_damage' });
+    check('answering twice → 400 ALREADY_INSPECTED', r.status === 400 && r.body.code === 'ALREADY_INSPECTED', r.body);
+    r = await call(host, 'POST', `/shortlet/bookings/${i1.id}/inspection`, { outcome: 'damage', description: 'Changed my mind, broken lamp' });
+    check('…and cannot switch to a damage report afterwards', r.status === 400 && r.body.code === 'ALREADY_INSPECTED', r.body);
+    await settlement.runShortletSettlement(new Date(Date.now() + 10 * DAY));
+    const i1Refunds = (await WalletTransactions.findAll({ where: { user_id: guest.id, type: 'refund_payment' } }))
+      .filter((t) => (typeof t.meta === 'string' ? JSON.parse(t.meta) : t.meta)?.booking_id === i1.id);
+    check('never refunded twice (one ₦5,000 refund on this booking)', i1Refunds.length === 1 && Number(i1Refunds[0].amount) === 5000, i1Refunds.length);
+    r = await call(host, 'GET', '/shortlet/host/inspections');
+    check('…and it left the pending inspections list', !r.body.data.some((b) => b.id === i1.id));
+
+    // i2: "Yes, damage was incurred" → admin decides the cost
+    r = await book(guest, d(168), d(170));
+    const i2 = r.body.data;
+    await endStay(i2.id);
+    const up0 = global.__cloudinary.uploaded.length;
+    r = await inspect(host, i2.id, { outcome: 'damage', description: 'Broken TV screen in the lounge' });
+    check('damage with no evidence → 400 INVALID_PHOTOS', r.status === 400 && r.body.code === 'INVALID_PHOTOS', r.body);
+    r = await inspect(host, i2.id, { outcome: 'damage', description: 'TV', photos: 1 });
+    check('damage with no real description → 400 INVALID_REASON', r.status === 400 && r.body.code === 'INVALID_REASON', r.body);
+    r = await inspect(host, i2.id, { outcome: 'damage', description: 'Broken TV screen in the lounge', photos: 6 });
+    check('more than 5 photos → 400', r.status === 400 && r.body.code === 'INVALID_PHOTOS', r.body);
+    r = await inspect(host, i2.id, { outcome: 'damage', description: 'Broken TV screen in the lounge', videos: 3 });
+    check('more than 2 videos → 400', r.status === 400 && r.body.code === 'INVALID_PHOTOS', r.body);
+    check('nothing uploaded for refused reports', global.__cloudinary.uploaded.length === up0);
+    g0 = await bal(guest);
+    r = await inspect(host, i2.id, { outcome: 'damage', description: 'Broken TV screen in the lounge', photos: 2, videos: 1 });
+    row = await ShortletBookings.findByPk(i2.id);
+    check('damage report filed: 2 photos + 1 video, amount left to admin, fee still held', r.status === 200 && row.deposit_status === 'claimed'
+      && row.deposit_claim_amount === null && row.deposit_claim_photos.length === 2 && row.deposit_claim_videos.length === 1
+      && row.deposit_claim_videos[0].startsWith('https://cdn.test/deposit-claims/videos/') && row.deposit_inspection_outcome === 'damage' && (await bal(guest)) === g0, r.body);
+    check('guest notified of the damage report', (await Notifications.count({ where: { user_id: guest.id, notification: 'Damage Report Submitted' } })) >= 1);
+    r = await call(guest, 'GET', `/shortlet/bookings/${i2.id}`);
+    check('guest sees the description, photos and video', r.body.data.depositClaim.claim.reason === 'Broken TV screen in the lounge'
+      && r.body.data.depositClaim.claim.photos.length === 2 && r.body.data.depositClaim.claim.videos.length === 1 && r.body.data.depositClaim.claim.amount === null, r.body.data.depositClaim);
+    r = await inspect(host, i2.id, { outcome: 'damage', description: 'Broken TV screen in the lounge', photos: 1 });
+    check('second report → 400 ALREADY_INSPECTED', r.status === 400 && r.body.code === 'ALREADY_INSPECTED', r.body);
+    r = await claim(host, i2.id, { amount: 1000, reason: 'Another thing got broken here' });
+    check('old deposit-claim endpoint also refuses a second report', r.status === 400 && r.body.code === 'CLAIM_EXISTS', r.body);
+    await settlement.runShortletSettlement(new Date(Date.now() + 10 * DAY));
+    check('fee stays held while the admin reviews', (await ShortletBookings.findByPk(i2.id)).deposit_status === 'claimed' && (await bal(guest)) === g0);
+    r = await call(admin, 'GET', '/admin/shortlet-bookings/deposit-claims');
+    check('admin sees the report with its videos', r.body.data.some((c) => c.id === i2.id && c.depositClaim.claim.videos.length === 1 && c.depositClaim.canResolve));
+    r = await call(admin, 'PUT', `/admin/shortlet-bookings/${i2.id}/deposit-claim`, { decision: 'approve' });
+    check('approve without a damage cost → 400 INVALID_AMOUNT', r.status === 400 && r.body.code === 'INVALID_AMOUNT', r.body);
+    r = await call(admin, 'PUT', `/admin/shortlet-bookings/${i2.id}/deposit-claim`, { decision: 'approve', amount: 6000 });
+    check('damage cost above the caution fee → 400 INVALID_AMOUNT', r.status === 400 && r.body.code === 'INVALID_AMOUNT', r.body);
+    const h0 = await bal(host);
+    r = await call(admin, 'PUT', `/admin/shortlet-bookings/${i2.id}/deposit-claim`, { decision: 'approve', amount: 2000, note: 'Repair quote verified' });
+    row = await ShortletBookings.findByPk(i2.id);
+    check('admin approves ₦2,000: host gets ₦2,000, guest gets ₦3,000 back', r.status === 200 && (await bal(host)) - h0 === 2000 && (await bal(guest)) - g0 === 3000
+      && row.deposit_status === 'settled' && row.deposit_claim_decision === 'approved' && row.deposit_paid_to_host === '2000.00', r.body);
+    check('both notified of the decision', (await Notifications.count({ where: { user_id: guest.id, notification: 'Damage Report Decided' } })) >= 1
+      && (await Notifications.count({ where: { user_id: host.id, notification: 'Damage Report Decided' } })) >= 1);
+
+    // i3: rejected report → full refund
+    r = await book(guest, d(170), d(172));
+    const i3 = r.body.data;
+    await endStay(i3.id);
+    r = await inspect(host, i3.id, { outcome: 'damage', description: 'Scratches on the dining table', photos: 1 });
+    g0 = await bal(guest);
+    r = await call(admin, 'PUT', `/admin/shortlet-bookings/${i3.id}/deposit-claim`, { decision: 'reject', note: 'Wear and tear' });
+    check('rejected report → full ₦5,000 back to the guest', r.status === 200 && (await bal(guest)) - g0 === 5000
+      && (await ShortletBookings.findByPk(i3.id)).deposit_claim_decision === 'rejected', r.body);
+
+    // i4: guest wallet unavailable at "no damage" → recorded, refunded by the next settlement run
+    r = await book(guest, d(172), d(174));
+    const i4 = r.body.data;
+    await endStay(i4.id);
+    await Wallet.update({ status: 'INACTIVE' }, { where: { user_id: guest.id } });
+    r = await call(host, 'POST', `/shortlet/bookings/${i4.id}/inspection`, { outcome: 'no_damage' });
+    row = await ShortletBookings.findByPk(i4.id);
+    check('no damage with guest wallet down → saved, refund deferred', r.status === 200 && r.body.refunded === false
+      && row.deposit_status === 'held' && row.deposit_inspection_outcome === 'no_damage', r.body);
+    await Wallet.update({ status: 'ACTIVE' }, { where: { user_id: guest.id } });
+    g0 = await bal(guest);
+    await settlement.runShortletSettlement();
+    check('…and the next settlement run refunds it', (await bal(guest)) - g0 === 5000 && (await ShortletBookings.findByPk(i4.id)).deposit_status === 'refunded');
+
+    // i5: during the stay the inspection isn't available yet
+    r = await book(guest, d(174), d(177));
+    const i5 = r.body.data;
+    await ShortletBookings.update({ check_in: d(-1), check_out: d(2), payout_due_at: at(0, '14:00:00') }, { where: { id: i5.id } });
+    r = await call(host, 'POST', `/shortlet/bookings/${i5.id}/inspection`, { outcome: 'no_damage' });
+    check('inspection during the stay → 400 STAY_NOT_ENDED', r.status === 400 && r.body.code === 'STAY_NOT_ENDED', r.body);
+    await ShortletBookings.update({ status: 'cancelled', deposit_status: 'refunded' }, { where: { id: i5.id } }); // out of the way
+
+    console.log('\n8e. Guest reviews');
+    const review = (user, id, body) => call(user, 'POST', `/shortlet/bookings/${id}/review`, body);
+    const pub = async (q = '') => {
+      const rr = await fetch(`${base}/shortlet/get1/${sl.id}/reviews${q}`); // no auth header
+      return { status: rr.status, body: await rr.json().catch(() => ({})) };
+    };
+    r = await pub();
+    check('reviews are public (no login) and start empty', r.status === 200 && r.body.data.reviewCount === 0 && r.body.data.ratingAverage === null && r.body.data.reviews.length === 0, r.body);
+
+    r = await book(guest, d(177), d(179));
+    const future = r.body.data;
+    r = await review(guest, future.id, { rating: 5, comment: 'Lovely place, would stay again' });
+    check('cannot review before the stay is completed', r.status === 400 && r.body.code === 'STAY_NOT_COMPLETED', r.body);
+    r = await call(guest, 'GET', '/shortlet/reviews/pending');
+    check('pending reviews lists the completed stays', r.status === 200 && [i1.id, i2.id, i3.id].every((id) => r.body.data.some((p) => p.booking_id === id))
+      && !r.body.data.some((p) => p.booking_id === future.id) && !!r.body.data[0].reviewDeadline, r.body);
+    r = await call(guest, 'GET', `/shortlet/bookings/${i1.id}`);
+    check('booking shows canReview + deadline', r.body.data.review.canReview === true && r.body.data.review.submitted === false && !!r.body.data.review.deadline, r.body.data.review);
+
+    r = await review(host, i1.id, { rating: 5, comment: 'Host reviewing their own place' });
+    check('host cannot review the booking (404)', r.status === 404, r.body);
+    r = await review(guest2, i1.id, { rating: 5, comment: 'Someone else reviewing' });
+    check("another guest cannot review someone else's booking (404)", r.status === 404, r.body);
+    for (const bad of [0, 6, 4.5, 'abc', undefined]) {
+      r = await review(guest, i1.id, { rating: bad, comment: 'Lovely place, would stay again' });
+      if (r.status !== 400 || r.body.code !== 'INVALID_RATING') check(`rating ${bad} refused`, false, r.body);
+    }
+    check('ratings outside 1–5 / non-integers refused', true);
+    r = await review(guest, i1.id, { rating: 5, comment: 'Nice' });
+    check('too-short review refused', r.status === 400 && r.body.code === 'INVALID_COMMENT', r.body);
+
+    r = await review(guest, i1.id, { rating: 5, comment: 'Spotless apartment, great host, would recommend!', photos: ['x'], cleanliness: 2 });
+    check('guest reviews i1: 5 stars, verified, display name only', r.status === 201 && r.body.data.rating === 5 && r.body.data.verifiedBooking === true
+      && r.body.data.guest.displayName === 'Guest G.' && !!r.body.data.stay.month && r.body.data.hostResponse === null
+      && r.body.data.photos === undefined && r.body.data.cleanliness === undefined && r.body.data.guest.id === undefined, r.body);
+    const rev1 = r.body.data;
+    check('listing rating updated: 5.00 from 1 review', r.body.shortlet.reviewCount === 1 && Number(r.body.shortlet.ratingAverage) === 5, r.body.shortlet);
+    r = await review(guest, i1.id, { rating: 1, comment: 'Trying to change my review later' });
+    check('second review of the same booking → 409 REVIEW_EXISTS (no edits)', r.status === 409 && r.body.code === 'REVIEW_EXISTS', r.body);
+    {
+      const [x, y] = await Promise.all([
+        review(guest, i2.id, { rating: 4, comment: 'Good stay, small issue with the TV' }),
+        review(guest, i2.id, { rating: 4, comment: 'Good stay, small issue with the TV' }),
+      ]);
+      check('racing duplicate reviews: exactly one saved', [x.status, y.status].sort().join() === '201,409'
+        && (await db.ShortletReviews.count({ where: { booking_id: i2.id } })) === 1, [x.body, y.body]);
+    }
+    r = await review(guest, i3.id, { rating: 2, comment: 'Not as clean as the photos suggested' });
+    check('third review saved', r.status === 201, r.body);
+    const slRow = await Shortlets.findByPk(sl.id);
+    check('average = (5+4+2)/3 = 3.67 over 3 reviews', slRow.reviewCount === 3 && Number(slRow.ratingAverage) === 3.67, { avg: slRow.ratingAverage, n: slRow.reviewCount });
+    r = await call(guest, 'GET', `/shortlet/get1/${sl.id}`);
+    check('property details carry ratingAverage + reviewCount', r.body.data.reviewCount === 3 && Number(r.body.data.ratingAverage) === 3.67, r.body.data);
+    r = await pub('?limit=2');
+    check('public list: newest first, paginated, total 3', r.body.data.reviews.length === 2 && r.body.pagination.total === 3 && r.body.data.reviews[0].rating === 2, r.body);
+    r = await fetch(`${base}/shortlet/get1/${sl.slug}/reviews`).then((x) => x.json());
+    check('public list also works by slug', r.data?.reviewCount === 3, r);
+
+    await ShortletBookings.update({ status: 'completed', check_in: d(-23), check_out: d(-20) }, { where: { id: i5.id } });
+    r = await review(guest, i5.id, { rating: 3, comment: 'Late review after three weeks' });
+    check('review after the 14-day deadline → REVIEW_WINDOW_CLOSED', r.status === 400 && r.body.code === 'REVIEW_WINDOW_CLOSED', r.body);
+    r = await call(guest, 'GET', '/shortlet/reviews/pending');
+    check('reviewed / expired stays leave the pending list', ![i1.id, i2.id, i3.id, i5.id].some((id) => r.body.data.some((p) => p.booking_id === id)), r.body.data);
+
+    // Host response
+    r = await call(guest, 'PUT', `/shortlet/reviews/${rev1.id}/response`, { response: 'Responding as the guest' });
+    check('guest cannot respond (403)', r.status === 403, r.body);
+    r = await call(host, 'PUT', `/shortlet/reviews/${rev1.id}/response`, { response: '   ' });
+    check('empty response refused', r.status === 400 && r.body.code === 'INVALID_RESPONSE', r.body);
+    r = await call(host, 'PUT', `/shortlet/reviews/${rev1.id}/response`, { response: 'Thank you, Gina!' });
+    check('host responds publicly', r.status === 200 && r.body.data.hostResponse.text === 'Thank you, Gina!', r.body);
+    check('guest notified of the response', (await Notifications.count({ where: { user_id: guest.id, notification: 'Host Responded To Your Review' } })) === 1);
+    r = await call(host, 'PUT', `/shortlet/reviews/${rev1.id}/response`, { response: 'Thank you, Gina! Come back soon.' });
+    check('host edits the response', r.status === 200 && r.body.message === 'Response updated' && r.body.data.hostResponse.text === 'Thank you, Gina! Come back soon.' && !!r.body.data.hostResponse.updatedAt, r.body);
+    check('…without notifying the guest again', (await Notifications.count({ where: { user_id: guest.id, notification: 'Host Responded To Your Review' } })) === 1);
+    r = await pub();
+    check('response shows under the review on the public page', r.body.data.reviews.find((x) => x.id === rev1.id)?.hostResponse?.text === 'Thank you, Gina! Come back soon.', r.body);
+    r = await call(host, 'GET', '/shortlet/host/reviews');
+    check('host dashboard lists reviews of their listings', r.status === 200 && r.body.pagination.total >= 3 && r.body.data.some((x) => x.id === rev1.id && x.canRespond), r.body);
+    r = await call(host, 'GET', '/shortlet/host/reviews?responded=false');
+    check('…filterable to unanswered reviews', r.body.data.every((x) => x.hostResponse === null) && !r.body.data.some((x) => x.id === rev1.id), r.body);
+    check('new-review notifications reached the host', (await Notifications.count({ where: { user_id: host.id, notification: 'New Guest Review' } })) === 3);
+    r = await call(host, 'GET', `/shortlet/bookings/${i1.id}`);
+    check('host booking view shows the review + canRespond', r.body.data.review.submitted === true && r.body.data.review.canRespond === true && r.body.data.review.canReview === false, r.body.data.review);
+
+    console.log('\n8f. Post-checkout notifications');
+    const notices = require(path.join(ROOT, 'utils/shortletNotices'));
+    const count = (u, title) => Notifications.count({ where: { user_id: u.id, notification: title } });
+    const snap = async () => ({
+      insp: await count(host, 'Checkout Inspection'), invite: await count(guest, 'Review Your Stay'),
+      remind: await count(guest, 'Reminder: Review Your Stay'), refunded: await count(guest, 'Caution Fee Refunded'),
+    });
+    r = await book(guest, d(153), d(155));
+    const n1 = r.body.data;
+    r = await book(guest, d(155), d(157));
+    const n2 = r.body.data;
+    await ShortletBookings.update({ deposit_status: 'none', security_deposit: 0, deposit_refund_due_at: null }, { where: { id: n2.id } });
+    let s0 = await snap();
+    await endStay(n1.id);
+    await endStay(n2.id);
+    let s1 = await snap();
+    check('at check-out: one inspection prompt (only the stay with a caution fee)', s1.insp - s0.insp === 1, { s0, s1 });
+    check('at check-out: a review invite for each stay', s1.invite - s0.invite === 2, { s0, s1 });
+    check('both bookings marked as notified', !!(await ShortletBookings.findByPk(n1.id)).checkout_notified_at && !!(await ShortletBookings.findByPk(n2.id)).checkout_notified_at);
+    await settlement.runShortletSettlement();
+    await notices.runCheckoutNotices();
+    check('…and never sent twice', JSON.stringify(await snap()) === JSON.stringify(s1));
+    r = await review(guest, n2.id, { rating: 4, comment: 'Comfortable and quiet, thanks' });
+
+    // Reminder 3 days before the 14-day deadline, only for stays not yet reviewed
+    s0 = await snap();
+    let sum = await notices.runCheckoutNotices(new Date(Date.now() + 8 * DAY));
+    check('no reminder too early', (await snap()).remind === s0.remind, sum);
+    sum = await notices.runCheckoutNotices(new Date(Date.now() + 12 * DAY));
+    s1 = await snap();
+    check('reminder sent for the unreviewed stay', s1.remind - s0.remind >= 1 && !!(await ShortletBookings.findByPk(n1.id)).review_reminder_sent_at, sum);
+    check('no reminder for a reviewed stay', (await ShortletBookings.findByPk(n2.id)).review_reminder_sent_at === null);
+    await notices.runCheckoutNotices(new Date(Date.now() + 12 * DAY));
+    check('reminder sent once', (await snap()).remind === s1.remind);
+
+    // Host never answered → automatic refund after 48h, and the guest is told
+    s0 = await snap();
+    g0 = await bal(guest);
+    await settlement.runShortletSettlement(new Date(Date.now() + 3 * DAY));
+    check('unanswered inspection → caution fee auto-refunded + guest notified', (await ShortletBookings.findByPk(n1.id)).deposit_status === 'refunded'
+      && (await snap()).refunded - s0.refunded >= 1 && (await bal(guest)) - g0 >= 5000);
+    r = await call(host, 'POST', `/shortlet/bookings/${n1.id}/inspection`, { outcome: 'no_damage' });
+    check('inspection after the auto refund → 400', r.status === 400, r.body);
+  }
 
   console.log('\n9. Commission source (admin per-landlord value only)');
   await Users.update({ commission_percent: 50 }, { where: { id: host.id } });

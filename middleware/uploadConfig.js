@@ -68,4 +68,43 @@ function depositClaimPhotos(req, res, next) {
   });
 }
 
-module.exports = { imageUpload, rentalUpload, shortletUpload, depositClaimPhotos };
+// Checkout inspection: "damage" reports carry up to 5 images ("photos") and
+// up to 2 videos ("videos"). JSON bodies ("no_damage") pass straight through.
+const MAX_CLAIM_VIDEOS = 2;
+const inspectionUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_VIDEO_SIZE, files: MAX_CLAIM_PHOTOS + MAX_CLAIM_VIDEOS },
+  fileFilter: (req, file, cb) => {
+    if (file.fieldname === "photos") {
+      if (!ALLOWED_IMAGE_TYPES.includes(file.mimetype)) return cb(new Error("Only JPEG, PNG, WEBP, or AVIF images are allowed in \"photos\""));
+      return cb(null, true);
+    }
+    if (file.fieldname === "videos") {
+      if (!ALLOWED_VIDEO_TYPES.includes(file.mimetype)) return cb(new Error("Only MP4, MOV, or WEBM videos are allowed in \"videos\""));
+      return cb(null, true);
+    }
+    cb(new Error('Upload evidence in the "photos" and "videos" fields'));
+  },
+}).fields([
+  { name: "photos", maxCount: MAX_CLAIM_PHOTOS },
+  { name: "videos", maxCount: MAX_CLAIM_VIDEOS },
+]);
+
+function inspectionEvidence(req, res, next) {
+  inspectionUpload(req, res, (err) => {
+    if (!err) {
+      // Images share the 50MB video limit in multer; hold them to 5MB here.
+      const big = (req.files?.photos || []).find((f) => f.size > MAX_IMAGE_SIZE);
+      if (big) return res.status(400).json({ success: false, code: "INVALID_PHOTOS", message: "Each photo must be 5MB or smaller" });
+      return next();
+    }
+    let message = err.message;
+    if (err.code === "LIMIT_FILE_SIZE") message = "Each video must be 50MB or smaller";
+    if (err.code === "LIMIT_FILE_COUNT" || err.code === "LIMIT_UNEXPECTED_FILE") {
+      message = `Attach at most ${MAX_CLAIM_PHOTOS} photos ("photos") and ${MAX_CLAIM_VIDEOS} videos ("videos")`;
+    }
+    return res.status(400).json({ success: false, code: "INVALID_PHOTOS", message });
+  });
+}
+
+module.exports = { imageUpload, rentalUpload, shortletUpload, depositClaimPhotos, inspectionEvidence };
