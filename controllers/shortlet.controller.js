@@ -1,4 +1,5 @@
-const { Shortlets, ShortletBookings, Users, Profile } = require("../models");
+const { Shortlets, ShortletBookings, ShortletReviews, Users, Profile } = require("../models");
+const { bookingReviewSummary } = require('../utils/shortletReviews');
 const { notifySuperAdmins, logAndEmailUser } = require('./notification.controller');
 const { withTransaction } = require('../utils/rollback');
 const { chargeMarketplacePayment, InsufficientBalanceError } = require('../utils/wallet');
@@ -7,7 +8,7 @@ const { toKobo, fromKobo } = require('../utils/money');
 const {
   PAYOUT_DELAY_MS, DEPOSIT_CLAIM_WINDOW_MS, BookingActionError, todayInLagos, checkInAt, checkOutAt,
   getShortletCommissionPercent, splitKobo, cancellationTerms, presentTerms, cancelBooking,
-  validateDepositClaim, fileDepositClaim, resolveDepositClaim,
+  validateDepositClaim, fileDepositClaim, resolveDepositClaim, confirmNoDamage, stayEndedAt,
 } = require('../utils/shortletSettlement');
 const { getActivePolicy, describeStandardPolicy } = require('../utils/cancellationPolicy');
 const logger = require('../utils/logger');
@@ -56,6 +57,8 @@ function parseJsonArray(value) {
   }
 }
 
+const naira = (v) => `₦${Number(v).toLocaleString()}`;
+
 function toNumber(value, fallback = 0) {
   const n = parseFloat(value);
   return isNaN(n) ? fallback : n;
@@ -70,6 +73,16 @@ function toBoolean(value, fallback = false) {
   if (value === undefined || value === null) return fallback;
   if (typeof value === 'boolean') return value;
   return ['true', '1', 'yes'].includes(String(value).toLowerCase());
+}
+
+// The refundable caution fee is stored as `securityDeposit`. Hosts may send
+// either name; `cautionFee` wins if both are sent. Returns:
+//   undefined (not sent) · a number ≥ 0 · NaN (invalid)
+function parseCautionFee(body) {
+  const raw = body.cautionFee !== undefined && body.cautionFee !== '' ? body.cautionFee : body.securityDeposit;
+  if (raw === undefined || raw === null || raw === '') return undefined;
+  if (!/^\d+(\.\d{1,2})?$/.test(String(raw).trim())) return NaN;
+  return Number(raw);
 }
 
 function normalizeTime(value, fallback = '14:00:00') {
@@ -161,7 +174,8 @@ const LIST_ATTRIBUTES = [
   "address", "city", "area", "landmark", "amenities", "images", "videos", "coverImage",
   "pricePerNight", "cleaningFee", "securityDeposit", "minimumStay", "maximumStay",
   "availableFrom", "availableTo", "checkInTime", "checkOutTime",
-  "smokingAllowed", "petsAllowed", "partiesAllowed", "houseRules", "earlyCheckoutRefundable", "status", "UserId", "createdAt"
+  "smokingAllowed", "petsAllowed", "partiesAllowed", "houseRules", "earlyCheckoutRefundable", "status", "UserId", "createdAt",
+  "ratingAverage", "reviewCount",
 ];
 
 const OWNER_INCLUDE = [{
@@ -193,7 +207,7 @@ async function addShortlet(req, res) {
       rentalModel, propertyType, title, description, bedrooms, bathrooms, livingRooms,
       guestCapacity, furnishingStatus, address, city, area, landmark,
       amenities, images, videos, coverImage,
-      pricePerNight, cleaningFee, securityDeposit, minimumStay, maximumStay,
+      pricePerNight, cleaningFee, minimumStay, maximumStay,
       availableFrom, availableTo, checkInTime, checkOutTime,
       smokingAllowed, petsAllowed, partiesAllowed, houseRules, status, earlyCheckoutRefundable,
     } = req.body;
@@ -235,6 +249,11 @@ async function addShortlet(req, res) {
     const parsedMaximumStay = toInt(maximumStay, 30) || 30;
     if (parsedMaximumStay < parsedMinimumStay) {
       return res.status(400).json({ success: false, message: "maximumStay cannot be less than minimumStay" });
+    }
+
+    const cautionFee = parseCautionFee(req.body);
+    if (Number.isNaN(cautionFee)) {
+      return res.status(400).json({ success: false, message: "cautionFee must be an amount of 0 or more (use 0 for no caution fee)" });
     }
 
     const uploadedImagesList = req.files?.images || [];
@@ -285,7 +304,7 @@ async function addShortlet(req, res) {
       coverImage: imageUrls.includes(coverImage) ? coverImage : imageUrls[0],
       pricePerNight: parsedPricePerNight,
       cleaningFee: toNumber(cleaningFee),
-      securityDeposit: toNumber(securityDeposit),
+      securityDeposit: cautionFee ?? 0, // the refundable caution fee
       minimumStay: parsedMinimumStay,
       maximumStay: parsedMaximumStay,
       availableFrom,
@@ -412,7 +431,7 @@ async function updateShortlet(req, res) {
       rentalModel, propertyType, title, description, bedrooms, bathrooms, livingRooms,
       guestCapacity, furnishingStatus, address, city, area, landmark,
       amenities, images, videos, coverImage,
-      pricePerNight, cleaningFee, securityDeposit, minimumStay, maximumStay,
+      pricePerNight, cleaningFee, minimumStay, maximumStay,
       availableFrom, availableTo, checkInTime, checkOutTime,
       smokingAllowed, petsAllowed, partiesAllowed, houseRules, status, earlyCheckoutRefundable,
     } = req.body;
@@ -442,6 +461,11 @@ async function updateShortlet(req, res) {
     if (parsedMaximumStay < parsedMinimumStay) {
       return res.status(400).json({ success: false, message: "maximumStay cannot be less than minimumStay" });
     }
+    // Only affects new bookings: each booking keeps the caution fee it was made with.
+    const cautionFee = parseCautionFee(req.body);
+    if (Number.isNaN(cautionFee)) {
+      return res.status(400).json({ success: false, message: "cautionFee must be an amount of 0 or more (use 0 for no caution fee)" });
+    }
 
     const updateData = {
       rentalModel: rentalModel || shortlet.rentalModel,
@@ -460,7 +484,7 @@ async function updateShortlet(req, res) {
       amenities: amenities !== undefined ? parseJsonArray(amenities) : shortlet.amenities,
       pricePerNight: parsedPricePerNight,
       cleaningFee: cleaningFee !== undefined ? toNumber(cleaningFee) : toNumber(shortlet.cleaningFee),
-      securityDeposit: securityDeposit !== undefined ? toNumber(securityDeposit) : toNumber(shortlet.securityDeposit),
+      securityDeposit: cautionFee !== undefined ? cautionFee : toNumber(shortlet.securityDeposit),
       minimumStay: parsedMinimumStay,
       maximumStay: parsedMaximumStay,
       checkInTime: checkInTime ? normalizeTime(checkInTime) : shortlet.checkInTime,
@@ -641,6 +665,7 @@ const BOOKING_SHORTLET_ATTRIBUTES = [
   "pricePerNight", "checkInTime", "checkOutTime", "status", "UserId",
 ];
 const PERSON_ATTRIBUTES = ['id', 'full_name', 'phone_no'];
+const REVIEW_INCLUDE = { model: ShortletReviews, as: 'review', required: false };
 
 // Validates a requested stay against the listing's rules and prices it.
 // Shared by the quote and booking endpoints so they can never disagree.
@@ -699,6 +724,9 @@ async function evaluateStay(shortlet, user_id, { checkIn, checkOut, guests: rawG
         cleaningFee: fromKobo(cleaningFeeKobo),
         securityDeposit: fromKobo(securityDepositKobo),
         securityDepositRefundable: true,
+        // Same money as securityDeposit, under its RentULO name.
+        cautionFee: fromKobo(securityDepositKobo),
+        cautionFeeRefundable: true,
         total: fromKobo(totalKobo),
       },
       cancellationPolicy: describeStandardPolicy(activePolicy.rules, {
@@ -796,7 +824,7 @@ async function quoteShortlet(req, res) {
 // POST /shortlet/book
 // Body: { shortlet_id, checkIn: 'YYYY-MM-DD', checkOut: 'YYYY-MM-DD', guests?, pin }
 // Charges the guest's wallet (PIN-protected); the platform holds the money
-// until the host payout 24h after check-in.
+// until the host payout 10h after check-in.
 // ─────────────────────────────────────────────
 async function bookShortlet(req, res) {
   try {
@@ -914,12 +942,13 @@ async function bookShortlet(req, res) {
       const amountText = `₦${Number(stay.breakdown.total).toLocaleString()}`;
       const when = `${stay.checkIn} (check-in from ${stay.checkInTime}) to ${stay.checkOut} (check-out by ${stay.checkOutTime})`;
 
+      const caution = stay.securityDepositKobo > 0 ? naira(fromKobo(stay.securityDepositKobo)) : null;
       await logAndEmailUser(user_id, guest?.email, "Shortlet Booked",
-        `Your booking for "${shortlet.title}" from ${when}, ${stay.nights} night(s), ${stay.guests} guest(s), is confirmed. ${amountText} has been deducted from your wallet. Cancellation policy (${stay.cancellationPolicy.label}): ${stay.cancellationPolicy.summary}`
+        `Your booking for "${shortlet.title}" from ${when}, ${stay.nights} night(s), ${stay.guests} guest(s), is confirmed. ${amountText} has been deducted from your wallet.${caution ? ` This includes a refundable caution fee of ${caution}, which RentULO holds and refunds to your wallet after check-out once the host confirms there was no damage.` : ''} Cancellation policy (${stay.cancellationPolicy.label}): ${stay.cancellationPolicy.summary}`
       );
       if (host) {
         await logAndEmailUser(host.id, host.email, "New Shortlet Booking",
-          `${guest?.full_name ?? 'A guest'} booked your short let "${shortlet.title}" from ${when}, ${stay.nights} night(s), ${stay.guests} guest(s). Your payout of ₦${Number(fromKobo(hostKobo)).toLocaleString()} will be sent to your wallet 24 hours after check-in.`
+          `${guest?.full_name ?? 'A guest'} booked your short let "${shortlet.title}" from ${when}, ${stay.nights} night(s), ${stay.guests} guest(s). Your payout of ₦${Number(fromKobo(hostKobo)).toLocaleString()} will be sent to your wallet 10 hours after check-in.${caution ? ` RentULO is holding the guest's ${caution} caution fee; after check-out you'll be asked whether any damage was incurred.` : ''}`
         );
       }
       await notifySuperAdmins(
@@ -943,11 +972,14 @@ async function bookShortlet(req, res) {
 }
 
 // Guests shouldn't see the host's payout or the platform's cut.
-// One summary of the security deposit + any claim, identical for guest, host
-// and admin, so every side sees the same facts (amount, reason, photos,
-// decision, admin note, who got what). Only the action flags differ:
-//   canClaim   — host only, while the claim window is open
-//   canResolve — admin only, while a claim is waiting for a decision
+// One summary of the caution fee (security deposit) + any damage report,
+// identical for guest, host and admin, so every side sees the same facts
+// (amount, description, photos/videos, decision, admin note, who got what).
+// Only the action flags differ:
+//   canInspect — host only: the guest has left, the fee is held and the host
+//                hasn't answered "was any damage incurred?" yet
+//   canClaim   — host only, while a damage report can be filed
+//   canResolve — admin only, while a report is waiting for a decision
 function depositClaimSummary(booking, role, now = new Date()) {
   const b = typeof booking.toJSON === 'function' ? booking.toJSON() : booking;
   const deposit = Number(b.security_deposit) || 0;
@@ -955,15 +987,25 @@ function depositClaimSummary(booking, role, now = new Date()) {
   const resolved = !!b.deposit_claim_resolved_at;
   const windowOpen = b.deposit_status === 'held' && now >= checkInAt(b)
     && (!b.deposit_refund_due_at || now <= new Date(b.deposit_refund_due_at));
+  const stayEnded = now >= stayEndedAt(b);
+  const canInspect = role === 'host' && windowOpen && stayEnded && !b.deposit_inspection_outcome;
   return {
     depositStatus: b.deposit_status,                   // none · held · claimed · refunded · settled
     securityDeposit: fromKobo(toKobo(b.security_deposit)),
+    cautionFee: fromKobo(toKobo(b.security_deposit)),  // same amount, RentULO name
     claimWindowEndsAt: b.deposit_status === 'held' ? b.deposit_refund_due_at : null,
+    inspection: {
+      outcome: b.deposit_inspection_outcome || null,   // no_damage · damage · null (not answered)
+      inspectedAt: b.deposit_inspected_at || null,
+      // "Was any damage incurred?" is waiting for the host
+      pending: b.deposit_status === 'held' && stayEnded && !b.deposit_inspection_outcome,
+    },
     claimed: !!b.deposit_claimed_at,
     claim: b.deposit_claimed_at ? {
-      amount: b.deposit_claim_amount,
+      amount: b.deposit_claim_amount,                  // what the host asked for; null = left to the admin
       reason: b.deposit_claim_reason,
       photos: b.deposit_claim_photos || [],
+      videos: b.deposit_claim_videos || [],
       claimedAt: b.deposit_claimed_at,
       status: resolved ? 'resolved' : 'pending_review',
       decision: b.deposit_claim_decision,             // approved · partially_approved · rejected · null
@@ -972,7 +1014,8 @@ function depositClaimSummary(booking, role, now = new Date()) {
       paidToHost: resolved ? fromKobo(toKobo(paidToHost)) : null,
       refundedToGuest: resolved ? fromKobo(toKobo(deposit - paidToHost)) : null,
     } : null,
-    canClaim: role === 'host' && windowOpen,
+    canInspect,
+    canClaim: role === 'host' && windowOpen && !b.deposit_inspection_outcome,
     canResolve: role === 'admin' && b.deposit_status === 'claimed',
   };
 }
@@ -993,6 +1036,7 @@ function scrubCancellation(details, role) {
 function guestView(booking) {
   const json = typeof booking.toJSON === 'function' ? booking.toJSON() : { ...booking };
   json.depositClaim = depositClaimSummary(json, 'guest');
+  json.review = bookingReviewSummary(json, 'guest');
   json.cancellation_details = scrubCancellation(json.cancellation_details, 'guest');
   delete json.host_payout;
   delete json.platform_fee;
@@ -1007,6 +1051,7 @@ function guestView(booking) {
 function hostView(booking) {
   const json = typeof booking.toJSON === 'function' ? booking.toJSON() : { ...booking };
   json.depositClaim = depositClaimSummary(json, 'host');
+  json.review = bookingReviewSummary(json, 'host');
   json.cancellation_details = scrubCancellation(json.cancellation_details, 'host');
   delete json.platform_fee;
   return json;
@@ -1061,6 +1106,7 @@ async function getUserShortletBookings(user_id, { status } = {}) {
     include: [
       { model: Shortlets, as: 'shortlet', attributes: BOOKING_SHORTLET_ATTRIBUTES },
       { model: Users, as: 'host', attributes: PERSON_ATTRIBUTES },
+      REVIEW_INCLUDE,
     ],
     order: [['check_in', 'DESC']],
   });
@@ -1104,6 +1150,7 @@ async function getHostShortletBookings(req, res) {
       include: [
         { model: Shortlets, as: 'shortlet', attributes: BOOKING_SHORTLET_ATTRIBUTES },
         { model: Users, as: 'guest', attributes: PERSON_ATTRIBUTES },
+        REVIEW_INCLUDE,
       ],
       order: [['check_in', 'DESC']],
     });
@@ -1130,6 +1177,7 @@ async function getShortletBooking(req, res) {
         { model: Shortlets, as: 'shortlet', attributes: [...BOOKING_SHORTLET_ATTRIBUTES, 'houseRules', 'landmark'] },
         { model: Users, as: 'guest', attributes: PERSON_ATTRIBUTES },
         { model: Users, as: 'host', attributes: PERSON_ATTRIBUTES },
+        REVIEW_INCLUDE,
       ],
     });
     if (!booking) {
@@ -1189,7 +1237,7 @@ async function cancelShortletBooking(req, res) {
       const keptText = `₦${Number(terms.nonRefundableAmount).toLocaleString()}`;
       const early = terms.stage === 'during_stay';
       const depositNote = terms.depositHeldForClaims
-        ? ' Your security deposit will be returned 48 hours after you leave, unless the host makes an approved damage claim.'
+        ? ' Your caution fee will be refunded after you leave once the host confirms there was no damage (or automatically after 48 hours), unless RentULO approves a damage report.'
         : '';
       const what = early ? `Your stay at "${title}" has been ended early (leaving on ${terms.actualCheckOut}).` : `Your booking for "${title}" (${dates}) has been cancelled.`;
 
@@ -1229,68 +1277,177 @@ async function cancelShortletBooking(req, res) {
   }
 }
 
+// Files a damage report against the caution fee: validate → upload the
+// evidence → save under a row lock (removing the uploads if that fails) →
+// notify the guest and the admins. Shared by the checkout inspection
+// ("Yes, damage was incurred") and the older deposit-claim endpoint.
+async function fileDamageReport(req, res, { afterCheckout }) {
+  const { bookingId } = req.params;
+  const hostUserId = req.user.userId;
+  const { amount } = req.body || {};
+  const reason = req.body?.description ?? req.body?.reason;
+  // deposit-claim sends an array of photos; the inspection sends fields.
+  const photoFiles = Array.isArray(req.files) ? req.files : (req.files?.photos || []);
+  const videoFiles = Array.isArray(req.files) ? [] : (req.files?.videos || []);
+
+  // 1. Check everything BEFORE uploading, so a report that can't be filed
+  //    never leaves files behind on Cloudinary.
+  try {
+    validateDepositClaim(await ShortletBookings.findByPk(bookingId), {
+      hostUserId, amount, reason, photoCount: photoFiles.length, videoCount: videoFiles.length, afterCheckout,
+    });
+  } catch (error) {
+    if (error instanceof BookingActionError) return sendError(res, error);
+    throw error;
+  }
+
+  // 2. Upload the evidence.
+  let photos, videos;
+  try {
+    [photos, videos] = await Promise.all([
+      Promise.all(photoFiles.map((f) => uploadBufferToCloudinary(f.buffer, f.mimetype, "deposit-claims"))),
+      Promise.all(videoFiles.map((f) => uploadBufferToCloudinary(f.buffer, f.mimetype, "deposit-claims/videos"))),
+    ]);
+  } catch (error) {
+    logger.error('Damage report upload failed', { error: error.message, booking_id: bookingId });
+    return res.status(502).json({ success: false, code: 'UPLOAD_FAILED', message: "Couldn't upload the evidence. Please try again." });
+  }
+
+  // 3. File the report (re-checked under a row lock). If that fails, remove
+  //    what we just uploaded.
+  let result;
+  try {
+    result = await fileDepositClaim({
+      bookingId, hostUserId, amount, reason, afterCheckout,
+      photos: photos.map((u) => u.secure_url), videos: videos.map((u) => u.secure_url),
+    });
+  } catch (error) {
+    const destroy = (u, resource_type) => cloudinary.uploader.destroy(u.public_id, { resource_type }).catch(() => {});
+    Promise.all([...photos.map((u) => destroy(u, 'image')), ...videos.map((u) => destroy(u, 'video'))]).catch(() => {});
+    if (error instanceof BookingActionError) return sendError(res, error);
+    throw error;
+  }
+  const { booking } = result;
+  logger.info('Shortlet damage report filed', {
+    booking_id: booking.id, amount: booking.deposit_claim_amount, photos: booking.deposit_claim_photos.length, videos: booking.deposit_claim_videos.length,
+  });
+
+  try {
+    const [guest, host] = await Promise.all([
+      Users.findByPk(booking.user_id, { attributes: ['id', 'email', 'full_name'] }),
+      Users.findByPk(booking.host_id, { attributes: ['id', 'email', 'full_name'] }),
+    ]);
+    const evidence = `${booking.deposit_claim_photos.length} photo(s) and ${booking.deposit_claim_videos.length} video(s)`;
+    await logAndEmailUser(booking.user_id, guest?.email, "Damage Report Submitted",
+      `Your host has submitted a damage report for your stay from ${booking.check_in} to ${booking.check_out}. Description: "${booking.deposit_claim_reason}". ${evidence} were attached; you can see them on the booking. Your ${naira(booking.security_deposit)} caution fee stays held while the RentULO team reviews the report and decides the actual damage cost. Any amount not approved will be refunded to your wallet. Contact support if you'd like to share your side.`
+    );
+    if (host) {
+      await logAndEmailUser(host.id, host.email, "Damage Report Received",
+        `We've received your damage report for the stay from ${booking.check_in}. The RentULO team will review the evidence and decide the damage cost; you'll be notified of the decision.`
+      );
+    }
+    await notifySuperAdmins(`${host?.full_name ?? 'A host'} submitted a damage report against a ${naira(booking.security_deposit)} caution fee (booking ${booking.id})${booking.deposit_claim_amount ? `, asking for ${naira(booking.deposit_claim_amount)}` : ''}. Review it under deposit claims.`, "shortlet");
+  } catch (notifyError) {
+    logger.error('Damage report notification failed', { error: notifyError.message, booking_id: booking.id });
+  }
+
+  return res.status(200).json({ success: true, message: "Damage report submitted for review", data: hostView(booking) });
+}
+
 // ─────────────────────────────────────────────
-// POST /shortlet/bookings/:bookingId/deposit-claim  — host only
-// multipart/form-data: amount, reason, photos (1–5 images). Allowed from check-in until 48h after check-out.
+// POST /shortlet/bookings/:bookingId/deposit-claim  — host only (older endpoint)
+// multipart/form-data: amount?, reason, photos (1–5 images). Allowed from check-in until 48h after check-out.
 // ─────────────────────────────────────────────
 async function claimShortletDeposit(req, res) {
+  try {
+    if (!isUUID(req.params.bookingId)) {
+      return res.status(404).json({ success: false, message: "Booking not found" });
+    }
+    return await fileDamageReport(req, res, { afterCheckout: false });
+  } catch (error) {
+    logger.error('Error filing deposit claim', { error: error.message, userId: req.user?.userId });
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+// ─────────────────────────────────────────────
+// POST /shortlet/bookings/:bookingId/inspection  — host only, after check-out
+// "Was any damage incurred during the guest's stay?"
+//   { outcome: "no_damage" }  (JSON) → full caution fee refunded to the guest now
+//   multipart { outcome: "damage", description, photos[] (≤5 images), videos[] (≤2), amount? }
+//     → sent to RentULO admin; the caution fee stays held until they decide
+// ─────────────────────────────────────────────
+async function inspectShortletStay(req, res) {
   try {
     const { bookingId } = req.params;
     if (!isUUID(bookingId)) {
       return res.status(404).json({ success: false, message: "Booking not found" });
     }
-    const hostUserId = req.user.userId;
-    const { amount, reason } = req.body || {};
-    const files = req.files || [];
+    const outcome = String(req.body?.outcome || '').toLowerCase();
 
-    // 1. Check everything BEFORE uploading, so a claim that can't be filed
-    //    never leaves photos behind on Cloudinary.
-    try {
-      validateDepositClaim(await ShortletBookings.findByPk(bookingId), { hostUserId, amount, reason, photoCount: files.length });
-    } catch (error) {
-      if (error instanceof BookingActionError) return sendError(res, error);
-      throw error;
+    if (outcome === 'damage') return await fileDamageReport(req, res, { afterCheckout: true });
+    if (outcome !== 'no_damage') {
+      return res.status(400).json({ success: false, code: 'INVALID_OUTCOME', message: "outcome must be 'no_damage' or 'damage'" });
     }
 
-    // 2. Upload the evidence.
-    let uploaded;
-    try {
-      uploaded = await Promise.all(files.map((f) => uploadBufferToCloudinary(f.buffer, f.mimetype, "deposit-claims")));
-    } catch (error) {
-      logger.error('Deposit claim photo upload failed', { error: error.message, booking_id: bookingId });
-      return res.status(502).json({ success: false, code: 'UPLOAD_FAILED', message: "Couldn't upload the photos. Please try again." });
-    }
-
-    // 3. File the claim (re-checked under a row lock). If that fails, remove
-    //    the photos we just uploaded.
     let result;
     try {
-      result = await fileDepositClaim({ bookingId, hostUserId, amount, reason, photos: uploaded.map((u) => u.secure_url) });
+      result = await confirmNoDamage({ bookingId, hostUserId: req.user.userId });
     } catch (error) {
-      Promise.all(uploaded.map((u) => cloudinary.uploader.destroy(u.public_id).catch(() => {}))).catch(() => {});
       if (error instanceof BookingActionError) return sendError(res, error);
       throw error;
     }
-    const { booking } = result;
-    logger.info('Shortlet deposit claim filed', { booking_id: booking.id, amount: booking.deposit_claim_amount, photos: booking.deposit_claim_photos.length });
+    const { booking, refunded } = result;
+    logger.info('Shortlet checkout inspection: no damage', { booking_id: booking.id, refunded });
 
     try {
-      const [guest, host] = await Promise.all([
-        Users.findByPk(booking.user_id, { attributes: ['id', 'email', 'full_name'] }),
-        Users.findByPk(booking.host_id, { attributes: ['id', 'email', 'full_name'] }),
-      ]);
-      const amountText = `₦${Number(booking.deposit_claim_amount).toLocaleString()}`;
-      await logAndEmailUser(booking.user_id, guest?.email, "Security Deposit Claim",
-        `Your host has claimed ${amountText} of your ₦${Number(booking.security_deposit).toLocaleString()} security deposit for your stay from ${booking.check_in}. Reason: "${booking.deposit_claim_reason}". ${booking.deposit_claim_photos.length} photo(s) were attached; you can see them on the booking. Our team will review it; contact support if you disagree.`
+      const guest = await Users.findByPk(booking.user_id, { attributes: ['id', 'email'] });
+      await logAndEmailUser(booking.user_id, guest?.email, "Caution Fee Refunded",
+        refunded
+          ? `Your host confirmed that no damage was incurred during your stay from ${booking.check_in} to ${booking.check_out}. Your ${naira(booking.security_deposit)} caution fee has been refunded to your wallet.`
+          : `Your host confirmed that no damage was incurred during your stay from ${booking.check_in} to ${booking.check_out}. Your ${naira(booking.security_deposit)} caution fee will be refunded as soon as your wallet is available. Contact support if it doesn't arrive.`
       );
-      await notifySuperAdmins(`${host?.full_name ?? 'A host'} filed a ${amountText} security deposit claim (booking ${booking.id}). Review it under deposit claims.`, "shortlet");
     } catch (notifyError) {
-      logger.error('Deposit claim notification failed', { error: notifyError.message, booking_id: booking.id });
+      logger.error('No-damage notification failed', { error: notifyError.message, booking_id: booking.id });
     }
 
-    return res.status(200).json({ success: true, message: "Deposit claim submitted for review", data: hostView(booking) });
+    return res.status(200).json({
+      success: true,
+      message: refunded ? "Caution fee refunded to the guest" : "Inspection saved; the refund will be retried shortly",
+      refunded,
+      data: hostView(booking),
+    });
   } catch (error) {
-    logger.error('Error filing deposit claim', { error: error.message, userId: req.user?.userId });
+    logger.error('Error saving checkout inspection', { error: error.message, userId: req.user?.userId });
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+// ─────────────────────────────────────────────
+// GET /shortlet/host/inspections  — host dashboard: stays that have ended
+// and are waiting for "Was any damage incurred?"
+// ─────────────────────────────────────────────
+async function getHostPendingInspections(req, res) {
+  try {
+    const today = todayInLagos();
+    const bookings = await ShortletBookings.findAll({
+      where: {
+        host_id: req.user.userId,
+        deposit_status: 'held',
+        deposit_inspection_outcome: null,
+        [Op.or]: [{ check_out: { [Op.lte]: today } }, { actual_check_out: { [Op.lte]: today } }],
+      },
+      include: [
+        { model: Shortlets, as: 'shortlet', attributes: BOOKING_SHORTLET_ATTRIBUTES },
+        { model: Users, as: 'guest', attributes: PERSON_ATTRIBUTES },
+        REVIEW_INCLUDE,
+      ],
+      order: [['check_out', 'ASC']],
+    });
+    const data = bookings.map(hostView).filter((b) => b.depositClaim.canInspect);
+    return res.status(200).json({ success: true, count: data.length, data, message: "Pending checkout inspections retrieved successfully" });
+  } catch (error) {
+    logger.error('Error fetching pending inspections', { error: error.message, userId: req.user?.userId });
     return res.status(500).json({ success: false, message: "Server error" });
   }
 }
@@ -1349,19 +1506,19 @@ async function adminResolveDepositClaim(req, res) {
         Users.findByPk(booking.user_id, { attributes: ['id', 'email'] }),
         Users.findByPk(booking.host_id, { attributes: ['id', 'email'] }),
       ]);
-      const toHost = `₦${Number(fromKobo(awardKobo)).toLocaleString()}`;
-      const toGuest = `₦${Number(fromKobo(guestKobo)).toLocaleString()}`;
+      const toHost = naira(fromKobo(awardKobo));
+      const toGuest = naira(fromKobo(guestKobo));
       const noteText = booking.deposit_claim_note ? ` Note from our team: "${booking.deposit_claim_note}"` : '';
-      await logAndEmailUser(booking.user_id, guest?.email, "Security Deposit Claim Decided",
+      await logAndEmailUser(booking.user_id, guest?.email, "Damage Report Decided",
         awardKobo > 0
-          ? `The host's deposit claim for your stay from ${booking.check_in} was ${booking.deposit_claim_decision === 'approved' ? 'approved' : 'partly approved'}: ${toHost} went to the host and ${toGuest} was refunded to your wallet.${noteText}`
-          : `The host's deposit claim for your stay from ${booking.check_in} was rejected. Your full deposit of ${toGuest} has been refunded to your wallet.${noteText}`
+          ? `RentULO reviewed the damage report for your stay from ${booking.check_in} and approved a damage cost of ${toHost}, which was paid to the host from your caution fee. The remaining ${toGuest} has been refunded to your wallet.${noteText}`
+          : `RentULO reviewed the damage report for your stay from ${booking.check_in} and rejected it. Your full caution fee of ${toGuest} has been refunded to your wallet.${noteText}`
       );
       if (host) {
-        await logAndEmailUser(host.id, host.email, "Security Deposit Claim Decided",
+        await logAndEmailUser(host.id, host.email, "Damage Report Decided",
           awardKobo > 0
-            ? `Your deposit claim for the stay from ${booking.check_in} was ${booking.deposit_claim_decision === 'approved' ? 'approved' : 'partly approved'}. ${toHost} has been credited to your wallet.${noteText}`
-            : `Your deposit claim for the stay from ${booking.check_in} was rejected and the deposit was returned to the guest.${noteText}`
+            ? `RentULO reviewed your damage report for the stay from ${booking.check_in} and approved ${toHost}. It has been credited to your wallet, and the rest of the caution fee was refunded to the guest.${noteText}`
+            : `RentULO reviewed your damage report for the stay from ${booking.check_in} and rejected it. The caution fee was refunded to the guest.${noteText}`
         );
       }
     } catch (notifyError) {
@@ -1637,6 +1794,8 @@ module.exports = {
   getShortletBooking,
   cancelShortletBooking,
   claimShortletDeposit,
+  inspectShortletStay,
+  getHostPendingInspections,
   adminListDepositClaims,
   adminResolveDepositClaim,
   adminListShortletBookings,

@@ -244,7 +244,7 @@ function startReconcileCron() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Shortlet settlement — pays hosts 24h after check-in and completes
+// Shortlet settlement — pays hosts 10h after check-in and completes
 // stays (refunding security deposits) after check-out. Idempotent.
 // Disable with SHORTLET_SETTLEMENT_CRON_ENABLED=false; schedule via
 // SHORTLET_SETTLEMENT_CRON_SCHEDULE (default every 10 minutes).

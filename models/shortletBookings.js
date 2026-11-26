@@ -7,6 +7,7 @@ module.exports = (sequelize, DataTypes) => {
       ShortletBookings.belongsTo(models.Users, { foreignKey: 'user_id', as: 'guest' });
       ShortletBookings.belongsTo(models.Shortlets, { foreignKey: 'shortlet_id', as: 'shortlet' });
       ShortletBookings.belongsTo(models.Users, { foreignKey: 'host_id', as: 'host' });
+      ShortletBookings.hasOne(models.ShortletReviews, { foreignKey: 'booking_id', as: 'review' });
     }
   }
 
@@ -59,6 +60,10 @@ module.exports = (sequelize, DataTypes) => {
     deposit_claim_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: true },
     deposit_claim_reason: { type: DataTypes.TEXT, allowNull: true },
     deposit_claim_photos: { type: DataTypes.JSON, allowNull: false, defaultValue: [] }, // Cloudinary URLs
+    deposit_claim_videos: { type: DataTypes.JSON, allowNull: false, defaultValue: [] }, // Cloudinary URLs
+    // Host's answer after check-out: "was any damage incurred?"
+    deposit_inspection_outcome: { type: DataTypes.ENUM('no_damage', 'damage'), allowNull: true },
+    deposit_inspected_at: { type: DataTypes.DATE, allowNull: true },
     deposit_claimed_at: { type: DataTypes.DATE, allowNull: true },
     deposit_claim_decision: { type: DataTypes.ENUM('approved', 'partially_approved', 'rejected'), allowNull: true },
     deposit_claim_note: { type: DataTypes.TEXT, allowNull: true },
@@ -83,6 +88,9 @@ module.exports = (sequelize, DataTypes) => {
     cancelled_by: { type: DataTypes.ENUM('guest', 'host'), allowNull: true },
     cancellation_reason: { type: DataTypes.TEXT, allowNull: true },
     completed_at: { type: DataTypes.DATE, allowNull: true },
+    // Post-checkout notifications, each sent once (see utils/shortletNotices.js)
+    checkout_notified_at: { type: DataTypes.DATE, allowNull: true },
+    review_reminder_sent_at: { type: DataTypes.DATE, allowNull: true },
   }, {
     sequelize,
     modelName: 'ShortletBookings',

@@ -4,14 +4,17 @@
 //
 //   1. Booking   — the guest's wallet is charged the full total. The platform
 //                  HOLDS it (no host credit yet). See bookShortlet.
-//   2. Payout    — 24h after check-in, the host is credited their share of
+//   2. Payout    — 10h after check-in, the host is credited their share of
 //                  (nights + cleaning fee), using the admin-set commission
 //                  snapshotted on the booking.
 //   3. Check-out — the stay is marked completed.
-//   4. Deposit   — held until 48h after check-out (the host's claim window).
-//                  No claim → refunded to the guest automatically. A claim →
-//                  an admin decides how much goes to the host; the rest goes
-//                  back to the guest.
+//   4. Caution   — the refundable caution fee (stored as the security
+//      fee         deposit) is held until the host inspects after check-out:
+//                  "no damage" → refunded to the guest straight away;
+//                  "damage" (description + photos/videos) → an admin decides
+//                  the real cost, which goes to the host, and the rest goes
+//                  back to the guest. If the host never answers, it is
+//                  refunded automatically 48h after check-out.
 //   5. Cancel    — by the listing's cancellation policy (snapshotted on the
 //                  booking). See POLICIES below. Allowed until check-out:
 //                  cancelling during a stay ends it early and refunds unused
@@ -33,7 +36,7 @@ const logger = require('./logger');
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
-const PAYOUT_DELAY_MS = 24 * HOUR_MS;           // host paid 24h after check-in
+const PAYOUT_DELAY_MS = 10 * HOUR_MS;           // host paid 10h after check-in (new bookings; each booking stores its own payout_due_at)
 const DEPOSIT_CLAIM_WINDOW_MS = 48 * HOUR_MS;   // host may claim the deposit until 48h after check-out
 const MID_STAY_GUEST_BUFFER_MS = 24 * HOUR_MS;  // guest pays for the next 24h when ending a stay early
 const LAGOS_OFFSET = '+01:00';                  // WAT, no daylight saving
@@ -70,6 +73,12 @@ function checkInAt(booking) {
 
 function checkOutAt(booking) {
   return lagosDateTime(booking.check_out, booking.check_out_time);
+}
+
+// When the guest actually left: the original check-out, or the early
+// check-out day for a stay that was ended early.
+function stayEndedAt(booking) {
+  return lagosDateTime(booking.actual_check_out || booking.check_out, booking.check_out_time);
 }
 
 // ── Cancellation policies (Airbnb's standard four) ──
@@ -127,7 +136,7 @@ function describePolicy(policyName, { checkIn, checkInTime, bookedAt = new Date(
     label: policy.label,
     // null = there's no point (any more) at which cancelling is free
     freeCancellationUntil: deadline && deadline > bookedAt ? deadline : null,
-    summary: `${policy.summary} The cleaning fee is refunded if you cancel before check-in, and the security deposit is always returned unless the host makes an approved damage claim.`,
+    summary: `${policy.summary} The cleaning fee is refunded if you cancel before check-in, and the refundable caution fee is always returned unless RentULO approves a damage report from the host.`,
   };
 }
 
@@ -264,9 +273,27 @@ async function completeBooking(bookingId, now = new Date()) {
 }
 
 // ─────────────────────────────────────────────
-// Deposit release — refund the deposit once the claim window closes
-// with no claim filed
+// Caution fee refund (the security deposit columns)
 // ─────────────────────────────────────────────
+// Credits the whole held caution fee back to the guest. Returns false (and
+// changes nothing) if the guest has no active wallet, so it can be retried.
+async function refundHeldDeposit(booking, narration, t) {
+  const depositKobo = toKobo(booking.security_deposit);
+  const wallet = await creditWallet({
+    userId: booking.user_id,
+    amountKobo: depositKobo,
+    type: 'refund_payment',
+    narration,
+    meta: { booking_id: booking.id, reason: 'security_deposit' },
+  }, t);
+  if (!wallet && depositKobo > 0) return false;
+  booking.deposit_status = 'refunded';
+  booking.refunded_amount = fromKobo(toKobo(booking.refunded_amount) + depositKobo);
+  return true;
+}
+
+// Automatic refund once the claim window closes with no claim filed (also
+// retries a "no damage" refund that couldn't be credited at the time).
 async function releaseDeposit(bookingId, now = new Date()) {
   return withTransaction(async (t) => {
     const booking = await lockBooking(bookingId, t);
@@ -275,23 +302,51 @@ async function releaseDeposit(bookingId, now = new Date()) {
     if (booking.status === 'confirmed') return { skipped: 'stay_not_finished' };
     if (!booking.deposit_refund_due_at || new Date(booking.deposit_refund_due_at) > now) return { skipped: 'not_due' };
 
-    const depositKobo = toKobo(booking.security_deposit);
-    const wallet = await creditWallet({
-      userId: booking.user_id,
-      amountKobo: depositKobo,
-      type: 'refund_payment',
-      narration: `Security deposit refund for your stay from ${booking.check_in}`,
-      meta: { booking_id: booking.id, reason: 'security_deposit' },
-    }, t);
-    if (!wallet && depositKobo > 0) {
+    if (!await refundHeldDeposit(booking, `Caution fee refund for your stay from ${booking.check_in}`, t)) {
       logger.warn('Deposit release deferred: guest has no active wallet', { booking_id: booking.id });
       return { skipped: 'guest_wallet_unavailable' };
     }
-    booking.deposit_status = 'refunded';
-    booking.refunded_amount = fromKobo(toKobo(booking.refunded_amount) + depositKobo);
     await booking.save({ transaction: t });
     return { released: true, booking };
   }, { context: 'shortletDepositRelease', bookingId });
+}
+
+// ─────────────────────────────────────────────
+// Checkout inspection — the host's answer after the guest leaves
+// ─────────────────────────────────────────────
+// Rules shared by both answers ("no damage" / "damage").
+function validateInspection(booking, { hostUserId, now = new Date() }) {
+  if (!booking) throw new BookingActionError(404, 'Booking not found', 'NOT_FOUND');
+  if (booking.host_id !== hostUserId) throw new BookingActionError(403, 'Only the host can inspect this stay', 'FORBIDDEN');
+  if (booking.deposit_status === 'none') throw new BookingActionError(400, 'This booking has no caution fee', 'NO_DEPOSIT');
+  if (booking.deposit_inspection_outcome || booking.deposit_status === 'claimed') {
+    throw new BookingActionError(400, 'You have already submitted the checkout inspection for this stay', 'ALREADY_INSPECTED');
+  }
+  if (booking.deposit_status !== 'held') throw new BookingActionError(400, 'The caution fee has already been refunded or settled', 'CLAIM_WINDOW_CLOSED');
+  if (now < stayEndedAt(booking)) throw new BookingActionError(400, 'You can inspect the property once the guest has checked out', 'STAY_NOT_ENDED');
+  if (booking.deposit_refund_due_at && now > new Date(booking.deposit_refund_due_at)) {
+    throw new BookingActionError(400, 'The checkout inspection window has closed and the caution fee was returned to the guest', 'CLAIM_WINDOW_CLOSED');
+  }
+}
+
+// Host confirms the property came back in acceptable condition: the full
+// caution fee is refunded to the guest now. If the guest's wallet can't take
+// it right now, the answer is still recorded and the settlement job retries.
+async function confirmNoDamage({ bookingId, hostUserId, now = new Date() }) {
+  return withTransaction(async (t) => {
+    const booking = await lockBooking(bookingId, t);
+    validateInspection(booking, { hostUserId, now });
+
+    booking.deposit_inspection_outcome = 'no_damage';
+    booking.deposit_inspected_at = now;
+    const refunded = await refundHeldDeposit(booking, `Caution fee refund: your host confirmed no damage (stay from ${booking.check_in})`, t);
+    if (!refunded) {
+      booking.deposit_refund_due_at = now; // picked up by the next settlement run
+      logger.warn('No-damage refund deferred: guest has no active wallet', { booking_id: booking.id });
+    }
+    await booking.save({ transaction: t });
+    return { booking, refunded };
+  }, { context: 'shortletNoDamage', bookingId, hostUserId });
 }
 
 // ─────────────────────────────────────────────
@@ -534,7 +589,7 @@ async function cancelBooking({ bookingId, actorUserId, reason, checkOutDate, exp
       }
     }
 
-    // The host may already have been paid (24h after check-in). Compare the
+    // The host may already have been paid (10h after check-in). Compare the
     // host's correct total with what they already have — one absolute
     // comparison, so nothing can be deducted twice.
     const alreadyPaidKobo = booking.payout_status === 'paid' ? toKobo(booking.host_payout) : 0;
@@ -693,61 +748,83 @@ function parseAmountKobo(raw) {
 }
 
 const MAX_CLAIM_PHOTOS = 5;
+const MAX_CLAIM_VIDEOS = 2;
+const isUrl = (u) => typeof u === 'string' && /^https?:\/\//.test(u);
 
-// Every rule for filing a deposit claim, in one place. Used by the controller
-// BEFORE uploading photos (so nothing is uploaded for a claim that can't be
-// filed) and again inside the transaction. Returns { claimKobo, text }.
-// `photoCount` is checked here; the uploaded URLs are checked in fileDepositClaim.
-function validateDepositClaim(booking, { hostUserId, amount, reason, photoCount, now = new Date() }) {
-  if (!booking) throw new BookingActionError(404, 'Booking not found', 'NOT_FOUND');
-  if (booking.host_id !== hostUserId) throw new BookingActionError(403, 'Only the host can claim this deposit', 'FORBIDDEN');
-
-  if (booking.deposit_status === 'none') throw new BookingActionError(400, 'This booking has no security deposit', 'NO_DEPOSIT');
-  if (booking.deposit_status === 'claimed') throw new BookingActionError(400, 'A claim has already been filed for this deposit', 'CLAIM_EXISTS');
-  if (booking.deposit_status !== 'held') throw new BookingActionError(400, 'The deposit has already been returned or settled', 'CLAIM_WINDOW_CLOSED');
-  if (now < checkInAt(booking)) throw new BookingActionError(400, 'You can only file a claim once the stay has started', 'STAY_NOT_STARTED');
-  if (booking.deposit_refund_due_at && now > new Date(booking.deposit_refund_due_at)) {
-    throw new BookingActionError(400, 'The 48-hour claim window after check-out has closed', 'CLAIM_WINDOW_CLOSED');
+// Every rule for filing a damage report on the caution fee, in one place.
+// Used by the controller BEFORE uploading evidence (so nothing is uploaded
+// for a report that can't be filed) and again inside the transaction.
+// Returns { claimKobo, text }; claimKobo is null when the host leaves the
+// amount to the admin (the checkout inspection flow).
+//   afterCheckout — the checkout inspection: only once the guest has left,
+//                   and only once per stay.
+function validateDepositClaim(booking, { hostUserId, amount, reason, photoCount, videoCount = 0, afterCheckout = false, now = new Date() }) {
+  if (afterCheckout) {
+    validateInspection(booking, { hostUserId, now });
+  } else {
+    if (!booking) throw new BookingActionError(404, 'Booking not found', 'NOT_FOUND');
+    if (booking.host_id !== hostUserId) throw new BookingActionError(403, 'Only the host can claim this deposit', 'FORBIDDEN');
+    if (booking.deposit_status === 'none') throw new BookingActionError(400, 'This booking has no caution fee', 'NO_DEPOSIT');
+    if (booking.deposit_status === 'claimed') throw new BookingActionError(400, 'A damage report has already been filed for this caution fee', 'CLAIM_EXISTS');
+    if (booking.deposit_status !== 'held') throw new BookingActionError(400, 'The caution fee has already been returned or settled', 'CLAIM_WINDOW_CLOSED');
+    if (booking.deposit_inspection_outcome) throw new BookingActionError(400, 'You have already submitted the checkout inspection for this stay', 'ALREADY_INSPECTED');
+    if (now < checkInAt(booking)) throw new BookingActionError(400, 'You can only file a claim once the stay has started', 'STAY_NOT_STARTED');
+    if (booking.deposit_refund_due_at && now > new Date(booking.deposit_refund_due_at)) {
+      throw new BookingActionError(400, 'The 48-hour claim window after check-out has closed', 'CLAIM_WINDOW_CLOSED');
+    }
   }
 
   const depositKobo = toKobo(booking.security_deposit);
   const claimKobo = parseAmountKobo(amount);
-  if (claimKobo === null || Number.isNaN(claimKobo) || claimKobo <= 0 || claimKobo > depositKobo) {
-    throw new BookingActionError(400, `amount must be more than 0 and at most the deposit (₦${Number(booking.security_deposit).toLocaleString()})`, 'INVALID_AMOUNT');
+  if (claimKobo !== null && (Number.isNaN(claimKobo) || claimKobo <= 0 || claimKobo > depositKobo)) {
+    throw new BookingActionError(400, `amount must be more than 0 and at most the caution fee (₦${Number(booking.security_deposit).toLocaleString()})`, 'INVALID_AMOUNT');
   }
   const text = typeof reason === 'string' ? reason.trim() : '';
   if (text.length < 10 || text.length > 2000) {
-    throw new BookingActionError(400, 'reason must describe the damage or issue (10–2000 characters)', 'INVALID_REASON');
+    throw new BookingActionError(400, 'Describe the damage or issue (10–2000 characters)', 'INVALID_REASON');
   }
-  if (!Number.isInteger(photoCount) || photoCount < 1 || photoCount > MAX_CLAIM_PHOTOS) {
-    throw new BookingActionError(400, `Attach 1 to ${MAX_CLAIM_PHOTOS} photos of the damage as "photos"`, 'INVALID_PHOTOS');
+  const okPhotos = Number.isInteger(photoCount) && photoCount >= 0 && photoCount <= MAX_CLAIM_PHOTOS;
+  const okVideos = Number.isInteger(videoCount) && videoCount >= 0 && videoCount <= MAX_CLAIM_VIDEOS;
+  if (!okPhotos || !okVideos || photoCount + videoCount < 1) {
+    throw new BookingActionError(400, afterCheckout
+      ? `Attach evidence of the damage: up to ${MAX_CLAIM_PHOTOS} photos ("photos") and/or up to ${MAX_CLAIM_VIDEOS} videos ("videos")`
+      : `Attach 1 to ${MAX_CLAIM_PHOTOS} photos of the damage as "photos"`, 'INVALID_PHOTOS');
   }
   return { claimKobo, text };
 }
 
-// Host files a claim on the deposit (damage, missing items, extra cleaning).
-// `photos` are the already-uploaded image URLs (evidence shown to guest + admin).
-async function fileDepositClaim({ bookingId, hostUserId, amount, reason, photos, now = new Date() }) {
-  const urls = Array.isArray(photos) ? photos.filter((u) => typeof u === 'string' && /^https?:\/\//.test(u)) : [];
+// Host files a damage report on the caution fee. `photos` / `videos` are the
+// already-uploaded URLs (evidence shown to the guest and the admin). The
+// caution fee stays held until an admin decides.
+async function fileDepositClaim({ bookingId, hostUserId, amount, reason, photos, videos = [], afterCheckout = false, now = new Date() }) {
+  const photoUrls = Array.isArray(photos) ? photos.filter(isUrl) : [];
+  const videoUrls = Array.isArray(videos) ? videos.filter(isUrl) : [];
   return withTransaction(async (t) => {
     const booking = await lockBooking(bookingId, t);
     const { claimKobo, text } = validateDepositClaim(booking, {
-      hostUserId, amount, reason, photoCount: urls.length === (photos || []).length ? urls.length : -1, now,
+      hostUserId, amount, reason, afterCheckout, now,
+      photoCount: photoUrls.length === (photos || []).length ? photoUrls.length : -1,
+      videoCount: videoUrls.length === (videos || []).length ? videoUrls.length : -1,
     });
 
     booking.deposit_status = 'claimed';
-    booking.deposit_claim_amount = fromKobo(claimKobo);
+    booking.deposit_claim_amount = claimKobo === null ? null : fromKobo(claimKobo);
     booking.deposit_claim_reason = text;
-    booking.deposit_claim_photos = urls;
+    booking.deposit_claim_photos = photoUrls;
+    booking.deposit_claim_videos = videoUrls;
     booking.deposit_claimed_at = now;
+    booking.deposit_inspection_outcome = 'damage';
+    booking.deposit_inspected_at = now;
     await booking.save({ transaction: t });
     return { booking };
   }, { context: 'shortletDepositClaim', bookingId, hostUserId });
 }
 
-// Super admin decides a claim. approve → `amount` (default: the full claim,
-// never more) goes to the host, the rest of the deposit back to the guest.
-// reject → the whole deposit goes back to the guest.
+// Super admin decides a damage report. approve → `amount` (the verified
+// damage cost) goes to the host and the rest of the caution fee back to the
+// guest, in one transaction. The amount defaults to what the host asked for
+// and can never exceed it; when the host left it to the admin, it is
+// required and capped at the caution fee. reject → everything back to the guest.
 async function resolveDepositClaim({ bookingId, decision, amount, note, now = new Date() }) {
   if (!['approve', 'reject'].includes(decision)) {
     throw new BookingActionError(400, "decision must be 'approve' or 'reject'", 'INVALID_DECISION');
@@ -758,13 +835,19 @@ async function resolveDepositClaim({ bookingId, decision, amount, note, now = ne
     if (booking.deposit_status !== 'claimed') throw new BookingActionError(400, 'There is no open deposit claim on this booking', 'NO_OPEN_CLAIM');
 
     const depositKobo = toKobo(booking.security_deposit);
-    const claimKobo = toKobo(booking.deposit_claim_amount);
+    const hostAsked = booking.deposit_claim_amount !== null && booking.deposit_claim_amount !== undefined;
+    const capKobo = hostAsked ? Math.min(toKobo(booking.deposit_claim_amount), depositKobo) : depositKobo;
     let awardKobo = 0;
     if (decision === 'approve') {
       const requested = parseAmountKobo(amount);
-      awardKobo = requested === null ? claimKobo : requested;
-      if (Number.isNaN(awardKobo) || awardKobo <= 0 || awardKobo > claimKobo) {
-        throw new BookingActionError(400, `amount must be more than 0 and at most the claimed ₦${Number(booking.deposit_claim_amount).toLocaleString()}`, 'INVALID_AMOUNT');
+      if (requested === null && !hostAsked) {
+        throw new BookingActionError(400, 'amount (the verified damage cost) is required to approve this report', 'INVALID_AMOUNT');
+      }
+      awardKobo = requested === null ? capKobo : requested;
+      if (Number.isNaN(awardKobo) || awardKobo <= 0 || awardKobo > capKobo) {
+        throw new BookingActionError(400, hostAsked
+          ? `amount must be more than 0 and at most the claimed ₦${Number(booking.deposit_claim_amount).toLocaleString()}`
+          : `amount must be more than 0 and at most the caution fee (₦${Number(booking.security_deposit).toLocaleString()})`, 'INVALID_AMOUNT');
       }
     }
     const guestKobo = depositKobo - awardKobo;
@@ -777,8 +860,8 @@ async function resolveDepositClaim({ bookingId, decision, amount, note, now = ne
           amountKobo: guestKobo,
           type: 'refund_payment',
           narration: awardKobo > 0
-            ? `Security deposit refund (after a host claim of ₦${Number(fromKobo(awardKobo)).toLocaleString()})`
-            : 'Security deposit refund (host claim rejected)',
+            ? `Caution fee refund (after an approved damage cost of ₦${Number(fromKobo(awardKobo)).toLocaleString()})`
+            : 'Caution fee refund (damage report rejected)',
           meta: { booking_id: booking.id, reason: 'security_deposit', claim_decision: decision },
         }, t);
         if (!w) throw new BookingActionError(400, 'The guest wallet is not available. Resolve this manually.', 'WALLET_UNAVAILABLE');
@@ -790,7 +873,7 @@ async function resolveDepositClaim({ bookingId, decision, amount, note, now = ne
           amountKobo: awardKobo,
           type: 'shortlet booking',
           role: 'landlord',
-          narration: `Security deposit claim approved for the stay from ${booking.check_in}`,
+          narration: `Approved damage cost from the caution fee for the stay from ${booking.check_in}`,
           meta: { booking_id: booking.id, reason: 'deposit_claim' },
         }, t);
         if (!w) throw new BookingActionError(400, 'The host wallet is not available. Resolve this manually.', 'WALLET_UNAVAILABLE');
@@ -798,7 +881,9 @@ async function resolveDepositClaim({ bookingId, decision, amount, note, now = ne
     ].sort((a, b) => String(a.id).localeCompare(String(b.id)));
     for (const step of steps) await step.run();
 
-    booking.deposit_claim_decision = decision === 'reject' ? 'rejected' : awardKobo === claimKobo ? 'approved' : 'partially_approved';
+    // "partially" only means the admin approved less than the host asked for.
+    booking.deposit_claim_decision = decision === 'reject' ? 'rejected'
+      : !hostAsked || awardKobo === capKobo ? 'approved' : 'partially_approved';
     booking.deposit_claim_note = note ? String(note).slice(0, 2000) : null;
     booking.deposit_claim_resolved_at = now;
     booking.deposit_paid_to_host = fromKobo(awardKobo);
@@ -815,11 +900,16 @@ async function resolveDepositClaim({ bookingId, decision, amount, note, now = ne
 async function runShortletSettlement(now = new Date()) {
   const summary = { paid: 0, completed: 0, depositsReleased: 0, debtsRecoveredKobo: 0, skipped: 0, failed: 0 };
 
-  const run = async (ids, fn, key, label) => {
+  // Lazy: shortletNotices depends on this module.
+  const notices = require('./shortletNotices');
+
+  // onDone runs after the step's transaction has committed.
+  const run = async (ids, fn, key, label, onDone) => {
     for (const { id } of ids) {
       try {
         const r = await fn(id, now);
         r[key] ? summary[label]++ : summary.skipped++;
+        if (r[key] && onDone) await onDone(r);
       } catch (error) {
         summary.failed++;
         logger.error(`Shortlet settlement step failed (${label})`, { booking_id: id, error: error.message });
@@ -844,7 +934,15 @@ async function runShortletSettlement(now = new Date()) {
     attributes: ['id'],
     where: { deposit_status: 'held', status: { [Op.ne]: 'confirmed' }, deposit_refund_due_at: { [Op.lte]: now } },
     limit: 200,
-  }), releaseDeposit, 'released', 'depositsReleased');
+  }), releaseDeposit, 'released', 'depositsReleased', (r) => notices.notifyDepositReleased(r.booking));
+
+  // Host "was any damage incurred?" prompt, guest review invite and reminder.
+  try {
+    summary.notices = await notices.runCheckoutNotices(now);
+  } catch (error) {
+    summary.failed++;
+    logger.error('Shortlet checkout notices failed', { error: error.message });
+  }
 
   // Sweep host debts: any money that landed in a debtor's wallet since the
   // last run (top-ups, rent/lock income, transfers in, …) pays them off.
@@ -860,7 +958,9 @@ async function runShortletSettlement(now = new Date()) {
     }
   }
 
-  if (summary.paid || summary.completed || summary.depositsReleased || summary.debtsRecoveredKobo || summary.failed) {
+  const n = summary.notices || {};
+  if (summary.paid || summary.completed || summary.depositsReleased || summary.debtsRecoveredKobo || summary.failed
+    || n.inspectionPrompts || n.reviewInvites || n.reviewReminders) {
     logger.info('Shortlet settlement run', summary);
   }
   return summary;
@@ -889,6 +989,10 @@ module.exports = {
   releaseDeposit,
   cancelBooking,
   MAX_CLAIM_PHOTOS,
+  MAX_CLAIM_VIDEOS,
+  stayEndedAt,
+  validateInspection,
+  confirmNoDamage,
   validateDepositClaim,
   fileDepositClaim,
   resolveDepositClaim,

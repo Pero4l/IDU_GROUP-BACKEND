@@ -16,6 +16,10 @@ module.exports = (sequelize, DataTypes) => {
         foreignKey: "shortlet_id",
         as: "bookings",
       });
+      Shortlets.hasMany(models.ShortletReviews, {
+        foreignKey: "shortlet_id",
+        as: "reviews",
+      });
     }
   }
 
@@ -181,6 +185,17 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.BOOLEAN,
       allowNull: false,
       defaultValue: true,
+    },
+    // Average of all guest review ratings (null until the first review) and
+    // how many there are. Updated in the same transaction as each review.
+    ratingAverage: {
+      type: DataTypes.DECIMAL(3, 2),
+      allowNull: true,
+    },
+    reviewCount: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
     },
     status: {
       type: DataTypes.ENUM('available', 'rented', 'pending', 'locked'),
